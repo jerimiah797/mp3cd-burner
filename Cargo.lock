@@ -3177,6 +3177,7 @@ dependencies = [
  "serde_json",
  "symphonia",
  "tempfile",
+ "walkdir",
 ]
 
 [[package]]

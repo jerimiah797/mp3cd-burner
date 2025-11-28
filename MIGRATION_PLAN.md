@@ -66,11 +66,15 @@ src/
 
 **Total: 35 tests passing**
 
-### Phase 4: Core Features
-- [ ] Folder scanning (scan_music_folder, get_audio_files)
+### Phase 4: Core Features ⏳ IN PROGRESS
+- [x] Folder scanning (scan_music_folder, get_audio_files) - 7 tests
+- [x] MusicFolder and AudioFileInfo types
+- [x] UI integration (folders scanned on drop, show file count & size)
 - [ ] Bitrate calculation (the smart encoding logic from main.ts)
 - [ ] Progress tracking during conversion
 - [ ] Process management (ChildProcesses, CancellationFlag)
+
+**Total: 44 tests passing**
 
 ### Phase 5: Conversion Pipeline
 - [ ] FFmpeg integration (spawn processes, track progress)

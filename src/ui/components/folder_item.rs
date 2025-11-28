@@ -6,6 +6,8 @@ use gpui::{
 };
 use std::path::PathBuf;
 
+use crate::core::{format_size, MusicFolder};
+
 /// Data carried during a drag operation for internal reordering
 #[derive(Clone)]
 pub struct DraggedFolder {
@@ -66,7 +68,7 @@ impl Render for DraggedFolder {
 /// Properties for rendering a FolderItem
 pub struct FolderItemProps {
     pub index: usize,
-    pub path: PathBuf,
+    pub folder: MusicFolder,
     pub is_drop_target: bool,
 }
 
@@ -82,23 +84,31 @@ pub fn render_folder_item<V: 'static>(
 ) -> impl IntoElement {
     let FolderItemProps {
         index,
-        path,
+        folder,
         is_drop_target,
     } = props;
 
-    let folder_name = path
+    let folder_name = folder
+        .path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string());
+        .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
 
-    let drag_info = DraggedFolder::new(index, path);
+    // Format metadata for display
+    let file_info = format!(
+        "{} files, {}",
+        folder.file_count,
+        format_size(folder.total_size)
+    );
+
+    let drag_info = DraggedFolder::new(index, folder.path.clone());
 
     let on_drop_clone = on_drop.clone();
 
     div()
         .id(SharedString::from(format!("folder-{}", index)))
         .w_full()
-        .h_10()
+        .h_12() // Slightly taller to accommodate two lines
         .flex()
         .items_center()
         .gap_2()
@@ -133,13 +143,27 @@ pub fn render_folder_item<V: 'static>(
         .child(div().text_color(rgb(0x94a3b8)).child("⋮⋮"))
         // Folder icon
         .child(div().child("📁"))
-        // Folder name
+        // Folder name and metadata
         .child(
             div()
                 .flex_1()
-                .text_sm()
-                .text_color(rgb(0x1e293b))
-                .child(folder_name),
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0x1e293b))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(folder_name),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x94a3b8))
+                        .child(file_info),
+                ),
         )
         // Remove button
         .child(

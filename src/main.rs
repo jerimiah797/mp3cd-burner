@@ -65,6 +65,11 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("MP3 CD Burner".into()),
+                    appears_transparent: false,
+                    traffic_light_position: None,
+                }),
                 ..Default::default()
             },
             |_window, cx| cx.new(|_| FolderList::new()),
