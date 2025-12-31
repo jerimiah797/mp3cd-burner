@@ -1,12 +1,13 @@
 //! FolderItem component - A single draggable folder entry in the list
 
 use gpui::{
-    div, prelude::*, px, rgb, rgba, Context, Half, IntoElement, Pixels, Point, Render,
+    div, img, prelude::*, px, rgb, rgba, Context, Half, IntoElement, Pixels, Point, Render,
     SharedString, Window,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::core::{format_size, MusicFolder};
+use crate::ui::Theme;
 
 /// Data carried during a drag operation for internal reordering
 #[derive(Clone)]
@@ -70,6 +71,7 @@ pub struct FolderItemProps {
     pub index: usize,
     pub folder: MusicFolder,
     pub is_drop_target: bool,
+    pub theme: Theme,
 }
 
 /// Renders a single folder item in the list
@@ -86,6 +88,7 @@ pub fn render_folder_item<V: 'static>(
         index,
         folder,
         is_drop_target,
+        theme,
     } = props;
 
     let folder_name = folder
@@ -102,31 +105,33 @@ pub fn render_folder_item<V: 'static>(
     );
 
     let drag_info = DraggedFolder::new(index, folder.path.clone());
+    let album_art_path = folder.album_art.clone();
 
     let on_drop_clone = on_drop.clone();
+
+    // Theme colors
+    let bg_card = theme.bg_card;
+    let bg_hover = theme.bg_card_hover;
+    let text_color = theme.text;
+    let text_muted = theme.text_muted;
+    let border_color = theme.border;
+    let accent = theme.accent;
+    let danger = theme.danger;
 
     div()
         .id(SharedString::from(format!("folder-{}", index)))
         .w_full()
-        .h_12() // Slightly taller to accommodate two lines
+        .h_16() // Taller to fit album art
         .flex()
         .items_center()
-        .gap_2()
+        .gap_3()
         .px_3()
-        .bg(if is_drop_target {
-            rgb(0xdbeafe)
-        } else {
-            rgb(0xffffff)
-        })
+        .bg(if is_drop_target { accent } else { bg_card })
         .border_1()
-        .border_color(if is_drop_target {
-            rgb(0x3b82f6)
-        } else {
-            rgb(0xe2e8f0)
-        })
+        .border_color(if is_drop_target { accent } else { border_color })
         .rounded_md()
         .cursor_grab()
-        .hover(|s| s.bg(rgb(0xf8fafc)))
+        .hover(|s| s.bg(bg_hover))
         // Make this item draggable
         .on_drag(drag_info, |info: &DraggedFolder, position, _, cx| {
             cx.new(|_| info.clone().with_position(position))
@@ -137,12 +142,29 @@ pub fn render_folder_item<V: 'static>(
         }))
         // Style when dragging over this item
         .drag_over::<DraggedFolder>(|style, _, _, _| {
-            style.bg(rgb(0xdbeafe)).border_color(rgb(0x3b82f6))
+            style.bg(rgb(0x3d3d3d))
         })
-        // Drag handle
-        .child(div().text_color(rgb(0x94a3b8)).child("⋮⋮"))
-        // Folder icon
-        .child(div().child("📁"))
+        // Album art or folder icon
+        .child(
+            div()
+                .size_12()
+                .rounded_sm()
+                .overflow_hidden()
+                .bg(rgb(0x404040))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when_some(album_art_path, |el, path| {
+                    el.child(
+                        img(Path::new(&path))
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                    )
+                })
+                .when(folder.album_art.is_none(), |el| {
+                    el.child(div().text_xl().child("📁"))
+                })
+        )
         // Folder name and metadata
         .child(
             div()
@@ -153,7 +175,7 @@ pub fn render_folder_item<V: 'static>(
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x1e293b))
+                        .text_color(text_color)
                         .overflow_hidden()
                         .text_ellipsis()
                         .child(folder_name),
@@ -161,7 +183,7 @@ pub fn render_folder_item<V: 'static>(
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(0x94a3b8))
+                        .text_color(text_muted)
                         .child(file_info),
                 ),
         )
@@ -170,9 +192,10 @@ pub fn render_folder_item<V: 'static>(
             div()
                 .id(SharedString::from(format!("remove-{}", index)))
                 .px_2()
-                .text_color(rgb(0x94a3b8))
+                .py_1()
+                .text_color(text_muted)
                 .cursor_pointer()
-                .hover(|s| s.text_color(rgb(0xef4444)))
+                .hover(|s| s.text_color(danger))
                 .on_click(cx.listener(move |view, _event, _window, _cx| {
                     on_remove(view, index);
                 }))

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::core::{format_size, scan_music_folder, MusicFolder};
+use crate::ui::Theme;
 
 /// The main folder list view
 ///
@@ -23,6 +24,8 @@ pub struct FolderList {
     folders: Vec<MusicFolder>,
     /// Currently hovered drop target index (for visual feedback)
     drop_target_index: Option<usize>,
+    /// Whether we've subscribed to appearance changes
+    appearance_subscription_set: bool,
 }
 
 impl FolderList {
@@ -30,6 +33,7 @@ impl FolderList {
         Self {
             folders: Vec::new(),
             drop_target_index: None,
+            appearance_subscription_set: false,
         }
     }
 
@@ -139,7 +143,7 @@ impl FolderList {
     }
 
     /// Render the empty state drop zone
-    fn render_empty_state(&self) -> impl IntoElement {
+    fn render_empty_state(&self, theme: &Theme) -> impl IntoElement {
         div()
             .size_full()
             .flex()
@@ -147,22 +151,23 @@ impl FolderList {
             .items_center()
             .justify_center()
             .gap_2()
-            .text_color(rgb(0x94a3b8))
+            .text_color(theme.text_muted)
             .child(div().text_2xl().child("📂"))
             .child(div().text_lg().child("Drop music folders here"))
-            .child(div().text_sm().child("or click to browse"))
+            .child(div().text_sm().child("or drag items to reorder"))
     }
 
     /// Render the populated folder list
-    fn render_folder_items(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_folder_items(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let drop_target = self.drop_target_index;
-        let mut list = div().size_full().p_2().flex().flex_col().gap_1();
+        let mut list = div().size_full().flex().flex_col().gap_1();
 
         for (index, folder) in self.folders.iter().enumerate() {
             let props = FolderItemProps {
                 index,
                 folder: folder.clone(),
                 is_drop_target: drop_target == Some(index),
+                theme: *theme,
             };
 
             let item = render_folder_item(
@@ -191,14 +196,25 @@ impl Default for FolderList {
 }
 
 impl Render for FolderList {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Subscribe to appearance changes (once)
+        if !self.appearance_subscription_set {
+            self.appearance_subscription_set = true;
+            cx.observe_window_appearance(window, |_this, _window, cx| {
+                cx.notify();
+            })
+            .detach();
+        }
+
+        // Get theme based on OS appearance
+        let theme = Theme::from_appearance(window.appearance());
         let is_empty = self.folders.is_empty();
 
         // Build the folder list content
         let list_content = if is_empty {
-            self.render_empty_state().into_any_element()
+            self.render_empty_state(&theme).into_any_element()
         } else {
-            self.render_folder_items(cx).into_any_element()
+            self.render_folder_items(&theme, cx).into_any_element()
         };
 
         // Capture listeners first (before borrowing for status bar)
@@ -214,60 +230,41 @@ impl Render for FolderList {
         });
 
         // Build status bar after listeners
-        let status_bar = self.render_status_bar(cx);
+        let status_bar = self.render_status_bar(&theme, cx);
 
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0xf5f5f5))
+            .bg(theme.bg)
             // Handle external file drops on the entire window
             .on_drop(on_external_drop)
             // Style when dragging external files over window
             .drag_over::<ExternalPaths>(|style, _, _, _| {
-                style.bg(rgb(0xe0f2fe))
+                style.bg(rgb(0x3d3d3d))
             })
-            // Main content area
+            // Main content area - folder list
             .child(
                 div()
                     .flex_1()
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_4()
-                    // Instructions
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(0x64748b))
-                            .child("Drag folders from Finder, or drag items to reorder"),
-                    )
-                    // Folder list container
-                    .child(
-                        div()
-                            .flex_1()
-                            .w_full()
-                            .border_2()
-                            .border_color(rgb(0xe2e8f0))
-                            .rounded_lg()
-                            .bg(gpui::white())
-                            .overflow_hidden()
-                            // Handle drops on the list container
-                            .on_drop(on_internal_drop)
-                            .drag_over::<DraggedFolder>(|style, _, _, _| {
-                                style.border_color(rgb(0x3b82f6))
-                            })
-                            .child(list_content),
-                    )
-                    // Status bar
-                    .child(status_bar),
+                    .w_full()
+                    .overflow_hidden()
+                    .p_2()
+                    // Handle drops on the list container
+                    .on_drop(on_internal_drop)
+                    .drag_over::<DraggedFolder>(|style, _, _, _| {
+                        style.bg(rgb(0x3d3d3d))
+                    })
+                    .child(list_content),
             )
+            // Status bar at bottom
+            .child(status_bar)
     }
 }
 
 impl FolderList {
     /// Render the status bar with folder count, total size, and action button
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let folder_count = self.folders.len();
         let total_files = self.total_files();
         let total_size = self.total_size();
@@ -285,25 +282,34 @@ impl FolderList {
             )
         };
         let has_folders = folder_count > 0;
+        let success_color = theme.success;
+        let success_hover = theme.success_hover;
+        let text_muted = theme.text_muted;
+        let bg = theme.bg;
 
         div()
-            .h_8()
+            .h_12()
+            .px_4()
             .flex()
             .items_center()
             .justify_between()
+            .bg(bg)
+            .border_t_1()
+            .border_color(theme.border)
             .text_sm()
-            .text_color(rgb(0x64748b))
+            .text_color(text_muted)
             .child(status_text)
             .child(
                 div()
                     .id(SharedString::from("convert-burn-btn"))
-                    .px_3()
-                    .py_1()
-                    .bg(if has_folders { rgb(0x3b82f6) } else { rgb(0x94a3b8) })
+                    .px_4()
+                    .py_2()
+                    .bg(if has_folders { success_color } else { text_muted })
                     .text_color(gpui::white())
                     .rounded_md()
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .when(has_folders, |el| {
-                        el.cursor_pointer().hover(|s| s.bg(rgb(0x2563eb)))
+                        el.cursor_pointer().hover(|s| s.bg(success_hover))
                     })
                     .on_click(cx.listener(move |_this, _event, _window, _cx| {
                         if has_folders {
