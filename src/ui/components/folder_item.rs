@@ -122,6 +122,7 @@ pub fn render_folder_item<V: 'static>(
         .id(SharedString::from(format!("folder-{}", index)))
         .w_full()
         .h_16() // Taller to fit album art
+        .flex_shrink_0() // Prevent shrinking when in scrollable container
         .flex()
         .items_center()
         .gap_3()

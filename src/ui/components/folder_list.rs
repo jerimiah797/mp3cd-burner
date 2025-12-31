@@ -5,7 +5,7 @@
 //! - Folder list with drag-and-drop
 //! - Status bar
 
-use gpui::{div, prelude::*, rgb, Context, ExternalPaths, IntoElement, Render, SharedString, Window};
+use gpui::{div, prelude::*, rgb, Context, ExternalPaths, IntoElement, Render, ScrollHandle, SharedString, Window};
 use std::path::PathBuf;
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
@@ -26,6 +26,8 @@ pub struct FolderList {
     drop_target_index: Option<usize>,
     /// Whether we've subscribed to appearance changes
     appearance_subscription_set: bool,
+    /// Handle for scroll state
+    scroll_handle: ScrollHandle,
 }
 
 impl FolderList {
@@ -34,6 +36,7 @@ impl FolderList {
             folders: Vec::new(),
             drop_target_index: None,
             appearance_subscription_set: false,
+            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -160,7 +163,7 @@ impl FolderList {
     /// Render the populated folder list
     fn render_folder_items(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let drop_target = self.drop_target_index;
-        let mut list = div().size_full().flex().flex_col().gap_1();
+        let mut list = div().w_full().flex().flex_col().gap_1();
 
         for (index, folder) in self.folders.iter().enumerate() {
             let props = FolderItemProps {
@@ -243,13 +246,16 @@ impl Render for FolderList {
             .drag_over::<ExternalPaths>(|style, _, _, _| {
                 style.bg(rgb(0x3d3d3d))
             })
-            // Main content area - folder list
+            // Main content area - folder list (scrollable)
             .child(
                 div()
+                    .id("folder-list-scroll")
                     .flex_1()
                     .w_full()
-                    .overflow_hidden()
-                    .p_2()
+                    .overflow_scroll()
+                    .track_scroll(&self.scroll_handle)
+                    .px_4() // Horizontal padding for breathing room
+                    .py_2() // Vertical padding
                     // Handle drops on the list container
                     .on_drop(on_internal_drop)
                     .drag_over::<DraggedFolder>(|style, _, _, _| {
