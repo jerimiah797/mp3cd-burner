@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::audio::determine_encoding_strategy;
 use crate::conversion::{
-    ensure_output_dir, verify_ffmpeg, convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
+    ensure_output_dir, verify_ffmpeg, convert_files_parallel_with_callback,
+    optimize_bitrate, ConversionJob, ConversionProgress,
 };
 use crate::core::{format_duration, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
@@ -725,24 +726,21 @@ impl FolderList {
             }
         };
 
-        // Calculate target bitrate
-        let bitrate = self.calculated_bitrate();
-        println!("Target bitrate: {} kbps", bitrate);
+        // Calculate initial target bitrate
+        let initial_bitrate = self.calculated_bitrate();
+        println!("Initial calculated bitrate: {} kbps", initial_bitrate);
 
-        // Build list of conversion jobs
-        let mut jobs: Vec<ConversionJob> = Vec::new();
+        // First pass: collect all audio files for optimization
+        let mut all_audio_files = Vec::new();
+        let mut folder_info: Vec<(usize, String, std::path::PathBuf)> = Vec::new();
 
         for (folder_idx, folder) in self.folders.iter().enumerate() {
-            // Create numbered album folder (01-AlbumName, 02-AlbumName, etc.)
             let folder_name = folder.path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("Unknown");
             let album_dir_name = format!("{:02}-{}", folder_idx + 1, folder_name);
             let album_output_dir = output_dir.join(&album_dir_name);
 
-            println!("Preparing folder: {} -> {}", folder.path.display(), album_dir_name);
-
-            // Get all audio files in this folder
             let audio_files = match get_audio_files(&folder.path) {
                 Ok(files) => files,
                 Err(e) => {
@@ -751,30 +749,54 @@ impl FolderList {
                 }
             };
 
-            // Create a job for each file with appropriate encoding strategy
             for audio_file in audio_files {
-                let file_stem = audio_file.path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("output");
-                let output_path = album_output_dir.join(format!("{}.mp3", file_stem));
-
-                // Determine the best encoding strategy for this file
-                let strategy = determine_encoding_strategy(
-                    &audio_file.codec,
-                    audio_file.bitrate,
-                    bitrate,           // target bitrate
-                    audio_file.is_lossy,
-                    false,             // no_lossy_mode - normal mode for size optimization
-                    false,             // embed_album_art - false for CD burning
-                );
-
-                jobs.push(ConversionJob {
-                    input_path: audio_file.path,
-                    output_path,
-                    strategy,
-                });
+                folder_info.push((all_audio_files.len(), album_dir_name.clone(), album_output_dir.clone()));
+                all_audio_files.push(audio_file);
             }
+        }
+
+        if all_audio_files.is_empty() {
+            println!("No audio files to convert");
+            return;
+        }
+
+        // Optimize bitrate based on all files
+        let (optimized_bitrate, estimate) = optimize_bitrate(&all_audio_files, initial_bitrate);
+        println!(
+            "Optimized bitrate: {} kbps (copy: {}, transcode: {}, headroom: {:.1} MB)",
+            optimized_bitrate,
+            estimate.copy_count,
+            estimate.transcode_count,
+            estimate.headroom_mb()
+        );
+
+        // Second pass: build jobs with optimized bitrate
+        let mut jobs: Vec<ConversionJob> = Vec::new();
+
+        for (idx, audio_file) in all_audio_files.into_iter().enumerate() {
+            let (_, _, ref album_output_dir) = folder_info[idx];
+
+            let file_stem = audio_file.path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            let output_path = album_output_dir.join(format!("{}.mp3", file_stem));
+
+            // Determine the best encoding strategy for this file at optimized bitrate
+            let strategy = determine_encoding_strategy(
+                &audio_file.codec,
+                audio_file.bitrate,
+                optimized_bitrate, // use optimized bitrate
+                audio_file.is_lossy,
+                false,             // no_lossy_mode
+                false,             // embed_album_art
+            );
+
+            jobs.push(ConversionJob {
+                input_path: audio_file.path,
+                output_path,
+                strategy,
+            });
         }
 
         let total_jobs = jobs.len();
