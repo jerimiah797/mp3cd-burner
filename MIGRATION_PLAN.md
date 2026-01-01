@@ -70,11 +70,11 @@ src/
 - [x] Folder scanning (scan_music_folder, get_audio_files) - 7 tests
 - [x] MusicFolder and AudioFileInfo types
 - [x] UI integration (folders scanned on drop, show file count & size)
-- [ ] Bitrate calculation (the smart encoding logic from main.ts)
+- [x] Bitrate calculation (smart encoding logic) - 11 tests
 - [ ] Progress tracking during conversion
 - [ ] Process management (ChildProcesses, CancellationFlag)
 
-**Total: 44 tests passing**
+**Total: 55 tests passing**
 
 ### Phase 5: Conversion Pipeline
 - [ ] FFmpeg integration (spawn processes, track progress)
@@ -124,11 +124,12 @@ These modules had **no Tauri dependencies** and were copied as-is:
 
 ## What Still Needs Work
 
-1. **Folder scanning** - Need to port scan_music_folder logic
-2. **FFmpeg conversion** - The main convert_files_background logic from lib.rs
-3. **Menu actions** - Wire File/Options menus to actual functionality
-4. **File dialogs** - Use GPUI's cx.prompt_for_paths() for Open/Save
-5. **Progress UI** - Show conversion/burn progress in the UI
+1. ~~**Folder scanning** - Need to port scan_music_folder logic~~ ✅ DONE
+2. ~~**Bitrate calculation** - Smart encoding logic~~ ✅ DONE
+3. **FFmpeg conversion** - The main convert_files_background logic from lib.rs
+4. **Menu actions** - Wire File/Options menus to actual functionality
+5. **File dialogs** - Use GPUI's cx.prompt_for_paths() for Open/Save
+6. **Progress UI** - Show conversion/burn progress in the UI
 
 ## Key Architectural Differences
 

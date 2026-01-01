@@ -17,7 +17,7 @@ use gpui::{
 use ui::components::FolderList;
 
 // Define actions for menu items
-actions!(app, [Quit, About]);
+actions!(app, [Quit, About, OpenOutputDir]);
 
 fn main() {
     Application::new().run(|cx: &mut App| {
@@ -25,6 +25,16 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &About, _cx| {
             println!("MP3 CD Burner v0.1.0 - Built with GPUI");
+        });
+        cx.on_action(|_: &OpenOutputDir, _cx| {
+            let output_dir = conversion::get_output_dir();
+            if output_dir.exists() {
+                let _ = std::process::Command::new("open")
+                    .arg(&output_dir)
+                    .spawn();
+            } else {
+                println!("Output directory does not exist yet: {:?}", output_dir);
+            }
         });
 
         // Bind keyboard shortcuts
@@ -56,6 +66,8 @@ fn main() {
                     MenuItem::action("Simulate Burn", About), // TODO: Implement toggle
                     MenuItem::action("No Lossy Conversions", About), // TODO: Implement toggle
                     MenuItem::action("Embed Album Art", About), // TODO: Implement toggle
+                    MenuItem::separator(),
+                    MenuItem::action("Open Output Folder", OpenOutputDir),
                 ],
             },
         ]);
