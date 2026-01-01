@@ -9,7 +9,7 @@ use gpui::{div, prelude::*, rgb, Context, ExternalPaths, IntoElement, Render, Sc
 use std::path::PathBuf;
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
-use crate::core::{format_size, scan_music_folder, MusicFolder};
+use crate::core::{format_duration, format_size, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
 
 /// The main folder list view
@@ -145,6 +145,28 @@ impl FolderList {
         self.folders.iter().map(|f| f.total_size).sum()
     }
 
+    /// Calculate total duration across all folders (in seconds)
+    pub fn total_duration(&self) -> f64 {
+        self.folders.iter().map(|f| f.total_duration).sum()
+    }
+
+    /// Calculate the optimal bitrate to fit on a 700MB CD
+    /// Returns bitrate in kbps
+    pub fn calculated_bitrate(&self) -> u32 {
+        let duration = self.total_duration();
+        if duration <= 0.0 {
+            return 320; // Default to max if no duration
+        }
+
+        // Target size: 700MB with 80% overhead compensation
+        let target_bytes = 700.0 * 1024.0 * 1024.0 * 0.80;
+        // bitrate = (bytes * 8) / (seconds * 1000)
+        let bitrate = (target_bytes * 8.0) / (duration * 1000.0);
+
+        // Clamp between 64 and 320 kbps
+        (bitrate as u32).clamp(64, 320)
+    }
+
     /// Render the empty state drop zone
     fn render_empty_state(&self, theme: &Theme) -> impl IntoElement {
         div()
@@ -269,32 +291,25 @@ impl Render for FolderList {
 }
 
 impl FolderList {
-    /// Render the status bar with folder count, total size, and action button
+    /// Render the status bar with detailed stats and action button
     fn render_status_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let folder_count = self.folders.len();
         let total_files = self.total_files();
         let total_size = self.total_size();
+        let total_duration = self.total_duration();
+        let bitrate = self.calculated_bitrate();
+        let has_folders = !self.folders.is_empty();
 
-        let status_text = if folder_count == 0 {
-            "No folders".to_string()
-        } else {
-            format!(
-                "{} folder{}, {} file{}, {}",
-                folder_count,
-                if folder_count == 1 { "" } else { "s" },
-                total_files,
-                if total_files == 1 { "" } else { "s" },
-                format_size(total_size)
-            )
-        };
-        let has_folders = folder_count > 0;
         let success_color = theme.success;
         let success_hover = theme.success_hover;
         let text_muted = theme.text_muted;
+        let text_color = theme.text;
         let bg = theme.bg;
 
+        // Format size in MB
+        let size_mb = total_size as f64 / (1024.0 * 1024.0);
+
         div()
-            .h_12()
+            .py_2()
             .px_4()
             .flex()
             .items_center()
@@ -303,17 +318,98 @@ impl FolderList {
             .border_t_1()
             .border_color(theme.border)
             .text_sm()
-            .text_color(text_muted)
-            .child(status_text)
+            // Left side: stats in rows
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_color(text_muted)
+                    // Row 1: Files and Duration
+                    .child(
+                        div()
+                            .flex()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_1()
+                                    .child("Files:")
+                                    .child(
+                                        div()
+                                            .text_color(text_color)
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(format!("{}", total_files)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_1()
+                                    .child("Duration:")
+                                    .child(
+                                        div()
+                                            .text_color(text_color)
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(format_duration(total_duration)),
+                                    ),
+                            ),
+                    )
+                    // Row 2: Size and Target
+                    .child(
+                        div()
+                            .flex()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_1()
+                                    .child("Size:")
+                                    .child(
+                                        div()
+                                            .text_color(text_color)
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(format!("{:.2} MB", size_mb)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_1()
+                                    .child("Target:")
+                                    .child(
+                                        div()
+                                            .text_color(text_color)
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child("700 MB"),
+                                    ),
+                            ),
+                    )
+                    // Row 3: Bitrate (in accent/success color)
+                    .child(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .child("Bitrate:")
+                            .child(
+                                div()
+                                    .text_color(success_color)
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child(format!("{} kbps", bitrate)),
+                            ),
+                    ),
+            )
+            // Right side: Convert & Burn button
             .child(
                 div()
                     .id(SharedString::from("convert-burn-btn"))
-                    .px_4()
-                    .py_2()
+                    .px_6()
+                    .py_3()
                     .bg(if has_folders { success_color } else { text_muted })
                     .text_color(gpui::white())
                     .rounded_md()
                     .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_center()
                     .when(has_folders, |el| {
                         el.cursor_pointer().hover(|s| s.bg(success_hover))
                     })
@@ -323,7 +419,7 @@ impl FolderList {
                             // TODO: Implement conversion
                         }
                     }))
-                    .child("Convert & Burn"),
+                    .child("Convert\n& Burn"),
             )
     }
 }
@@ -339,6 +435,7 @@ mod tests {
             path: PathBuf::from(path),
             file_count: 10,
             total_size: 50_000_000,
+            total_duration: 2400.0, // 40 minutes
             album_art: None,
         }
     }

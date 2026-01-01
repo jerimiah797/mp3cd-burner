@@ -16,6 +16,7 @@ pub struct MusicFolder {
     pub path: PathBuf,
     pub file_count: u32,
     pub total_size: u64,
+    pub total_duration: f64,
     pub album_art: Option<String>,
 }
 
@@ -32,7 +33,7 @@ pub struct AudioFileInfo {
 
 /// Scan a music folder and get basic metadata
 ///
-/// Returns a MusicFolder with file count, total size, and optional album art.
+/// Returns a MusicFolder with file count, total size, duration, and optional album art.
 pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
     if !path.is_dir() {
         return Err(format!("Path is not a directory: {}", path.display()));
@@ -40,6 +41,7 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
 
     let mut file_count = 0u32;
     let mut total_size = 0u64;
+    let mut total_duration = 0.0f64;
     let mut album_art: Option<String> = None;
 
     for entry in WalkDir::new(path)
@@ -53,6 +55,11 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
                 file_count += 1;
                 total_size += metadata.len();
 
+                // Get audio duration
+                if let Ok((duration, _, _, _)) = get_audio_metadata(file_path) {
+                    total_duration += duration;
+                }
+
                 // Extract album art from the first audio file
                 if album_art.is_none() {
                     album_art = get_album_art(file_path);
@@ -65,6 +72,7 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
         path: path.to_path_buf(),
         file_count,
         total_size,
+        total_duration,
         album_art,
     })
 }
