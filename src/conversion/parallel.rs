@@ -119,9 +119,8 @@ async fn convert_file_async(
 
             handle_ffmpeg_result(result, input_path, output_path)
         }
-        EncodingStrategy::ConvertAtSourceBitrate(bitrate)
-        | EncodingStrategy::ConvertAtTargetBitrate(bitrate) => {
-            // Transcode to MP3 at specified bitrate
+        EncodingStrategy::ConvertAtSourceBitrate(bitrate) => {
+            // Transcode lossy source to MP3 at specified bitrate (ABR mode)
             let bitrate_str = format!("{}k", bitrate);
 
             let result = Command::new(ffmpeg_path)
@@ -130,6 +129,27 @@ async fn convert_file_async(
                 .arg("-vn")           // Skip video/album art for CD burning
                 .arg("-codec:a")
                 .arg("libmp3lame")
+                .arg("-b:a")
+                .arg(&bitrate_str)
+                .arg("-y")
+                .arg(output_path)
+                .output()
+                .await;
+
+            handle_ffmpeg_result(result, input_path, output_path)
+        }
+        EncodingStrategy::ConvertAtTargetBitrate(bitrate) => {
+            // Transcode lossless to MP3 at specified bitrate (CBR mode for predictable size)
+            let bitrate_str = format!("{}k", bitrate);
+
+            let result = Command::new(ffmpeg_path)
+                .arg("-i")
+                .arg(input_path)
+                .arg("-vn")           // Skip video/album art for CD burning
+                .arg("-codec:a")
+                .arg("libmp3lame")
+                .arg("-abr")
+                .arg("0")             // Force CBR mode for predictable file size
                 .arg("-b:a")
                 .arg(&bitrate_str)
                 .arg("-y")

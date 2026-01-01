@@ -65,13 +65,14 @@ pub fn determine_encoding_strategy(
             } else {
                 EncodingStrategy::CopyWithoutArt
             }
-        } else if is_lossy && codec != "mp3" {
-            // Lossy non-MP3 format (AAC, OGG, OPUS, etc.)
+        } else if is_lossy {
+            // Lossy formats (AAC, OGG, OPUS, and high-bitrate MP3s)
             // Use smart bitrate: min(source, target) to avoid upsampling lossy audio
+            // This also handles MP3s above the copy threshold - transcode down instead of up
             let smart_bitrate = source_bitrate.min(target_bitrate);
             EncodingStrategy::ConvertAtSourceBitrate(smart_bitrate)
         } else {
-            // Lossless formats or high-bitrate MP3 - convert at target bitrate
+            // Lossless formats (FLAC, WAV, ALAC, etc.) - convert at target bitrate
             EncodingStrategy::ConvertAtTargetBitrate(target_bitrate)
         }
     }
@@ -215,7 +216,8 @@ mod tests {
 
     #[test]
     fn test_normal_mode_mp3_above_target() {
-        // MP3 at 320kbps, target 256kbps - convert down to target
+        // MP3 at 320kbps, target 256kbps - transcode down using smart bitrate
+        // High-bitrate MP3s are treated like other lossy formats to use min(source, target)
         let strategy = determine_encoding_strategy(
             "mp3",
             320,
@@ -224,7 +226,7 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(strategy, EncodingStrategy::ConvertAtTargetBitrate(256));
+        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(256));
     }
 
     #[test]
@@ -317,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_very_high_bitrate_mp3() {
-        // Very high quality MP3 - should convert down
+        // Very high quality MP3 - should transcode down using smart bitrate
         let strategy = determine_encoding_strategy(
             "mp3",
             320,
@@ -326,7 +328,7 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(strategy, EncodingStrategy::ConvertAtTargetBitrate(192));
+        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(192));
     }
 
     #[test]
@@ -362,6 +364,7 @@ mod tests {
     #[test]
     fn test_mp3_above_copy_threshold() {
         // MP3 at 180kbps, target 151kbps - above 20kbps threshold, should transcode
+        // Uses smart bitrate (min of source and target) like other lossy formats
         let strategy = determine_encoding_strategy(
             "mp3",
             180,  // 180 > 151 + 20 = 171, so above threshold
@@ -370,6 +373,6 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(strategy, EncodingStrategy::ConvertAtTargetBitrate(151));
+        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(151));
     }
 }

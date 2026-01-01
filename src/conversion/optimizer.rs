@@ -2,6 +2,11 @@
 //!
 //! Estimates output size without running ffmpeg, then iteratively
 //! adjusts target bitrate to maximize quality while staying under CD capacity.
+//!
+//! Note: This module is kept for reference but the multi-pass approach in
+//! folder_list.rs provides better accuracy by measuring actual output sizes.
+
+#![allow(dead_code)]
 
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::core::AudioFileInfo;

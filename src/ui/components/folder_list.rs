@@ -11,13 +11,24 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
-use crate::audio::determine_encoding_strategy;
+use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::conversion::{
     ensure_output_dir, verify_ffmpeg, convert_files_parallel_with_callback,
-    optimize_bitrate, ConversionJob, ConversionProgress,
+    ConversionJob, ConversionProgress,
 };
 use crate::core::{format_duration, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
+
+/// Calculate total size of files in a directory (recursive)
+fn calculate_directory_size(path: &std::path::Path) -> u64 {
+    walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
 
 /// The main folder list view
 ///
@@ -760,18 +771,15 @@ impl FolderList {
             return;
         }
 
-        // Optimize bitrate based on all files
-        let (optimized_bitrate, estimate) = optimize_bitrate(&all_audio_files, initial_bitrate);
-        println!(
-            "Optimized bitrate: {} kbps (copy: {}, transcode: {}, headroom: {:.1} MB)",
-            optimized_bitrate,
-            estimate.copy_count,
-            estimate.transcode_count,
-            estimate.headroom_mb()
-        );
+        // Multi-pass approach: partition files by encoding strategy
+        // - Pass 1: Copy/strip MP3s (exact size known after)
+        // - Pass 2: Transcode lossy at source bitrate (size known after)
+        // - Pass 3: Transcode lossless at calculated bitrate (fills remaining space)
 
-        // Second pass: build jobs with optimized bitrate
-        let mut jobs: Vec<ConversionJob> = Vec::new();
+        let mut copy_jobs: Vec<ConversionJob> = Vec::new();
+        let mut lossy_jobs: Vec<ConversionJob> = Vec::new();
+        // For lossless, we store path info and duration - bitrate calculated after passes 1+2
+        let mut lossless_info: Vec<(PathBuf, PathBuf, f64)> = Vec::new(); // (input, output, duration)
 
         for (idx, audio_file) in all_audio_files.into_iter().enumerate() {
             let (_, _, ref album_output_dir) = folder_info[idx];
@@ -782,34 +790,57 @@ impl FolderList {
                 .unwrap_or("output");
             let output_path = album_output_dir.join(format!("{}.mp3", file_stem));
 
-            // Determine the best encoding strategy for this file at optimized bitrate
+            // Determine strategy using initial bitrate (just for categorization)
             let strategy = determine_encoding_strategy(
                 &audio_file.codec,
                 audio_file.bitrate,
-                optimized_bitrate, // use optimized bitrate
+                initial_bitrate,
                 audio_file.is_lossy,
-                false,             // no_lossy_mode
-                false,             // embed_album_art
+                false,
+                false,
             );
 
-            jobs.push(ConversionJob {
-                input_path: audio_file.path,
-                output_path,
-                strategy,
-            });
+            match &strategy {
+                EncodingStrategy::Copy | EncodingStrategy::CopyWithoutArt => {
+                    copy_jobs.push(ConversionJob {
+                        input_path: audio_file.path,
+                        output_path,
+                        strategy,
+                    });
+                }
+                EncodingStrategy::ConvertAtSourceBitrate(_) => {
+                    lossy_jobs.push(ConversionJob {
+                        input_path: audio_file.path,
+                        output_path,
+                        strategy,
+                    });
+                }
+                EncodingStrategy::ConvertAtTargetBitrate(_) => {
+                    // Store for later - bitrate will be calculated after passes 1+2
+                    lossless_info.push((audio_file.path, output_path, audio_file.duration));
+                }
+            }
         }
 
-        let total_jobs = jobs.len();
+        let total_jobs = copy_jobs.len() + lossy_jobs.len() + lossless_info.len();
         if total_jobs == 0 {
             println!("No files to convert");
             return;
         }
+
+        println!(
+            "Multi-pass conversion: {} copy, {} lossy transcode, {} lossless (bitrate TBD)",
+            copy_jobs.len(),
+            lossy_jobs.len(),
+            lossless_info.len()
+        );
 
         // Reset conversion state
         self.conversion_state.reset(total_jobs);
 
         // Clone state for the background thread
         let state = self.conversion_state.clone();
+        let output_dir_clone = output_dir.clone();
 
         // Spawn background thread with tokio runtime
         std::thread::spawn(move || {
@@ -817,33 +848,140 @@ impl FolderList {
 
             rt.block_on(async {
                 let progress = Arc::new(ConversionProgress::new(total_jobs));
-                let progress_for_callback = progress.clone();
-                let state_for_callback = state.clone();
+                let mut total_completed = 0usize;
+                let mut total_failed = 0usize;
 
-                // Use callback version to sync progress to ConversionState after each file
-                let (completed, failed) = convert_files_parallel_with_callback(
-                    ffmpeg_path,
-                    jobs,
-                    progress,
-                    move || {
-                        // Sync atomics from ConversionProgress to ConversionState
-                        let completed = progress_for_callback.completed_count();
-                        let failed = progress_for_callback.failed_count();
-                        state_for_callback.completed.store(completed, Ordering::SeqCst);
-                        state_for_callback.failed.store(failed, Ordering::SeqCst);
-                    },
-                ).await;
+                // === PASS 1: Copy MP3s ===
+                if !copy_jobs.is_empty() {
+                    println!("\n=== Pass 1: Copying {} MP3 files ===", copy_jobs.len());
+                    let progress_for_callback = progress.clone();
+                    let state_for_callback = state.clone();
 
-                println!("Conversion complete: {} converted, {} failed", completed, failed);
+                    let (completed, failed) = convert_files_parallel_with_callback(
+                        ffmpeg_path.clone(),
+                        copy_jobs,
+                        progress.clone(),
+                        move || {
+                            let completed = progress_for_callback.completed_count();
+                            let failed = progress_for_callback.failed_count();
+                            state_for_callback.completed.store(completed, Ordering::SeqCst);
+                            state_for_callback.failed.store(failed, Ordering::SeqCst);
+                        },
+                    ).await;
+
+                    total_completed += completed;
+                    total_failed += failed;
+                    println!("Pass 1 complete: {} copied, {} failed", completed, failed);
+                }
+
+                // === PASS 2: Transcode lossy files ===
+                if !lossy_jobs.is_empty() {
+                    println!("\n=== Pass 2: Transcoding {} lossy files ===", lossy_jobs.len());
+                    let progress_for_callback = progress.clone();
+                    let state_for_callback = state.clone();
+
+                    let (completed, failed) = convert_files_parallel_with_callback(
+                        ffmpeg_path.clone(),
+                        lossy_jobs,
+                        progress.clone(),
+                        move || {
+                            let completed = progress_for_callback.completed_count();
+                            let failed = progress_for_callback.failed_count();
+                            state_for_callback.completed.store(completed, Ordering::SeqCst);
+                            state_for_callback.failed.store(failed, Ordering::SeqCst);
+                        },
+                    ).await;
+
+                    total_completed += completed;
+                    total_failed += failed;
+                    println!("Pass 2 complete: {} transcoded, {} failed", completed, failed);
+                }
+
+                // === Calculate remaining space for lossless ===
+                if !lossless_info.is_empty() {
+                    // Measure actual output size after passes 1+2
+                    let current_size = calculate_directory_size(&output_dir_clone);
+                    let cd_capacity: u64 = 685 * 1024 * 1024;
+                    let remaining_space = cd_capacity.saturating_sub(current_size);
+
+                    // Calculate total lossless duration
+                    let total_lossless_duration: f64 = lossless_info.iter().map(|(_, _, d)| d).sum();
+
+                    // Calculate optimal bitrate: remaining_bytes * 8 / duration / 1000 = kbps
+                    // Using CBR mode for lossless, so output size is predictable
+                    // Subtract 2kbps for MP3 header/framing overhead
+                    let optimal_bitrate = if total_lossless_duration > 0.0 {
+                        let raw_bitrate = remaining_space as f64 * 8.0 / total_lossless_duration / 1000.0;
+                        let adjusted_bitrate = (raw_bitrate - 2.0) as u32; // small margin for overhead
+                        adjusted_bitrate.clamp(64, 320)
+                    } else {
+                        256 // fallback
+                    };
+
+                    println!(
+                        "\n=== Pass 3: Transcoding {} lossless files ===",
+                        lossless_info.len()
+                    );
+                    println!(
+                        "Current output: {:.1} MB, Remaining: {:.1} MB, Lossless duration: {:.0}s",
+                        current_size as f64 / 1024.0 / 1024.0,
+                        remaining_space as f64 / 1024.0 / 1024.0,
+                        total_lossless_duration
+                    );
+                    println!("Calculated optimal bitrate: {} kbps", optimal_bitrate);
+
+                    // Build lossless jobs with calculated bitrate
+                    let lossless_jobs: Vec<ConversionJob> = lossless_info
+                        .into_iter()
+                        .map(|(input_path, output_path, _)| ConversionJob {
+                            input_path,
+                            output_path,
+                            strategy: EncodingStrategy::ConvertAtTargetBitrate(optimal_bitrate),
+                        })
+                        .collect();
+
+                    let progress_for_callback = progress.clone();
+                    let state_for_callback = state.clone();
+
+                    let (completed, failed) = convert_files_parallel_with_callback(
+                        ffmpeg_path,
+                        lossless_jobs,
+                        progress.clone(),
+                        move || {
+                            let completed = progress_for_callback.completed_count();
+                            let failed = progress_for_callback.failed_count();
+                            state_for_callback.completed.store(completed, Ordering::SeqCst);
+                            state_for_callback.failed.store(failed, Ordering::SeqCst);
+                        },
+                    ).await;
+
+                    total_completed += completed;
+                    total_failed += failed;
+                    println!("Pass 3 complete: {} transcoded, {} failed", completed, failed);
+                }
+
+                // Final output size
+                let final_size = calculate_directory_size(&output_dir_clone);
+                let utilization = final_size as f64 / (685.0 * 1024.0 * 1024.0) * 100.0;
+                println!(
+                    "\nConversion complete: {} converted, {} failed",
+                    total_completed, total_failed
+                );
+                println!(
+                    "Final output: {:.1} MB ({:.1}% of CD capacity)",
+                    final_size as f64 / 1024.0 / 1024.0,
+                    utilization
+                );
+
                 state.finish();
             });
         });
 
-        // Start polling for progress updates - pass state directly to avoid reading entity
+        // Start polling for progress updates
         Self::start_progress_polling(self.conversion_state.clone(), cx);
 
-        println!("Conversion started in background ({} files)", total_jobs);
-        cx.notify(); // Initial notification to show 0/N
+        println!("Multi-pass conversion started ({} files)", total_jobs);
+        cx.notify();
     }
 
     /// Start a polling loop that updates the UI periodically during conversion

@@ -146,9 +146,11 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
     // Detect codec from Symphonia's codec type or fall back to file extension
     let codec_str = format!("{:?}", track.codec_params.codec);
     println!("File: {:?}, Codec string: {}", path.file_name(), codec_str);
-    let codec = if codec_str.contains("MP3") || codec_str.contains("Mp3") {
+    let codec = if codec_str.contains("MP3") || codec_str.contains("Mp3") || codec_str.contains("4099") {
+        // CodecType(4099) is MP3
         "mp3".to_string()
-    } else if codec_str.contains("FLAC") || codec_str.contains("Flac") {
+    } else if codec_str.contains("FLAC") || codec_str.contains("Flac") || codec_str.contains("8192") {
+        // CodecType(8192) is FLAC
         "flac".to_string()
     } else if codec_str.contains("AAC") || codec_str.contains("Aac") || codec_str.contains("4100") {
         // CodecType(4100) is AAC
