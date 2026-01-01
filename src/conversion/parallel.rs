@@ -216,6 +216,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn test_calculate_worker_count() {
@@ -235,5 +236,120 @@ mod tests {
 
         assert_eq!(progress.completed_count(), 2);
         assert_eq!(progress.failed_count(), 1);
+    }
+
+    #[test]
+    fn test_conversion_progress_increment_returns_new_count() {
+        let progress = ConversionProgress::new(5);
+
+        assert_eq!(progress.increment_completed(), 1);
+        assert_eq!(progress.increment_completed(), 2);
+        assert_eq!(progress.increment_failed(), 1);
+        assert_eq!(progress.increment_failed(), 2);
+    }
+
+    #[test]
+    fn test_conversion_job_creation() {
+        let job = ConversionJob {
+            input_path: PathBuf::from("/input/song.flac"),
+            output_path: PathBuf::from("/output/song.mp3"),
+        };
+
+        assert_eq!(job.input_path, PathBuf::from("/input/song.flac"));
+        assert_eq!(job.output_path, PathBuf::from("/output/song.mp3"));
+    }
+
+    #[tokio::test]
+    async fn test_parallel_conversion_empty_jobs() {
+        let ffmpeg_path = PathBuf::from("/nonexistent/ffmpeg");
+        let jobs: Vec<ConversionJob> = vec![];
+        let progress = Arc::new(ConversionProgress::new(0));
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let callback_count_clone = callback_count.clone();
+
+        let (completed, failed) = convert_files_parallel_with_callback(
+            ffmpeg_path,
+            jobs,
+            320,
+            progress,
+            move || {
+                callback_count_clone.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+        assert_eq!(callback_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_conversion_callback_invoked_per_file() {
+        // Use a nonexistent ffmpeg - files will fail but callbacks should fire
+        let ffmpeg_path = PathBuf::from("/nonexistent/ffmpeg");
+        let jobs = vec![
+            ConversionJob {
+                input_path: PathBuf::from("/fake/1.flac"),
+                output_path: PathBuf::from("/tmp/1.mp3"),
+            },
+            ConversionJob {
+                input_path: PathBuf::from("/fake/2.flac"),
+                output_path: PathBuf::from("/tmp/2.mp3"),
+            },
+            ConversionJob {
+                input_path: PathBuf::from("/fake/3.flac"),
+                output_path: PathBuf::from("/tmp/3.mp3"),
+            },
+        ];
+        let progress = Arc::new(ConversionProgress::new(3));
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let callback_count_clone = callback_count.clone();
+
+        let (completed, failed) = convert_files_parallel_with_callback(
+            ffmpeg_path,
+            jobs,
+            320,
+            progress.clone(),
+            move || {
+                callback_count_clone.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        // All should fail (no ffmpeg), but callbacks should fire for each
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 3);
+        assert_eq!(callback_count.load(Ordering::SeqCst), 3);
+        assert_eq!(progress.failed_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_conversion_progress_tracking() {
+        let ffmpeg_path = PathBuf::from("/nonexistent/ffmpeg");
+        let jobs = vec![
+            ConversionJob {
+                input_path: PathBuf::from("/fake/a.flac"),
+                output_path: PathBuf::from("/tmp/a.mp3"),
+            },
+            ConversionJob {
+                input_path: PathBuf::from("/fake/b.flac"),
+                output_path: PathBuf::from("/tmp/b.mp3"),
+            },
+        ];
+        let progress = Arc::new(ConversionProgress::new(2));
+
+        let (completed, failed) = convert_files_parallel_with_callback(
+            ffmpeg_path,
+            jobs,
+            256,
+            progress.clone(),
+            || {},
+        )
+        .await;
+
+        // Verify progress struct matches return values
+        assert_eq!(progress.completed_count(), completed);
+        assert_eq!(progress.failed_count(), failed);
+        assert_eq!(progress.total, 2);
     }
 }

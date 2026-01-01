@@ -803,4 +803,99 @@ mod tests {
 
         assert_eq!(list.total_size(), 100_000_000);
     }
+
+    // ConversionState tests
+
+    #[test]
+    fn test_conversion_state_new() {
+        let state = ConversionState::new();
+
+        assert!(!state.is_converting());
+        let (completed, failed, total) = state.progress();
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_conversion_state_reset() {
+        let state = ConversionState::new();
+
+        state.reset(24);
+
+        assert!(state.is_converting());
+        let (completed, failed, total) = state.progress();
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+        assert_eq!(total, 24);
+    }
+
+    #[test]
+    fn test_conversion_state_finish() {
+        let state = ConversionState::new();
+        state.reset(10);
+        assert!(state.is_converting());
+
+        state.finish();
+
+        assert!(!state.is_converting());
+    }
+
+    #[test]
+    fn test_conversion_state_progress_updates() {
+        let state = ConversionState::new();
+        state.reset(5);
+
+        // Simulate completing some files
+        state.completed.fetch_add(1, Ordering::SeqCst);
+        state.completed.fetch_add(1, Ordering::SeqCst);
+        state.failed.fetch_add(1, Ordering::SeqCst);
+
+        let (completed, failed, total) = state.progress();
+        assert_eq!(completed, 2);
+        assert_eq!(failed, 1);
+        assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn test_conversion_state_clone_shares_atomics() {
+        let state1 = ConversionState::new();
+        state1.reset(10);
+
+        let state2 = state1.clone();
+
+        // Update via state1
+        state1.completed.fetch_add(5, Ordering::SeqCst);
+
+        // Should be visible via state2 (shared Arc)
+        let (completed, _, _) = state2.progress();
+        assert_eq!(completed, 5);
+    }
+
+    #[test]
+    fn test_conversion_state_thread_safety() {
+        use std::thread;
+
+        let state = ConversionState::new();
+        state.reset(100);
+
+        let mut handles = vec![];
+
+        // Spawn 10 threads, each incrementing completed 10 times
+        for _ in 0..10 {
+            let state_clone = state.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..10 {
+                    state_clone.completed.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let (completed, _, _) = state.progress();
+        assert_eq!(completed, 100);
+    }
 }
