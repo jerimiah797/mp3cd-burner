@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
@@ -140,8 +141,27 @@ pub async fn convert_files_parallel(
     bitrate: u32,
     progress: Arc<ConversionProgress>,
 ) -> (usize, usize) {
+    convert_files_parallel_with_callback(ffmpeg_path, jobs, bitrate, progress, || {}).await
+}
+
+/// Convert multiple files in parallel with a callback after each file completes
+///
+/// The `on_file_complete` callback is called on the tokio runtime thread
+/// after each file finishes (success or failure). This can be used to
+/// trigger UI updates.
+pub async fn convert_files_parallel_with_callback<F>(
+    ffmpeg_path: PathBuf,
+    jobs: Vec<ConversionJob>,
+    bitrate: u32,
+    progress: Arc<ConversionProgress>,
+    on_file_complete: F,
+) -> (usize, usize)
+where
+    F: Fn() + Send + Sync + 'static,
+{
     let worker_count = calculate_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
+    let on_complete = Arc::new(on_file_complete);
 
     println!(
         "Starting parallel conversion: {} files with {} workers",
@@ -149,12 +169,14 @@ pub async fn convert_files_parallel(
         worker_count
     );
 
-    let mut handles = Vec::with_capacity(jobs.len());
+    // Use FuturesUnordered to process completions as they happen
+    let mut futures = FuturesUnordered::new();
 
     for job in jobs {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let ffmpeg = ffmpeg_path.clone();
         let progress = progress.clone();
+        let on_complete = on_complete.clone();
 
         let handle = tokio::spawn(async move {
             let input_name = job.input_path.file_name()
@@ -185,16 +207,19 @@ pub async fn convert_files_parallel(
                 }
             }
 
+            // Call callback immediately when this file completes
+            on_complete();
+
             drop(permit); // Release the semaphore permit
             result
         });
 
-        handles.push(handle);
+        futures.push(handle);
     }
 
     // Wait for all tasks to complete
-    for handle in handles {
-        let _ = handle.await;
+    while let Some(_result) = futures.next().await {
+        // Tasks already called on_complete when they finished
     }
 
     (progress.completed_count(), progress.failed_count())

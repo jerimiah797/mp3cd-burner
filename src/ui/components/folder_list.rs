@@ -5,14 +5,14 @@
 //! - Folder list with drag-and-drop
 //! - Status bar
 
-use gpui::{div, prelude::*, rgb, Context, ExternalPaths, IntoElement, Render, ScrollHandle, SharedString, Window};
+use gpui::{div, prelude::*, rgb, AsyncApp, Context, ExternalPaths, IntoElement, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::conversion::{
-    ensure_output_dir, verify_ffmpeg, convert_files_parallel, ConversionJob, ConversionProgress,
+    ensure_output_dir, verify_ffmpeg, convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
 };
 use crate::core::{format_duration, format_size, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
@@ -454,32 +454,89 @@ impl FolderList {
                             ),
                     ),
             )
-            // Right side: Convert & Burn button
-            .child(
-                div()
-                    .id(SharedString::from("convert-burn-btn"))
-                    .px_6()
-                    .py_3()
-                    .bg(if has_folders { success_color } else { text_muted })
-                    .text_color(gpui::white())
-                    .rounded_md()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_center()
-                    .when(has_folders, |el| {
-                        el.cursor_pointer().hover(|s| s.bg(success_hover))
-                    })
-                    .on_click(cx.listener(move |this, _event, _window, _cx| {
-                        if has_folders {
-                            println!("Convert & Burn clicked!");
-                            this.run_conversion();
-                        }
-                    }))
-                    .child("Convert\n& Burn"),
-            )
+            // Right side: Convert & Burn button / Progress display
+            .child({
+                let is_converting = self.conversion_state.is_converting();
+                let (completed, failed, total) = self.conversion_state.progress();
+
+                if is_converting {
+                    // Show progress bar during conversion
+                    let progress_fraction = if total > 0 {
+                        (completed + failed) as f32 / total as f32
+                    } else {
+                        0.0
+                    };
+
+                    div()
+                        .id(SharedString::from("convert-progress"))
+                        .w(gpui::px(140.0))
+                        .h(gpui::px(70.0))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(success_color)
+                        .overflow_hidden()
+                        .relative()
+                        // Background progress fill
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .h_full()
+                                .w(gpui::relative(progress_fraction))
+                                .bg(success_color)
+                        )
+                        // Text overlay
+                        .child(
+                            div()
+                                .size_full()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .relative()
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .text_color(gpui::white())
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .child(format!("{}/{}", completed + failed, total))
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(gpui::white())
+                                        .child("Converting...")
+                                )
+                        )
+                } else {
+                    // Normal Convert & Burn button
+                    div()
+                        .id(SharedString::from("convert-burn-btn"))
+                        .px_8()
+                        .py_4()
+                        .bg(if has_folders { success_color } else { text_muted })
+                        .text_color(gpui::white())
+                        .text_lg()
+                        .rounded_md()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_center()
+                        .when(has_folders, |el| {
+                            el.cursor_pointer().hover(|s| s.bg(success_hover))
+                        })
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            if has_folders {
+                                println!("Convert & Burn clicked!");
+                                this.run_conversion(cx);
+                            }
+                        }))
+                        .child("Convert\n& Burn")
+                }
+            })
     }
 
     /// Run the conversion process for all folders (async, in background thread)
-    fn run_conversion(&mut self) {
+    fn run_conversion(&mut self, cx: &mut Context<Self>) {
         // Don't start if already converting
         if self.conversion_state.is_converting() {
             println!("Conversion already in progress");
@@ -571,12 +628,22 @@ impl FolderList {
 
             rt.block_on(async {
                 let progress = Arc::new(ConversionProgress::new(total_jobs));
+                let progress_for_callback = progress.clone();
+                let state_for_callback = state.clone();
 
-                let (completed, failed) = convert_files_parallel(
+                // Use callback version to sync progress to ConversionState after each file
+                let (completed, failed) = convert_files_parallel_with_callback(
                     ffmpeg_path,
                     jobs,
                     bitrate,
                     progress,
+                    move || {
+                        // Sync atomics from ConversionProgress to ConversionState
+                        let completed = progress_for_callback.completed_count();
+                        let failed = progress_for_callback.failed_count();
+                        state_for_callback.completed.store(completed, Ordering::SeqCst);
+                        state_for_callback.failed.store(failed, Ordering::SeqCst);
+                    },
                 ).await;
 
                 println!("Conversion complete: {} converted, {} failed", completed, failed);
@@ -584,7 +651,45 @@ impl FolderList {
             });
         });
 
+        // Start polling for progress updates - pass state directly to avoid reading entity
+        Self::start_progress_polling(self.conversion_state.clone(), cx);
+
         println!("Conversion started in background ({} files)", total_jobs);
+        cx.notify(); // Initial notification to show 0/N
+    }
+
+    /// Start a polling loop that updates the UI periodically during conversion
+    fn start_progress_polling(state: ConversionState, cx: &mut Context<Self>) {
+        // state is already cloned - no need to read entity
+
+        // Clone in sync part BEFORE the async block - key to avoiding lifetime issues
+        cx.spawn(|_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone(); // Clone here, in sync context
+            async move {
+                // Poll until conversion finishes
+                loop {
+                    // Clone BEFORE the await
+                    let cx_for_after_await = async_cx.clone();
+
+                    // Wait 50ms between UI updates for smooth progress
+                    Timer::after(std::time::Duration::from_millis(50)).await;
+
+                    // Check if we should continue
+                    if !state.is_converting() {
+                        break;
+                    }
+
+                    // Refresh all windows to show updated progress
+                    let _ = cx_for_after_await.refresh();
+
+                    // Use this clone for next iteration
+                    async_cx = cx_for_after_await;
+                }
+
+                // Final refresh to show completion state
+                let _ = async_cx.refresh();
+            }
+        }).detach();
     }
 }
 
