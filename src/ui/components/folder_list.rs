@@ -42,6 +42,8 @@ fn calculate_directory_size(path: &std::path::Path) -> u64 {
 pub struct ConversionState {
     /// Whether conversion is currently running
     pub is_converting: Arc<AtomicBool>,
+    /// Whether cancellation has been requested
+    pub cancel_requested: Arc<AtomicBool>,
     /// Number of files completed
     pub completed: Arc<AtomicUsize>,
     /// Number of files failed
@@ -54,6 +56,7 @@ impl ConversionState {
     pub fn new() -> Self {
         Self {
             is_converting: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
             completed: Arc::new(AtomicUsize::new(0)),
             failed: Arc::new(AtomicUsize::new(0)),
             total: Arc::new(AtomicUsize::new(0)),
@@ -62,6 +65,7 @@ impl ConversionState {
 
     pub fn reset(&self, total: usize) {
         self.is_converting.store(true, Ordering::SeqCst);
+        self.cancel_requested.store(false, Ordering::SeqCst);
         self.completed.store(0, Ordering::SeqCst);
         self.failed.store(0, Ordering::SeqCst);
         self.total.store(total, Ordering::SeqCst);
@@ -69,6 +73,16 @@ impl ConversionState {
 
     pub fn finish(&self) {
         self.is_converting.store(false, Ordering::SeqCst);
+    }
+
+    /// Request cancellation of the current conversion
+    pub fn request_cancel(&self) {
+        self.cancel_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// Check if cancellation has been requested
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_requested.load(Ordering::SeqCst)
     }
 
     pub fn is_converting(&self) -> bool {
@@ -662,54 +676,87 @@ impl FolderList {
                                 )
                         )
                 } else if is_converting {
-                    // Show progress bar during conversion
+                    // Show progress bar during conversion with cancel button
                     let progress_fraction = if total > 0 {
                         (completed + failed) as f32 / total as f32
                     } else {
                         0.0
                     };
 
+                    let is_cancelled = self.conversion_state.is_cancelled();
+                    let cancel_color = theme.danger;
+
                     div()
-                        .id(SharedString::from("convert-progress"))
-                        .w(gpui::px(140.0))
-                        .h(gpui::px(70.0))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(success_color)
-                        .overflow_hidden()
-                        .relative()
-                        // Background progress fill
+                        .id(SharedString::from("convert-progress-container"))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .items_center()
+                        // Progress display
                         .child(
                             div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .h_full()
-                                .w(gpui::relative(progress_fraction))
-                                .bg(success_color)
-                        )
-                        // Text overlay
-                        .child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .justify_center()
+                                .w(gpui::px(140.0))
+                                .h(gpui::px(50.0))
+                                .rounded_md()
+                                .border_1()
+                                .border_color(if is_cancelled { cancel_color } else { success_color })
+                                .overflow_hidden()
                                 .relative()
+                                // Background progress fill
                                 .child(
                                     div()
-                                        .text_lg()
-                                        .text_color(gpui::white())
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .child(format!("{}/{}", completed + failed, total))
+                                        .absolute()
+                                        .left_0()
+                                        .top_0()
+                                        .h_full()
+                                        .w(gpui::relative(progress_fraction))
+                                        .bg(if is_cancelled { cancel_color } else { success_color })
                                 )
+                                // Text overlay
                                 .child(
                                     div()
-                                        .text_sm()
-                                        .text_color(gpui::white())
-                                        .child("Converting...")
+                                        .size_full()
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .justify_center()
+                                        .relative()
+                                        .child(
+                                            div()
+                                                .text_lg()
+                                                .text_color(gpui::white())
+                                                .font_weight(gpui::FontWeight::BOLD)
+                                                .child(format!("{}/{}", completed + failed, total))
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(gpui::white())
+                                                .child(if is_cancelled { "Cancelling..." } else { "Converting..." })
+                                        )
                                 )
+                        )
+                        // Cancel button
+                        .child(
+                            div()
+                                .id(SharedString::from("cancel-btn"))
+                                .px_4()
+                                .py_1()
+                                .bg(if is_cancelled { text_muted } else { cancel_color })
+                                .text_color(gpui::white())
+                                .text_sm()
+                                .rounded_md()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_center()
+                                .when(!is_cancelled, |el| {
+                                    el.cursor_pointer()
+                                        .hover(|s| s.bg(gpui::rgb(0xdc2626))) // darker red on hover
+                                        .on_click(cx.listener(|this, _event, _window, _cx| {
+                                            println!("Cancel button clicked");
+                                            this.conversion_state.request_cancel();
+                                        }))
+                                })
+                                .child(if is_cancelled { "Cancelling" } else { "Cancel" })
                         )
                 } else {
                     // Normal Convert & Burn button
@@ -735,6 +782,22 @@ impl FolderList {
                         .child("Convert\n& Burn")
                 }
             })
+    }
+
+    /// Cancel any ongoing conversion
+    ///
+    /// This sets the cancellation flag which will stop new files from being processed.
+    /// Files that are currently being converted will finish, but no new files will start.
+    /// Returns true if there was a conversion to cancel.
+    #[allow(dead_code)]
+    pub fn cancel_conversion(&mut self) -> bool {
+        if self.conversion_state.is_converting() {
+            println!("Cancelling conversion...");
+            self.conversion_state.request_cancel();
+            true
+        } else {
+            false
+        }
     }
 
     /// Run the conversion process for all folders (async, in background thread)
@@ -874,6 +937,7 @@ impl FolderList {
 
         // Clone state for the background thread
         let state = self.conversion_state.clone();
+        let cancel_token = self.conversion_state.cancel_requested.clone();
         let output_dir_clone = output_dir.clone();
 
         // Spawn background thread with tokio runtime
@@ -884,17 +948,19 @@ impl FolderList {
                 let progress = Arc::new(ConversionProgress::new(total_jobs));
                 let mut total_completed = 0usize;
                 let mut total_failed = 0usize;
+                let mut was_cancelled = false;
 
                 // === PASS 1: Copy MP3s ===
-                if !copy_jobs.is_empty() {
+                if !copy_jobs.is_empty() && !was_cancelled {
                     println!("\n=== Pass 1: Copying {} MP3 files ===", copy_jobs.len());
                     let progress_for_callback = progress.clone();
                     let state_for_callback = state.clone();
 
-                    let (completed, failed) = convert_files_parallel_with_callback(
+                    let (completed, failed, cancelled) = convert_files_parallel_with_callback(
                         ffmpeg_path.clone(),
                         copy_jobs,
                         progress.clone(),
+                        cancel_token.clone(),
                         move || {
                             let completed = progress_for_callback.completed_count();
                             let failed = progress_for_callback.failed_count();
@@ -905,19 +971,21 @@ impl FolderList {
 
                     total_completed += completed;
                     total_failed += failed;
+                    was_cancelled = cancelled;
                     println!("Pass 1 complete: {} copied, {} failed", completed, failed);
                 }
 
                 // === PASS 2: Transcode lossy files ===
-                if !lossy_jobs.is_empty() {
+                if !lossy_jobs.is_empty() && !was_cancelled {
                     println!("\n=== Pass 2: Transcoding {} lossy files ===", lossy_jobs.len());
                     let progress_for_callback = progress.clone();
                     let state_for_callback = state.clone();
 
-                    let (completed, failed) = convert_files_parallel_with_callback(
+                    let (completed, failed, cancelled) = convert_files_parallel_with_callback(
                         ffmpeg_path.clone(),
                         lossy_jobs,
                         progress.clone(),
+                        cancel_token.clone(),
                         move || {
                             let completed = progress_for_callback.completed_count();
                             let failed = progress_for_callback.failed_count();
@@ -928,11 +996,12 @@ impl FolderList {
 
                     total_completed += completed;
                     total_failed += failed;
+                    was_cancelled = cancelled;
                     println!("Pass 2 complete: {} transcoded, {} failed", completed, failed);
                 }
 
                 // === Calculate remaining space for lossless ===
-                if !lossless_info.is_empty() {
+                if !lossless_info.is_empty() && !was_cancelled {
                     // Measure actual output size after passes 1+2
                     let current_size = calculate_directory_size(&output_dir_clone);
                     let cd_capacity: u64 = 685 * 1024 * 1024;
@@ -977,10 +1046,11 @@ impl FolderList {
                     let progress_for_callback = progress.clone();
                     let state_for_callback = state.clone();
 
-                    let (completed, failed) = convert_files_parallel_with_callback(
+                    let (completed, failed, cancelled) = convert_files_parallel_with_callback(
                         ffmpeg_path,
                         lossless_jobs,
                         progress.clone(),
+                        cancel_token.clone(),
                         move || {
                             let completed = progress_for_callback.completed_count();
                             let failed = progress_for_callback.failed_count();
@@ -991,16 +1061,25 @@ impl FolderList {
 
                     total_completed += completed;
                     total_failed += failed;
+                    was_cancelled = cancelled;
                     println!("Pass 3 complete: {} transcoded, {} failed", completed, failed);
                 }
 
                 // Final output size
                 let final_size = calculate_directory_size(&output_dir_clone);
                 let utilization = final_size as f64 / (685.0 * 1024.0 * 1024.0) * 100.0;
-                println!(
-                    "\nConversion complete: {} converted, {} failed",
-                    total_completed, total_failed
-                );
+
+                if was_cancelled {
+                    println!(
+                        "\nConversion CANCELLED: {} converted, {} failed before cancel",
+                        total_completed, total_failed
+                    );
+                } else {
+                    println!(
+                        "\nConversion complete: {} converted, {} failed",
+                        total_completed, total_failed
+                    );
+                }
                 println!(
                     "Final output: {:.1} MB ({:.1}% of CD capacity)",
                     final_size as f64 / 1024.0 / 1024.0,
@@ -1112,6 +1191,7 @@ mod tests {
             total_size: 50_000_000,
             total_duration: 2400.0, // 40 minutes
             album_art: None,
+            audio_files: Vec::new(),
         }
     }
 
@@ -1295,5 +1375,35 @@ mod tests {
 
         let (completed, _, _) = state.progress();
         assert_eq!(completed, 100);
+    }
+
+    #[test]
+    fn test_conversion_state_cancellation() {
+        let state = ConversionState::new();
+        state.reset(10);
+
+        // Initially not cancelled
+        assert!(!state.is_cancelled());
+
+        // Request cancel
+        state.request_cancel();
+
+        // Should now be cancelled
+        assert!(state.is_cancelled());
+        // But should still be converting (in-flight tasks finish)
+        assert!(state.is_converting());
+    }
+
+    #[test]
+    fn test_conversion_state_reset_clears_cancel() {
+        let state = ConversionState::new();
+        state.reset(10);
+        state.request_cancel();
+        assert!(state.is_cancelled());
+
+        // Reset should clear the cancel flag
+        state.reset(5);
+        assert!(!state.is_cancelled());
+        assert!(state.is_converting());
     }
 }

@@ -4,7 +4,7 @@
 //! sized based on CPU cores.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::process::Command;
@@ -206,12 +206,16 @@ fn handle_ffmpeg_result(
 /// The `on_file_complete` callback is called on the tokio runtime thread
 /// after each file finishes (success or failure). This can be used to
 /// trigger UI updates.
+///
+/// The `cancel_token` can be set to true to stop processing new files.
+/// Files that are already in progress will complete, but no new files will start.
 pub async fn convert_files_parallel_with_callback<F>(
     ffmpeg_path: PathBuf,
     jobs: Vec<ConversionJob>,
     progress: Arc<ConversionProgress>,
+    cancel_token: Arc<AtomicBool>,
     on_file_complete: F,
-) -> (usize, usize)
+) -> (usize, usize, bool)
 where
     F: Fn() + Send + Sync + 'static,
 {
@@ -227,8 +231,16 @@ where
 
     // Use FuturesUnordered to process completions as they happen
     let mut futures = FuturesUnordered::new();
+    let mut was_cancelled = false;
 
     for job in jobs {
+        // Check for cancellation before starting each new job
+        if cancel_token.load(Ordering::SeqCst) {
+            println!("Cancellation requested - skipping remaining files");
+            was_cancelled = true;
+            break;
+        }
+
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let ffmpeg = ffmpeg_path.clone();
         let progress = progress.clone();
@@ -281,12 +293,12 @@ where
         futures.push(handle);
     }
 
-    // Wait for all tasks to complete
+    // Wait for all in-flight tasks to complete (even if cancelled)
     while let Some(_result) = futures.next().await {
         // Tasks already called on_complete when they finished
     }
 
-    (progress.completed_count(), progress.failed_count())
+    (progress.completed_count(), progress.failed_count(), was_cancelled)
 }
 
 #[cfg(test)]
@@ -341,13 +353,15 @@ mod tests {
         let ffmpeg_path = PathBuf::from("/nonexistent/ffmpeg");
         let jobs: Vec<ConversionJob> = vec![];
         let progress = Arc::new(ConversionProgress::new(0));
+        let cancel_token = Arc::new(AtomicBool::new(false));
         let callback_count = Arc::new(AtomicUsize::new(0));
         let callback_count_clone = callback_count.clone();
 
-        let (completed, failed) = convert_files_parallel_with_callback(
+        let (completed, failed, cancelled) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
             progress,
+            cancel_token,
             move || {
                 callback_count_clone.fetch_add(1, Ordering::SeqCst);
             },
@@ -356,6 +370,7 @@ mod tests {
 
         assert_eq!(completed, 0);
         assert_eq!(failed, 0);
+        assert!(!cancelled);
         assert_eq!(callback_count.load(Ordering::SeqCst), 0);
     }
 
@@ -381,13 +396,15 @@ mod tests {
             },
         ];
         let progress = Arc::new(ConversionProgress::new(3));
+        let cancel_token = Arc::new(AtomicBool::new(false));
         let callback_count = Arc::new(AtomicUsize::new(0));
         let callback_count_clone = callback_count.clone();
 
-        let (completed, failed) = convert_files_parallel_with_callback(
+        let (completed, failed, cancelled) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
             progress.clone(),
+            cancel_token,
             move || {
                 callback_count_clone.fetch_add(1, Ordering::SeqCst);
             },
@@ -397,6 +414,7 @@ mod tests {
         // All should fail (no ffmpeg), but callbacks should fire for each
         assert_eq!(completed, 0);
         assert_eq!(failed, 3);
+        assert!(!cancelled);
         assert_eq!(callback_count.load(Ordering::SeqCst), 3);
         assert_eq!(progress.failed_count(), 3);
     }
@@ -417,11 +435,13 @@ mod tests {
             },
         ];
         let progress = Arc::new(ConversionProgress::new(2));
+        let cancel_token = Arc::new(AtomicBool::new(false));
 
-        let (completed, failed) = convert_files_parallel_with_callback(
+        let (completed, failed, _cancelled) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
             progress.clone(),
+            cancel_token,
             || {},
         )
         .await;
@@ -430,5 +450,39 @@ mod tests {
         assert_eq!(progress.completed_count(), completed);
         assert_eq!(progress.failed_count(), failed);
         assert_eq!(progress.total, 2);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_conversion_cancellation() {
+        let ffmpeg_path = PathBuf::from("/nonexistent/ffmpeg");
+        let jobs = vec![
+            ConversionJob {
+                input_path: PathBuf::from("/fake/1.flac"),
+                output_path: PathBuf::from("/tmp/1.mp3"),
+                strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
+            },
+            ConversionJob {
+                input_path: PathBuf::from("/fake/2.flac"),
+                output_path: PathBuf::from("/tmp/2.mp3"),
+                strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
+            },
+        ];
+        let progress = Arc::new(ConversionProgress::new(2));
+        // Pre-cancel before starting
+        let cancel_token = Arc::new(AtomicBool::new(true));
+
+        let (completed, failed, cancelled) = convert_files_parallel_with_callback(
+            ffmpeg_path,
+            jobs,
+            progress.clone(),
+            cancel_token,
+            || {},
+        )
+        .await;
+
+        // Should have been cancelled immediately, no jobs processed
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+        assert!(cancelled);
     }
 }
