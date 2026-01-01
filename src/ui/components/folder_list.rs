@@ -5,18 +5,19 @@
 //! - Folder list with drag-and-drop
 //! - Status bar
 
-use gpui::{div, prelude::*, rgb, AsyncApp, Context, ExternalPaths, IntoElement, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
+use gpui::{div, prelude::*, rgb, AnyWindowHandle, AsyncApp, Context, ExternalPaths, FocusHandle, IntoElement, PromptLevel, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
+use crate::burning::{create_iso, burn_iso_with_cancel, check_cd_status, CdStatus};
 use crate::conversion::{
     calculate_multipass_bitrate, ensure_output_dir, verify_ffmpeg,
     convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
 };
-use crate::core::{find_album_folders, format_duration, get_audio_files, scan_music_folder, MusicFolder};
+use crate::core::{find_album_folders, format_duration, get_audio_files, scan_music_folder, MusicFolder, AppSettings};
 use crate::ui::Theme;
 
 /// Calculate total size of files in a directory (recursive)
@@ -28,6 +29,46 @@ fn calculate_directory_size(path: &std::path::Path) -> u64 {
         .filter_map(|e| e.metadata().ok())
         .map(|m| m.len())
         .sum()
+}
+
+/// Current stage of the burn process
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnStage {
+    /// Converting audio files
+    Converting,
+    /// Creating ISO image
+    CreatingIso,
+    /// Waiting for user to insert a blank CD
+    WaitingForCd,
+    /// Detected an erasable disc (CD-RW) with data - waiting for user to confirm erase
+    ErasableDiscDetected,
+    /// Erasing CD-RW before burning
+    Erasing,
+    /// Burning ISO to CD
+    Burning,
+    /// Finishing up (closing session, verifying)
+    Finishing,
+    /// Process complete (success or simulated)
+    Complete,
+    /// Process was cancelled
+    Cancelled,
+}
+
+impl BurnStage {
+    #[allow(dead_code)]
+    pub fn display_text(&self) -> &'static str {
+        match self {
+            BurnStage::Converting => "Converting...",
+            BurnStage::CreatingIso => "Creating ISO...",
+            BurnStage::WaitingForCd => "Insert blank CD",
+            BurnStage::ErasableDiscDetected => "Erase disc?",
+            BurnStage::Erasing => "Erasing...",
+            BurnStage::Burning => "Burning...",
+            BurnStage::Finishing => "Finishing...",
+            BurnStage::Complete => "Complete!",
+            BurnStage::Cancelled => "Cancelled",
+        }
+    }
 }
 
 /// The main folder list view
@@ -44,12 +85,20 @@ pub struct ConversionState {
     pub is_converting: Arc<AtomicBool>,
     /// Whether cancellation has been requested
     pub cancel_requested: Arc<AtomicBool>,
+    /// Whether user has approved erasing a CD-RW
+    pub erase_approved: Arc<AtomicBool>,
     /// Number of files completed
     pub completed: Arc<AtomicUsize>,
     /// Number of files failed
     pub failed: Arc<AtomicUsize>,
     /// Total number of files to convert
     pub total: Arc<AtomicUsize>,
+    /// Current stage of the burn process
+    pub stage: Arc<Mutex<BurnStage>>,
+    /// Burn progress percentage (0-100, or -1 for indeterminate)
+    pub burn_progress: Arc<std::sync::atomic::AtomicI32>,
+    /// Path to the created ISO (for re-burning)
+    pub iso_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl ConversionState {
@@ -57,22 +106,46 @@ impl ConversionState {
         Self {
             is_converting: Arc::new(AtomicBool::new(false)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
+            erase_approved: Arc::new(AtomicBool::new(false)),
             completed: Arc::new(AtomicUsize::new(0)),
             failed: Arc::new(AtomicUsize::new(0)),
             total: Arc::new(AtomicUsize::new(0)),
+            stage: Arc::new(Mutex::new(BurnStage::Converting)),
+            burn_progress: Arc::new(std::sync::atomic::AtomicI32::new(-1)),
+            iso_path: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn reset(&self, total: usize) {
         self.is_converting.store(true, Ordering::SeqCst);
         self.cancel_requested.store(false, Ordering::SeqCst);
+        self.erase_approved.store(false, Ordering::SeqCst);
         self.completed.store(0, Ordering::SeqCst);
         self.failed.store(0, Ordering::SeqCst);
         self.total.store(total, Ordering::SeqCst);
+        *self.stage.lock().unwrap() = BurnStage::Converting;
+        self.burn_progress.store(-1, Ordering::SeqCst);
+        *self.iso_path.lock().unwrap() = None;
     }
 
     pub fn finish(&self) {
         self.is_converting.store(false, Ordering::SeqCst);
+    }
+
+    pub fn set_stage(&self, stage: BurnStage) {
+        *self.stage.lock().unwrap() = stage;
+    }
+
+    pub fn get_stage(&self) -> BurnStage {
+        *self.stage.lock().unwrap()
+    }
+
+    pub fn set_burn_progress(&self, progress: i32) {
+        self.burn_progress.store(progress, Ordering::SeqCst);
+    }
+
+    pub fn get_burn_progress(&self) -> i32 {
+        self.burn_progress.load(Ordering::SeqCst)
     }
 
     /// Request cancellation of the current conversion
@@ -169,10 +242,12 @@ pub struct FolderList {
     conversion_state: ConversionState,
     /// Import progress state
     import_state: ImportState,
+    /// Focus handle for receiving actions (None in tests)
+    focus_handle: Option<FocusHandle>,
 }
 
 impl FolderList {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             folders: Vec::new(),
             drop_target_index: None,
@@ -180,6 +255,21 @@ impl FolderList {
             scroll_handle: ScrollHandle::new(),
             conversion_state: ConversionState::new(),
             import_state: ImportState::new(),
+            focus_handle: Some(cx.focus_handle()),
+        }
+    }
+
+    /// Create a new FolderList for testing (without GPUI context)
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        Self {
+            folders: Vec::new(),
+            drop_target_index: None,
+            appearance_subscription_set: false,
+            scroll_handle: ScrollHandle::new(),
+            conversion_state: ConversionState::new(),
+            import_state: ImportState::new(),
+            focus_handle: None,
         }
     }
 
@@ -427,12 +517,6 @@ impl FolderList {
     }
 }
 
-impl Default for FolderList {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Render for FolderList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Subscribe to appearance changes (once)
@@ -470,17 +554,23 @@ impl Render for FolderList {
         // Build status bar after listeners
         let status_bar = self.render_status_bar(&theme, cx);
 
-        div()
+        // Build the base container
+        let mut container = div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.bg)
+            .bg(theme.bg);
+
+        // Track focus if we have a focus handle (not in tests)
+        if let Some(ref focus_handle) = self.focus_handle {
+            container = container.track_focus(focus_handle);
+        }
+
+        container
             // Handle external file drops on the entire window
             .on_drop(on_external_drop)
             // Style when dragging external files over window
-            .drag_over::<ExternalPaths>(|style, _, _, _| {
-                style.bg(rgb(0x3d3d3d))
-            })
+            .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(rgb(0x3d3d3d)))
             // Main content area - folder list (scrollable)
             .child(
                 div()
@@ -493,9 +583,7 @@ impl Render for FolderList {
                     .py_2() // Vertical padding
                     // Handle drops on the list container
                     .on_drop(on_internal_drop)
-                    .drag_over::<DraggedFolder>(|style, _, _, _| {
-                        style.bg(rgb(0x3d3d3d))
-                    })
+                    .drag_over::<DraggedFolder>(|style, _, _, _| style.bg(rgb(0x3d3d3d)))
                     .child(list_content),
             )
             // Status bar at bottom
@@ -676,15 +764,74 @@ impl FolderList {
                                 )
                         )
                 } else if is_converting {
-                    // Show progress bar during conversion with cancel button
-                    let progress_fraction = if total > 0 {
-                        (completed + failed) as f32 / total as f32
-                    } else {
-                        0.0
-                    };
-
+                    // Show progress bar during conversion/burn with cancel button
+                    let stage = self.conversion_state.get_stage();
+                    let burn_progress = self.conversion_state.get_burn_progress();
                     let is_cancelled = self.conversion_state.is_cancelled();
                     let cancel_color = theme.danger;
+
+                    // Calculate progress based on current stage
+                    let (progress_fraction, progress_text, stage_text) = match stage {
+                        BurnStage::Converting => {
+                            let frac = if total > 0 {
+                                (completed + failed) as f32 / total as f32
+                            } else {
+                                0.0
+                            };
+                            (frac, format!("{}/{}", completed + failed, total), "Converting...")
+                        }
+                        BurnStage::CreatingIso => {
+                            (1.0, "".to_string(), "Creating ISO...")
+                        }
+                        BurnStage::WaitingForCd => {
+                            (1.0, "".to_string(), "Insert blank CD")
+                        }
+                        BurnStage::ErasableDiscDetected => {
+                            (1.0, "".to_string(), "CD-RW detected")
+                        }
+                        BurnStage::Erasing => {
+                            let frac = if burn_progress >= 0 {
+                                burn_progress as f32 / 100.0
+                            } else {
+                                0.0
+                            };
+                            let text = if burn_progress >= 0 {
+                                format!("{}%", burn_progress)
+                            } else {
+                                "".to_string()
+                            };
+                            (frac, text, "Erasing...")
+                        }
+                        BurnStage::Burning => {
+                            let frac = if burn_progress >= 0 {
+                                burn_progress as f32 / 100.0
+                            } else {
+                                0.0 // Start at 0 until we get real progress
+                            };
+                            let text = if burn_progress >= 0 {
+                                format!("{}%", burn_progress)
+                            } else {
+                                "".to_string()
+                            };
+                            (frac, text, "Burning...")
+                        }
+                        BurnStage::Finishing => {
+                            (1.0, "".to_string(), "Finishing...")
+                        }
+                        BurnStage::Complete => {
+                            (1.0, "✓".to_string(), "Complete!")
+                        }
+                        BurnStage::Cancelled => {
+                            (0.0, "".to_string(), "Cancelled")
+                        }
+                    };
+
+                    let stage_color = match stage {
+                        BurnStage::Cancelled => cancel_color,
+                        BurnStage::Complete => success_color,
+                        _ if is_cancelled => cancel_color,
+                        _ => success_color,
+                    };
 
                     div()
                         .id(SharedString::from("convert-progress-container"))
@@ -699,7 +846,7 @@ impl FolderList {
                                 .h(gpui::px(50.0))
                                 .rounded_md()
                                 .border_1()
-                                .border_color(if is_cancelled { cancel_color } else { success_color })
+                                .border_color(stage_color)
                                 .overflow_hidden()
                                 .relative()
                                 // Background progress fill
@@ -710,7 +857,7 @@ impl FolderList {
                                         .top_0()
                                         .h_full()
                                         .w(gpui::relative(progress_fraction))
-                                        .bg(if is_cancelled { cancel_color } else { success_color })
+                                        .bg(stage_color)
                                 )
                                 // Text overlay
                                 .child(
@@ -721,43 +868,73 @@ impl FolderList {
                                         .items_center()
                                         .justify_center()
                                         .relative()
-                                        .child(
-                                            div()
-                                                .text_lg()
-                                                .text_color(gpui::white())
-                                                .font_weight(gpui::FontWeight::BOLD)
-                                                .child(format!("{}/{}", completed + failed, total))
-                                        )
+                                        .when(!progress_text.is_empty(), |el| {
+                                            el.child(
+                                                div()
+                                                    .text_lg()
+                                                    .text_color(gpui::white())
+                                                    .font_weight(gpui::FontWeight::BOLD)
+                                                    .child(progress_text.clone())
+                                            )
+                                        })
                                         .child(
                                             div()
                                                 .text_sm()
                                                 .text_color(gpui::white())
-                                                .child(if is_cancelled { "Cancelling..." } else { "Converting..." })
+                                                .child(if is_cancelled && stage != BurnStage::Cancelled {
+                                                    "Cancelling..."
+                                                } else {
+                                                    stage_text
+                                                })
                                         )
                                 )
                         )
-                        // Cancel button
-                        .child(
-                            div()
-                                .id(SharedString::from("cancel-btn"))
-                                .px_4()
-                                .py_1()
-                                .bg(if is_cancelled { text_muted } else { cancel_color })
-                                .text_color(gpui::white())
-                                .text_sm()
-                                .rounded_md()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_center()
-                                .when(!is_cancelled, |el| {
-                                    el.cursor_pointer()
-                                        .hover(|s| s.bg(gpui::rgb(0xdc2626))) // darker red on hover
-                                        .on_click(cx.listener(|this, _event, _window, _cx| {
-                                            println!("Cancel button clicked");
-                                            this.conversion_state.request_cancel();
-                                        }))
-                                })
-                                .child(if is_cancelled { "Cancelling" } else { "Cancel" })
-                        )
+                        // Erase & Burn button (only show when erasable disc detected)
+                        .when(stage == BurnStage::ErasableDiscDetected, |el| {
+                            el.child(
+                                div()
+                                    .id(SharedString::from("erase-burn-btn"))
+                                    .px_4()
+                                    .py_1()
+                                    .bg(success_color)
+                                    .text_color(gpui::white())
+                                    .text_sm()
+                                    .rounded_md()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(gpui::rgb(0x16a34a))) // darker green on hover
+                                    .on_click(cx.listener(|this, _event, _window, _cx| {
+                                        println!("Erase & Burn clicked");
+                                        this.conversion_state.erase_approved.store(true, Ordering::SeqCst);
+                                    }))
+                                    .child("Erase & Burn")
+                            )
+                        })
+                        // Cancel button (only show during active stages)
+                        .when(stage != BurnStage::Complete && stage != BurnStage::Cancelled, |el| {
+                            el.child(
+                                div()
+                                    .id(SharedString::from("cancel-btn"))
+                                    .px_4()
+                                    .py_1()
+                                    .bg(if is_cancelled { text_muted } else { cancel_color })
+                                    .text_color(gpui::white())
+                                    .text_sm()
+                                    .rounded_md()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_center()
+                                    .when(!is_cancelled, |el| {
+                                        el.cursor_pointer()
+                                            .hover(|s| s.bg(gpui::rgb(0xdc2626))) // darker red on hover
+                                            .on_click(cx.listener(|this, _event, _window, _cx| {
+                                                println!("Cancel button clicked");
+                                                this.conversion_state.request_cancel();
+                                            }))
+                                    })
+                                    .child(if is_cancelled { "Cancelling" } else { "Cancel" })
+                            )
+                        })
                 } else {
                     // Normal Convert & Burn button
                     div()
@@ -773,10 +950,10 @@ impl FolderList {
                         .when(has_folders, |el| {
                             el.cursor_pointer().hover(|s| s.bg(success_hover))
                         })
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                        .on_click(cx.listener(move |this, _event, window, cx| {
                             if has_folders {
                                 println!("Convert & Burn clicked!");
-                                this.run_conversion(cx);
+                                this.run_conversion(window, cx);
                             }
                         }))
                         .child("Convert\n& Burn")
@@ -801,7 +978,7 @@ impl FolderList {
     }
 
     /// Run the conversion process for all folders (async, in background thread)
-    fn run_conversion(&mut self, cx: &mut Context<Self>) {
+    fn run_conversion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Don't start if already converting
         if self.conversion_state.is_converting() {
             println!("Conversion already in progress");
@@ -939,6 +1116,7 @@ impl FolderList {
         let state = self.conversion_state.clone();
         let cancel_token = self.conversion_state.cancel_requested.clone();
         let output_dir_clone = output_dir.clone();
+        let simulate_burn = cx.global::<AppSettings>().simulate_burn;
 
         // Spawn background thread with tokio runtime
         std::thread::spawn(move || {
@@ -946,17 +1124,16 @@ impl FolderList {
 
             rt.block_on(async {
                 let progress = Arc::new(ConversionProgress::new(total_jobs));
-                let mut total_completed = 0usize;
-                let mut total_failed = 0usize;
                 let mut was_cancelled = false;
 
                 // === PASS 1: Copy MP3s ===
+                let copy_count = copy_jobs.len();
                 if !copy_jobs.is_empty() && !was_cancelled {
-                    println!("\n=== Pass 1: Copying {} MP3 files ===", copy_jobs.len());
+                    println!("\n=== Pass 1: Copying {} MP3 files ===", copy_count);
                     let progress_for_callback = progress.clone();
                     let state_for_callback = state.clone();
 
-                    let (completed, failed, cancelled) = convert_files_parallel_with_callback(
+                    let (_completed, failed, cancelled) = convert_files_parallel_with_callback(
                         ffmpeg_path.clone(),
                         copy_jobs,
                         progress.clone(),
@@ -969,19 +1146,18 @@ impl FolderList {
                         },
                     ).await;
 
-                    total_completed += completed;
-                    total_failed += failed;
                     was_cancelled = cancelled;
-                    println!("Pass 1 complete: {} copied, {} failed", completed, failed);
+                    println!("Pass 1 complete: {} copied, {} failed", copy_count - failed, failed);
                 }
 
                 // === PASS 2: Transcode lossy files ===
+                let lossy_count = lossy_jobs.len();
                 if !lossy_jobs.is_empty() && !was_cancelled {
-                    println!("\n=== Pass 2: Transcoding {} lossy files ===", lossy_jobs.len());
+                    println!("\n=== Pass 2: Transcoding {} lossy files ===", lossy_count);
                     let progress_for_callback = progress.clone();
                     let state_for_callback = state.clone();
 
-                    let (completed, failed, cancelled) = convert_files_parallel_with_callback(
+                    let (_completed, failed, cancelled) = convert_files_parallel_with_callback(
                         ffmpeg_path.clone(),
                         lossy_jobs,
                         progress.clone(),
@@ -994,10 +1170,8 @@ impl FolderList {
                         },
                     ).await;
 
-                    total_completed += completed;
-                    total_failed += failed;
                     was_cancelled = cancelled;
-                    println!("Pass 2 complete: {} transcoded, {} failed", completed, failed);
+                    println!("Pass 2 complete: {} transcoded, {} failed", lossy_count - failed, failed);
                 }
 
                 // === Calculate remaining space for lossless ===
@@ -1043,10 +1217,11 @@ impl FolderList {
                         })
                         .collect();
 
+                    let lossless_count = lossless_jobs.len();
                     let progress_for_callback = progress.clone();
                     let state_for_callback = state.clone();
 
-                    let (completed, failed, cancelled) = convert_files_parallel_with_callback(
+                    let (_completed, failed, cancelled) = convert_files_parallel_with_callback(
                         ffmpeg_path,
                         lossless_jobs,
                         progress.clone(),
@@ -1059,50 +1234,210 @@ impl FolderList {
                         },
                     ).await;
 
-                    total_completed += completed;
-                    total_failed += failed;
                     was_cancelled = cancelled;
-                    println!("Pass 3 complete: {} transcoded, {} failed", completed, failed);
+                    println!("Pass 3 complete: {} transcoded, {} failed", lossless_count - failed, failed);
                 }
 
                 // Final output size
                 let final_size = calculate_directory_size(&output_dir_clone);
                 let utilization = final_size as f64 / (685.0 * 1024.0 * 1024.0) * 100.0;
 
+                // Get final counts from progress tracker (cumulative across all passes)
+                let total_completed = progress.completed_count();
+                let total_failed = progress.failed_count();
+
                 if was_cancelled {
                     println!(
                         "\nConversion CANCELLED: {} converted, {} failed before cancel",
                         total_completed, total_failed
                     );
-                } else {
-                    println!(
-                        "\nConversion complete: {} converted, {} failed",
-                        total_completed, total_failed
-                    );
+                    state.set_stage(BurnStage::Cancelled);
+                    state.finish();
+                    return;
                 }
+
+                println!(
+                    "\nConversion complete: {} converted, {} failed",
+                    total_completed, total_failed
+                );
                 println!(
                     "Final output: {:.1} MB ({:.1}% of CD capacity)",
                     final_size as f64 / 1024.0 / 1024.0,
                     utilization
                 );
 
-                state.finish();
+                // === ISO CREATION ===
+                state.set_stage(BurnStage::CreatingIso);
+                println!("\n=== Creating ISO image ===");
+
+                // Generate volume label from folder names (first few albums)
+                let volume_label = "MP3CD".to_string(); // TODO: generate from folder names
+
+                match create_iso(&output_dir_clone, &volume_label) {
+                    Ok(result) => {
+                        println!("ISO created at: {}", result.iso_path.display());
+                        *state.iso_path.lock().unwrap() = Some(result.iso_path.clone());
+
+                        if simulate_burn {
+                            // Simulated mode - skip actual burning
+                            println!("\n=== SIMULATED BURN ===");
+                            println!("Would burn ISO: {}", result.iso_path.display());
+                            state.set_stage(BurnStage::Complete);
+                            state.finish();
+                        } else {
+                            // Real mode - check for CD and burn
+                            state.set_stage(BurnStage::WaitingForCd);
+                            println!("\n=== Waiting for blank CD ===");
+
+                            // Poll for CD insertion (with timeout)
+                            let mut erase_first = false;
+                            let mut cd_ready = false;
+
+                            for _ in 0..120 {
+                                // Wait up to 120 seconds (longer to allow for erase prompt)
+                                if cancel_token.load(Ordering::SeqCst) {
+                                    println!("Burn cancelled while waiting for CD");
+                                    state.set_stage(BurnStage::Cancelled);
+                                    state.finish();
+                                    return;
+                                }
+
+                                match check_cd_status() {
+                                    Ok(CdStatus::Blank) => {
+                                        println!("Blank CD detected");
+                                        cd_ready = true;
+                                        break;
+                                    }
+                                    Ok(CdStatus::ErasableWithData) => {
+                                        // CD-RW with data - prompt user to erase
+                                        println!("Erasable disc (CD-RW) with data detected");
+                                        state.set_stage(BurnStage::ErasableDiscDetected);
+
+                                        // Wait for user to approve erase or cancel
+                                        loop {
+                                            if cancel_token.load(Ordering::SeqCst) {
+                                                println!("Burn cancelled");
+                                                state.set_stage(BurnStage::Cancelled);
+                                                state.finish();
+                                                return;
+                                            }
+                                            if state.erase_approved.load(Ordering::SeqCst) {
+                                                println!("User approved erase - will erase and burn");
+                                                erase_first = true;
+                                                cd_ready = true;
+                                                break;
+                                            }
+                                            std::thread::sleep(std::time::Duration::from_millis(100));
+                                        }
+                                        break;
+                                    }
+                                    Ok(CdStatus::NonErasable) => {
+                                        // Non-erasable disc with data - wait for different disc
+                                        println!("Non-erasable disc detected - please insert a blank disc");
+                                        std::thread::sleep(std::time::Duration::from_secs(2));
+                                    }
+                                    Ok(CdStatus::NoDisc) => {
+                                        std::thread::sleep(std::time::Duration::from_secs(1));
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error checking CD: {}", e);
+                                        std::thread::sleep(std::time::Duration::from_secs(1));
+                                    }
+                                }
+                            }
+
+                            if !cd_ready {
+                                println!("No usable CD found after timeout");
+                                state.set_stage(BurnStage::Complete);
+                                state.finish();
+                                return;
+                            }
+
+                            // === BURN CD ===
+                            if erase_first {
+                                state.set_stage(BurnStage::Erasing);
+                                println!("\n=== Erasing and Burning CD ===");
+                            } else {
+                                state.set_stage(BurnStage::Burning);
+                                println!("\n=== Burning CD ===");
+                            }
+
+                            // Track progress to detect phase transition (erase -> burn)
+                            let state_for_progress = state.clone();
+                            let last_progress = Arc::new(std::sync::atomic::AtomicI32::new(-1));
+                            let last_progress_clone = last_progress.clone();
+                            let is_erasing = erase_first;
+
+                            let progress_callback = Box::new(move |progress: i32| {
+                                let current_stage = state_for_progress.get_stage();
+                                let prev = last_progress_clone.load(Ordering::SeqCst);
+
+                                // Handle -1 (indeterminate) values
+                                if progress < 0 {
+                                    // If we were at high progress (>=95) in Burning stage, switch to Finishing
+                                    if prev >= 95 && current_stage == BurnStage::Burning {
+                                        state_for_progress.set_stage(BurnStage::Finishing);
+                                    }
+                                    return;
+                                }
+
+                                // Store current progress for next comparison
+                                last_progress_clone.store(progress, Ordering::SeqCst);
+
+                                // Detect phase transition: progress was high (>50) and now low (<20)
+                                // This indicates erase completed and burn started
+                                if is_erasing && prev > 50 && progress < 20 && current_stage == BurnStage::Erasing {
+                                    state_for_progress.set_stage(BurnStage::Burning);
+                                }
+
+                                state_for_progress.set_burn_progress(progress);
+                            });
+
+                            // Pass cancel token and erase flag
+                            match burn_iso_with_cancel(&result.iso_path, Some(progress_callback), Some(cancel_token.clone()), erase_first) {
+                                Ok(()) => {
+                                    println!("CD burned successfully!");
+                                    state.set_stage(BurnStage::Complete);
+                                }
+                                Err(e) if e.contains("cancelled") => {
+                                    println!("Burn was cancelled");
+                                    state.set_stage(BurnStage::Cancelled);
+                                }
+                                Err(e) => {
+                                    eprintln!("Burn failed: {}", e);
+                                    state.set_stage(BurnStage::Complete); // Still mark complete
+                                }
+                            }
+                            state.finish();
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("ISO creation failed: {}", e);
+                        state.set_stage(BurnStage::Complete);
+                        state.finish();
+                    }
+                }
             });
         });
 
-        // Start polling for progress updates
-        Self::start_progress_polling(self.conversion_state.clone(), cx);
+        // Start polling for progress updates (pass window handle for success dialog)
+        let window_handle = window.window_handle();
+        Self::start_progress_polling(self.conversion_state.clone(), window_handle, cx);
 
         println!("Multi-pass conversion started ({} files)", total_jobs);
         cx.notify();
     }
 
     /// Start a polling loop that updates the UI periodically during conversion
-    fn start_progress_polling(state: ConversionState, cx: &mut Context<Self>) {
+    fn start_progress_polling(
+        state: ConversionState,
+        window_handle: AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
         // state is already cloned - no need to read entity
 
         // Clone in sync part BEFORE the async block - key to avoiding lifetime issues
-        cx.spawn(|_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+        cx.spawn(move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone(); // Clone here, in sync context
             async move {
                 // Poll until conversion finishes
@@ -1127,6 +1462,20 @@ impl FolderList {
 
                 // Final refresh to show completion state
                 let _ = async_cx.refresh();
+
+                // Show success dialog if completed (not cancelled)
+                let final_stage = state.get_stage();
+                if final_stage == BurnStage::Complete {
+                    let _ = async_cx.update_window(window_handle, |_, window, cx| {
+                        let _ = window.prompt(
+                            PromptLevel::Info,
+                            "Burn Complete",
+                            Some("The CD has been burned successfully."),
+                            &["OK"],
+                            cx,
+                        );
+                    });
+                }
             }
         }).detach();
     }
@@ -1197,14 +1546,14 @@ mod tests {
 
     #[test]
     fn test_folder_list_new() {
-        let list = FolderList::new();
+        let list = FolderList::new_for_test();
         assert!(list.is_empty());
         assert_eq!(list.len(), 0);
     }
 
     #[test]
     fn test_add_folder() {
-        let mut list = FolderList::new();
+        let mut list = FolderList::new_for_test();
         list.folders.push(test_folder("/test/folder1"));
         list.folders.push(test_folder("/test/folder2"));
 
@@ -1213,7 +1562,7 @@ mod tests {
 
     #[test]
     fn test_remove_folder() {
-        let mut list = FolderList::new();
+        let mut list = FolderList::new_for_test();
         list.folders.push(test_folder("/test/folder1"));
         list.folders.push(test_folder("/test/folder2"));
 
@@ -1225,7 +1574,7 @@ mod tests {
 
     #[test]
     fn test_move_folder_forward() {
-        let mut list = FolderList::new();
+        let mut list = FolderList::new_for_test();
         list.folders.push(test_folder("/test/a"));
         list.folders.push(test_folder("/test/b"));
         list.folders.push(test_folder("/test/c"));
@@ -1240,7 +1589,7 @@ mod tests {
 
     #[test]
     fn test_move_folder_backward() {
-        let mut list = FolderList::new();
+        let mut list = FolderList::new_for_test();
         list.folders.push(test_folder("/test/a"));
         list.folders.push(test_folder("/test/b"));
         list.folders.push(test_folder("/test/c"));
@@ -1255,7 +1604,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut list = FolderList::new();
+        let mut list = FolderList::new_for_test();
         list.folders.push(test_folder("/test/folder1"));
         list.folders.push(test_folder("/test/folder2"));
 
@@ -1266,7 +1615,7 @@ mod tests {
 
     #[test]
     fn test_total_files() {
-        let mut list = FolderList::new();
+        let mut list = FolderList::new_for_test();
         list.folders.push(test_folder("/test/folder1")); // 10 files
         list.folders.push(test_folder("/test/folder2")); // 10 files
 
@@ -1275,7 +1624,7 @@ mod tests {
 
     #[test]
     fn test_total_size() {
-        let mut list = FolderList::new();
+        let mut list = FolderList::new_for_test();
         list.folders.push(test_folder("/test/folder1")); // 50MB
         list.folders.push(test_folder("/test/folder2")); // 50MB
 

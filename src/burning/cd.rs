@@ -5,23 +5,74 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Progress callback type for burn operations
 pub type ProgressCallback = Box<dyn Fn(i32) + Send>;
 
-/// Check if a blank CD is inserted
-pub fn check_cd_inserted() -> Result<bool, String> {
+/// Status of the CD drive
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdStatus {
+    /// No disc inserted
+    NoDisc,
+    /// Blank disc ready to burn
+    Blank,
+    /// Erasable disc (CD-RW) with data - can be erased and reused
+    ErasableWithData,
+    /// Non-erasable disc (CD-R) with data - cannot be used
+    NonErasable,
+}
+
+/// Check the status of the CD drive
+pub fn check_cd_status() -> Result<CdStatus, String> {
     let output = Command::new("drutil")
         .args(["status"])
         .output()
         .map_err(|e| format!("Failed to execute drutil: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_lower = stdout.to_lowercase();
 
-    // Check for blank media
-    let has_blank_cd = stdout.contains("Blank") || stdout.contains("blank");
+    // No disc inserted
+    if stdout_lower.contains("no media") {
+        return Ok(CdStatus::NoDisc);
+    }
 
-    Ok(has_blank_cd)
+    // Check for blank media first
+    if stdout_lower.contains("blank") {
+        return Ok(CdStatus::Blank);
+    }
+
+    // Check if it's erasable (CD-RW, DVD-RW, etc.)
+    // drutil status shows "Erasable: Yes" for rewritable media
+    let is_erasable = stdout_lower.contains("erasable")
+        || stdout_lower.contains("cd-rw")
+        || stdout_lower.contains("dvd-rw")
+        || stdout_lower.contains("dvd+rw");
+
+    if is_erasable {
+        return Ok(CdStatus::ErasableWithData);
+    }
+
+    // Non-blank, non-erasable disc
+    Ok(CdStatus::NonErasable)
+}
+
+/// Check if a blank CD is inserted (legacy function for compatibility)
+pub fn check_cd_inserted() -> Result<bool, String> {
+    match check_cd_status()? {
+        CdStatus::Blank => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+/// Result of a burn operation
+#[derive(Debug)]
+pub enum BurnResult {
+    Success,
+    Cancelled,
+    Error(String),
 }
 
 /// Burn an ISO file to CD using hdiutil
@@ -34,57 +85,121 @@ pub fn check_cd_inserted() -> Result<bool, String> {
 /// * `Ok(())` on successful burn
 /// * `Err(String)` with error message on failure
 pub fn burn_iso(iso_path: &Path, on_progress: Option<ProgressCallback>) -> Result<(), String> {
+    burn_iso_with_cancel(iso_path, on_progress, None, false)
+}
+
+/// Burn an ISO file to CD using hdiutil with cancellation and erase support
+///
+/// # Arguments
+/// * `iso_path` - Path to the ISO file to burn
+/// * `on_progress` - Optional callback for progress updates (0-100)
+/// * `cancel_token` - Optional cancellation token to abort the burn
+/// * `erase_first` - If true, erase the disc before burning (for CD-RW)
+///
+/// # Returns
+/// * `Ok(BurnResult::Success)` on successful burn
+/// * `Ok(BurnResult::Cancelled)` if cancelled
+/// * `Err(String)` with error message on failure
+pub fn burn_iso_with_cancel(
+    iso_path: &Path,
+    on_progress: Option<ProgressCallback>,
+    cancel_token: Option<Arc<AtomicBool>>,
+    erase_first: bool,
+) -> Result<(), String> {
     if !iso_path.exists() {
         return Err(format!("ISO file not found: {}", iso_path.display()));
     }
 
-    println!("Starting burn of {}", iso_path.display());
+    if erase_first {
+        println!("Starting burn of {} (with erase)", iso_path.display());
+    } else {
+        println!("Starting burn of {}", iso_path.display());
+    }
+
+    // Build args - add -erase if erasing CD-RW first
+    let mut args = vec!["burn", "-noverifyburn", "-puppetstrings"];
+    if erase_first {
+        args.push("-erase");
+    }
+    let iso_path_str = iso_path.to_str().unwrap();
+    args.push(iso_path_str);
 
     // Spawn hdiutil with -puppetstrings to get progress output
     let mut child = Command::new("hdiutil")
-        .args([
-            "burn",
-            "-noverifyburn",
-            "-puppetstrings",
-            iso_path.to_str().unwrap(),
-        ])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to execute hdiutil burn: {}", e))?;
 
-    // Read stdout for progress updates
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
+    // Read stdout for progress updates in a separate thread so we can check cancellation
+    let stdout = child.stdout.take();
+    let cancel_token_clone = cancel_token.clone();
 
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                // Parse progress lines like "PERCENT:0.059725" or "PERCENT:-1.000000"
-                if line.starts_with("PERCENT:") {
-                    if let Some(percent_str) = line.strip_prefix("PERCENT:") {
-                        if let Ok(percentage_float) = percent_str.trim().parse::<f64>() {
-                            let percentage = percentage_float.round() as i32;
-                            if let Some(ref callback) = on_progress {
-                                callback(percentage);
+    let progress_thread = std::thread::spawn(move || {
+        if let Some(stdout) = stdout {
+            let reader = BufReader::new(stdout);
+
+            for line in reader.lines() {
+                // Check for cancellation
+                if let Some(ref token) = cancel_token_clone {
+                    if token.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+
+                if let Ok(line) = line {
+                    // Parse progress lines like "PERCENT:0.059725" or "PERCENT:-1.000000"
+                    if line.starts_with("PERCENT:") {
+                        if let Some(percent_str) = line.strip_prefix("PERCENT:") {
+                            if let Ok(percentage_float) = percent_str.trim().parse::<f64>() {
+                                let percentage = percentage_float.round() as i32;
+                                if let Some(ref callback) = on_progress {
+                                    callback(percentage);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
+    });
 
-    // Wait for completion
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Failed to wait for hdiutil burn: {}", e))?;
+    // Poll for cancellation while waiting for the process
+    loop {
+        // Check if cancelled
+        if let Some(ref token) = cancel_token {
+            if token.load(Ordering::SeqCst) {
+                println!("Burn cancelled - killing hdiutil process");
+                let _ = child.kill();
+                let _ = child.wait(); // Reap the process
+                let _ = progress_thread.join();
+                return Err("Burn cancelled by user".to_string());
+            }
+        }
 
-    if output.status.success() {
-        println!("Burn completed successfully");
-        Ok(())
-    } else {
-        let error_msg = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Failed to burn CD: {}", error_msg))
+        // Check if process has exited
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Process has exited
+                let _ = progress_thread.join();
+
+                if status.success() {
+                    println!("Burn completed successfully");
+                    return Ok(());
+                } else {
+                    return Err("Burn process failed".to_string());
+                }
+            }
+            Ok(None) => {
+                // Process still running, sleep briefly and check again
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = progress_thread.join();
+                return Err(format!("Error checking burn process: {}", e));
+            }
+        }
     }
 }
 

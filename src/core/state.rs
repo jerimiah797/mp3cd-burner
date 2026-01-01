@@ -1,7 +1,7 @@
 //! Application state types
-//! (Future feature)
 #![allow(dead_code)]
 
+use gpui::Global;
 use serde::{Deserialize, Serialize};
 
 /// Application-wide settings
@@ -14,6 +14,8 @@ pub struct AppSettings {
     /// Whether to embed album art in MP3s
     pub embed_album_art: bool,
 }
+
+impl Global for AppSettings {}
 
 /// Settings for a burn operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
