@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::conversion::{
-    ensure_output_dir, verify_ffmpeg, convert_files_parallel_with_callback,
-    ConversionJob, ConversionProgress,
+    calculate_multipass_bitrate, ensure_output_dir, verify_ffmpeg,
+    convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
 };
 use crate::core::{format_duration, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
@@ -323,19 +323,29 @@ impl FolderList {
 
     /// Calculate the optimal bitrate to fit on a 700MB CD
     /// Returns bitrate in kbps
+    ///
+    /// Uses multi-pass-aware calculation:
+    /// - MP3s are copied (exact size)
+    /// - Lossy files transcoded at source bitrate
+    /// - Lossless files get remaining space
     pub fn calculated_bitrate(&self) -> u32 {
-        let duration = self.total_duration();
-        if duration <= 0.0 {
-            return 320; // Default to max if no duration
+        if self.folders.is_empty() {
+            return 320; // Default to max if no folders
         }
 
-        // Target size: 700MB with 80% overhead compensation
-        let target_bytes = 700.0 * 1024.0 * 1024.0 * 0.80;
-        // bitrate = (bytes * 8) / (seconds * 1000)
-        let bitrate = (target_bytes * 8.0) / (duration * 1000.0);
+        // Collect all audio files from cached folder data
+        let all_files: Vec<_> = self.folders
+            .iter()
+            .flat_map(|f| f.audio_files.iter().cloned())
+            .collect();
 
-        // Clamp between 64 and 320 kbps
-        (bitrate as u32).clamp(64, 320)
+        if all_files.is_empty() {
+            return 320;
+        }
+
+        // Use multi-pass-aware calculation
+        let (bitrate, _copy, _lossy, _lossless) = calculate_multipass_bitrate(&all_files);
+        bitrate
     }
 
     /// Render the empty state drop zone

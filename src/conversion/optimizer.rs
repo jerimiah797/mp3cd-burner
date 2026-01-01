@@ -3,8 +3,10 @@
 //! Estimates output size without running ffmpeg, then iteratively
 //! adjusts target bitrate to maximize quality while staying under CD capacity.
 //!
-//! Note: This module is kept for reference but the multi-pass approach in
-//! folder_list.rs provides better accuracy by measuring actual output sizes.
+//! The multi-pass-aware estimate accounts for:
+//! - MP3s being copied (exact size)
+//! - Lossy files transcoded at source bitrate
+//! - Lossless files using remaining space
 
 #![allow(dead_code)]
 
@@ -174,6 +176,90 @@ pub fn optimize_bitrate(
     );
 
     (best_bitrate, best_estimate)
+}
+
+/// Multi-pass-aware bitrate calculation
+///
+/// Calculates the lossless bitrate by accounting for:
+/// - MP3s being copied (exact size known)
+/// - Lossy files transcoded at source bitrate (estimated size)
+/// - Remaining space goes to lossless files
+///
+/// Returns (lossless_bitrate, copy_count, lossy_count, lossless_count)
+pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> (u32, usize, usize, usize) {
+    let mut copy_size = 0u64;
+    let mut lossy_size = 0u64;
+    let mut lossless_duration = 0.0f64;
+    let mut copy_count = 0usize;
+    let mut lossy_count = 0usize;
+    let mut lossless_count = 0usize;
+
+    // Use MAX_BITRATE for categorization so MP3s within threshold are correctly identified as copies
+    let categorization_bitrate = MAX_BITRATE;
+
+    for file in files {
+        let strategy = determine_encoding_strategy(
+            &file.codec,
+            file.bitrate,
+            categorization_bitrate,
+            file.is_lossy,
+            false, // no_lossy_mode
+            false, // embed_album_art
+        );
+
+        match &strategy {
+            EncodingStrategy::Copy => {
+                // Exact size - copying as-is
+                copy_size += file.size;
+                copy_count += 1;
+            }
+            EncodingStrategy::CopyWithoutArt => {
+                // Estimate stripped size: audio data + small overhead
+                let audio_estimate = (file.duration * file.bitrate as f64 * 1000.0 / 8.0) as u64;
+                copy_size += audio_estimate + 10_000; // 10KB overhead
+                copy_count += 1;
+            }
+            EncodingStrategy::ConvertAtSourceBitrate(br) => {
+                // Lossy transcode at source bitrate
+                let audio_bytes = (file.duration * *br as f64 * 1000.0 / 8.0) as u64;
+                lossy_size += audio_bytes + 10_000; // 10KB overhead
+                lossy_count += 1;
+            }
+            EncodingStrategy::ConvertAtTargetBitrate(_) => {
+                // Lossless - just track duration, bitrate calculated from remaining space
+                lossless_duration += file.duration;
+                lossless_count += 1;
+            }
+        }
+    }
+
+    // Apply safety margin to copy and lossy estimates
+    let fixed_size = ((copy_size + lossy_size) as f64 * (1.0 + SAFETY_MARGIN)) as u64;
+
+    // Calculate remaining space for lossless
+    let remaining_bytes = CD_CAPACITY_BYTES.saturating_sub(fixed_size);
+
+    // Calculate optimal lossless bitrate from remaining space
+    let lossless_bitrate = if lossless_duration > 0.0 && remaining_bytes > 0 {
+        // bitrate = bytes * 8 / duration / 1000 (kbps)
+        let raw_bitrate = (remaining_bytes as f64 * 8.0 / lossless_duration / 1000.0) as u32;
+        raw_bitrate.clamp(MIN_BITRATE, MAX_BITRATE)
+    } else if lossless_count == 0 {
+        // No lossless files - return a reasonable default for lossy-only scenario
+        // This is the max bitrate lossy files might be capped to
+        let total_duration: f64 = files.iter().map(|f| f.duration).sum();
+        if total_duration > 0.0 {
+            let raw = (CD_CAPACITY_BYTES as f64 * 8.0 / total_duration / 1000.0) as u32;
+            raw.clamp(MIN_BITRATE, MAX_BITRATE)
+        } else {
+            MAX_BITRATE
+        }
+    } else {
+        // Edge case: lossless files but no remaining space
+        MIN_BITRATE
+    };
+
+    (lossless_bitrate, copy_count, lossy_count, lossless_count)
 }
 
 #[cfg(test)]

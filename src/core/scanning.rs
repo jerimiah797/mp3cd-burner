@@ -18,6 +18,8 @@ pub struct MusicFolder {
     pub total_size: u64,
     pub total_duration: f64,
     pub album_art: Option<String>,
+    /// Cached audio file info for bitrate calculation
+    pub audio_files: Vec<AudioFileInfo>,
 }
 
 /// Represents metadata about an audio file
@@ -33,40 +35,22 @@ pub struct AudioFileInfo {
 
 /// Scan a music folder and get basic metadata
 ///
-/// Returns a MusicFolder with file count, total size, duration, and optional album art.
+/// Returns a MusicFolder with file count, total size, duration, album art, and cached audio files.
 pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
     if !path.is_dir() {
         return Err(format!("Path is not a directory: {}", path.display()));
     }
 
-    let mut file_count = 0u32;
-    let mut total_size = 0u64;
-    let mut total_duration = 0.0f64;
-    let mut album_art: Option<String> = None;
+    // Get all audio files with full metadata (handles deduplication)
+    let audio_files = get_audio_files(path)?;
 
-    for entry in WalkDir::new(path)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let file_path = entry.path();
-        if file_path.is_file() && is_audio_file(file_path) {
-            if let Ok(metadata) = fs::metadata(file_path) {
-                file_count += 1;
-                total_size += metadata.len();
+    // Calculate summary stats from cached files
+    let file_count = audio_files.len() as u32;
+    let total_size: u64 = audio_files.iter().map(|f| f.size).sum();
+    let total_duration: f64 = audio_files.iter().map(|f| f.duration).sum();
 
-                // Get audio duration
-                if let Ok((duration, _, _, _)) = get_audio_metadata(file_path) {
-                    total_duration += duration;
-                }
-
-                // Extract album art from the first audio file
-                if album_art.is_none() {
-                    album_art = get_album_art(file_path);
-                }
-            }
-        }
-    }
+    // Extract album art from the first audio file
+    let album_art = audio_files.first().and_then(|f| get_album_art(&f.path));
 
     Ok(MusicFolder {
         path: path.to_path_buf(),
@@ -74,6 +58,7 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
         total_size,
         total_duration,
         album_art,
+        audio_files,
     })
 }
 
