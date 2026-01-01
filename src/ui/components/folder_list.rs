@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
+use crate::audio::determine_encoding_strategy;
 use crate::conversion::{
     ensure_output_dir, verify_ffmpeg, convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
 };
@@ -750,7 +751,7 @@ impl FolderList {
                 }
             };
 
-            // Create a job for each file
+            // Create a job for each file with appropriate encoding strategy
             for audio_file in audio_files {
                 let file_stem = audio_file.path
                     .file_stem()
@@ -758,9 +759,20 @@ impl FolderList {
                     .unwrap_or("output");
                 let output_path = album_output_dir.join(format!("{}.mp3", file_stem));
 
+                // Determine the best encoding strategy for this file
+                let strategy = determine_encoding_strategy(
+                    &audio_file.codec,
+                    audio_file.bitrate,
+                    bitrate,           // target bitrate
+                    audio_file.is_lossy,
+                    false,             // no_lossy_mode - normal mode for size optimization
+                    false,             // embed_album_art - false for CD burning
+                );
+
                 jobs.push(ConversionJob {
                     input_path: audio_file.path,
                     output_path,
+                    strategy,
                 });
             }
         }
@@ -790,7 +802,6 @@ impl FolderList {
                 let (completed, failed) = convert_files_parallel_with_callback(
                     ffmpeg_path,
                     jobs,
-                    bitrate,
                     progress,
                     move || {
                         // Sync atomics from ConversionProgress to ConversionState

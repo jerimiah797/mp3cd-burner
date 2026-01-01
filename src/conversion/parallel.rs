@@ -11,6 +11,7 @@ use tokio::process::Command;
 use tokio::sync::Semaphore;
 
 use super::ConversionResult;
+use crate::audio::EncodingStrategy;
 
 /// Calculate the optimal number of parallel workers based on CPU cores
 fn calculate_worker_count() -> usize {
@@ -61,14 +62,15 @@ impl ConversionProgress {
 pub struct ConversionJob {
     pub input_path: PathBuf,
     pub output_path: PathBuf,
+    pub strategy: EncodingStrategy,
 }
 
-/// Convert a single file asynchronously
+/// Convert a single file asynchronously based on encoding strategy
 async fn convert_file_async(
     ffmpeg_path: &Path,
     input_path: &Path,
     output_path: &Path,
-    bitrate: u32,
+    strategy: &EncodingStrategy,
 ) -> ConversionResult {
     // Create output directory if needed
     if let Some(parent) = output_path.parent() {
@@ -84,21 +86,68 @@ async fn convert_file_async(
         }
     }
 
-    let bitrate_str = format!("{}k", bitrate);
+    match strategy {
+        EncodingStrategy::Copy => {
+            // Direct file copy - no ffmpeg needed, fastest option
+            match tokio::fs::copy(input_path, output_path).await {
+                Ok(_) => ConversionResult {
+                    output_path: output_path.to_path_buf(),
+                    input_path: input_path.to_path_buf(),
+                    success: true,
+                    error: None,
+                },
+                Err(e) => ConversionResult {
+                    output_path: output_path.to_path_buf(),
+                    input_path: input_path.to_path_buf(),
+                    success: false,
+                    error: Some(format!("Failed to copy file: {}", e)),
+                },
+            }
+        }
+        EncodingStrategy::CopyWithoutArt => {
+            // Copy audio stream without re-encoding, strip album art
+            let result = Command::new(ffmpeg_path)
+                .arg("-i")
+                .arg(input_path)
+                .arg("-vn")           // Skip video/album art
+                .arg("-codec:a")
+                .arg("copy")          // Copy audio stream as-is
+                .arg("-y")
+                .arg(output_path)
+                .output()
+                .await;
 
-    let result = Command::new(ffmpeg_path)
-        .arg("-i")
-        .arg(input_path)
-        .arg("-vn")
-        .arg("-codec:a")
-        .arg("libmp3lame")
-        .arg("-b:a")
-        .arg(&bitrate_str)
-        .arg("-y")
-        .arg(output_path)
-        .output()
-        .await;
+            handle_ffmpeg_result(result, input_path, output_path)
+        }
+        EncodingStrategy::ConvertAtSourceBitrate(bitrate)
+        | EncodingStrategy::ConvertAtTargetBitrate(bitrate) => {
+            // Transcode to MP3 at specified bitrate
+            let bitrate_str = format!("{}k", bitrate);
 
+            let result = Command::new(ffmpeg_path)
+                .arg("-i")
+                .arg(input_path)
+                .arg("-vn")           // Skip video/album art for CD burning
+                .arg("-codec:a")
+                .arg("libmp3lame")
+                .arg("-b:a")
+                .arg(&bitrate_str)
+                .arg("-y")
+                .arg(output_path)
+                .output()
+                .await;
+
+            handle_ffmpeg_result(result, input_path, output_path)
+        }
+    }
+}
+
+/// Handle ffmpeg command result and convert to ConversionResult
+fn handle_ffmpeg_result(
+    result: Result<std::process::Output, std::io::Error>,
+    input_path: &Path,
+    output_path: &Path,
+) -> ConversionResult {
     match result {
         Ok(output) => {
             if output.status.success() {
@@ -140,7 +189,6 @@ async fn convert_file_async(
 pub async fn convert_files_parallel_with_callback<F>(
     ffmpeg_path: PathBuf,
     jobs: Vec<ConversionJob>,
-    bitrate: u32,
     progress: Arc<ConversionProgress>,
     on_file_complete: F,
 ) -> (usize, usize)
@@ -170,13 +218,21 @@ where
             let input_name = job.input_path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
-            println!("Converting: {}", input_name);
+
+            // Log the strategy being used
+            let strategy_desc = match &job.strategy {
+                EncodingStrategy::Copy => "copy".to_string(),
+                EncodingStrategy::CopyWithoutArt => "copy (no art)".to_string(),
+                EncodingStrategy::ConvertAtSourceBitrate(br) => format!("transcode @{}k (source)", br),
+                EncodingStrategy::ConvertAtTargetBitrate(br) => format!("transcode @{}k (target)", br),
+            };
+            println!("Processing: {} [{}]", input_name, strategy_desc);
 
             let result = convert_file_async(
                 &ffmpeg,
                 &job.input_path,
                 &job.output_path,
-                bitrate,
+                &job.strategy,
             )
             .await;
 
@@ -253,6 +309,7 @@ mod tests {
         let job = ConversionJob {
             input_path: PathBuf::from("/input/song.flac"),
             output_path: PathBuf::from("/output/song.mp3"),
+            strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
         };
 
         assert_eq!(job.input_path, PathBuf::from("/input/song.flac"));
@@ -270,7 +327,6 @@ mod tests {
         let (completed, failed) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
-            320,
             progress,
             move || {
                 callback_count_clone.fetch_add(1, Ordering::SeqCst);
@@ -291,14 +347,17 @@ mod tests {
             ConversionJob {
                 input_path: PathBuf::from("/fake/1.flac"),
                 output_path: PathBuf::from("/tmp/1.mp3"),
+                strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/2.flac"),
                 output_path: PathBuf::from("/tmp/2.mp3"),
+                strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/3.flac"),
                 output_path: PathBuf::from("/tmp/3.mp3"),
+                strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
             },
         ];
         let progress = Arc::new(ConversionProgress::new(3));
@@ -308,7 +367,6 @@ mod tests {
         let (completed, failed) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
-            320,
             progress.clone(),
             move || {
                 callback_count_clone.fetch_add(1, Ordering::SeqCst);
@@ -330,10 +388,12 @@ mod tests {
             ConversionJob {
                 input_path: PathBuf::from("/fake/a.flac"),
                 output_path: PathBuf::from("/tmp/a.mp3"),
+                strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/b.flac"),
                 output_path: PathBuf::from("/tmp/b.mp3"),
+                strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
             },
         ];
         let progress = Arc::new(ConversionProgress::new(2));
@@ -341,7 +401,6 @@ mod tests {
         let (completed, failed) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
-            256,
             progress.clone(),
             || {},
         )

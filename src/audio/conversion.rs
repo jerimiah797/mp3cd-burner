@@ -54,8 +54,12 @@ pub fn determine_encoding_strategy(
         }
     } else {
         // Normal mode: optimize for file size while preserving quality
-        if codec == "mp3" && source_bitrate <= target_bitrate {
-            // MP3 at or below target bitrate - copy to preserve quality
+        // Copy threshold: don't re-encode MP3s within 20kbps of target
+        // This accounts for album art inflating our file-size-based bitrate calculation
+        // and avoids quality loss for marginal space savings
+        const COPY_THRESHOLD: u32 = 20;
+        if codec == "mp3" && source_bitrate <= target_bitrate + COPY_THRESHOLD {
+            // MP3 at or near target bitrate - copy to preserve quality
             if embed_album_art {
                 EncodingStrategy::Copy
             } else {
@@ -338,5 +342,34 @@ mod tests {
         );
         // Should use smart bitrate (min of source and target)
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(192));
+    }
+
+    #[test]
+    fn test_mp3_within_copy_threshold() {
+        // MP3 at 170kbps, target 151kbps - within 20kbps threshold, should copy
+        // This handles album art inflation and avoids pointless re-encoding
+        let strategy = determine_encoding_strategy(
+            "mp3",
+            170,  // 170 <= 151 + 20 = 171, so within threshold
+            151,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(strategy, EncodingStrategy::CopyWithoutArt);
+    }
+
+    #[test]
+    fn test_mp3_above_copy_threshold() {
+        // MP3 at 180kbps, target 151kbps - above 20kbps threshold, should transcode
+        let strategy = determine_encoding_strategy(
+            "mp3",
+            180,  // 180 > 151 + 20 = 171, so above threshold
+            151,
+            true,
+            false,
+            true,
+        );
+        assert_eq!(strategy, EncodingStrategy::ConvertAtTargetBitrate(151));
     }
 }
