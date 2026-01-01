@@ -16,15 +16,24 @@ pub struct DraggedFolder {
     pub index: usize,
     /// Path to the folder
     pub path: PathBuf,
+    /// Album art path (if available)
+    pub album_art: Option<String>,
+    /// Number of files in the folder
+    pub file_count: u32,
+    /// Total size of files
+    pub total_size: u64,
     /// Current drag position (for rendering the drag preview)
     position: Point<Pixels>,
 }
 
 impl DraggedFolder {
-    pub fn new(index: usize, path: PathBuf) -> Self {
+    pub fn new(index: usize, path: PathBuf, album_art: Option<String>, file_count: u32, total_size: u64) -> Self {
         Self {
             index,
             path,
+            album_art,
+            file_count,
+            total_size,
             position: Point::default(),
         }
     }
@@ -36,32 +45,88 @@ impl DraggedFolder {
 }
 
 impl Render for DraggedFolder {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let size = gpui::size(px(250.), px(40.));
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::from_appearance(window.appearance());
+        // Match the list item sizing dynamically based on window width
+        // List items are w_full() minus px_4() padding (16px each side = 32px total)
+        let viewport = window.viewport_size();
+        let width = viewport.width - px(32.);
+        let height = px(64.);
+
         let folder_name = self
             .path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| self.path.to_string_lossy().to_string());
 
+        let file_info = format!(
+            "{} files, {}",
+            self.file_count,
+            format_size(self.total_size)
+        );
+
+        let album_art_path = self.album_art.clone();
+
         div()
-            .pl(self.position.x - size.width.half())
-            .pt(self.position.y - size.height.half())
+            .pl(self.position.x - width.half())
+            .pt(self.position.y - height.half())
             .child(
                 div()
+                    .w(width)
+                    .h(height)
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .w(size.width)
-                    .h(size.height)
+                    .gap_3()
                     .px_3()
-                    .bg(rgba(0x2563ebee))
-                    .text_color(gpui::white())
-                    .text_sm()
+                    .bg(theme.bg_card)
+                    .border_1()
+                    .border_color(theme.accent)
                     .rounded_md()
                     .shadow_lg()
-                    .child("📁")
-                    .child(folder_name),
+                    .opacity(0.95)
+                    // Album art or folder icon
+                    .child(
+                        div()
+                            .size_12()
+                            .rounded_sm()
+                            .overflow_hidden()
+                            .bg(rgb(0x404040))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when_some(album_art_path, |el, path| {
+                                el.child(
+                                    img(Path::new(&path))
+                                        .size_full()
+                                        .object_fit(gpui::ObjectFit::Cover)
+                                )
+                            })
+                            .when(self.album_art.is_none(), |el| {
+                                el.child(div().text_xl().child("📁"))
+                            })
+                    )
+                    // Folder name and metadata
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(folder_name),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child(file_info),
+                            ),
+                    ),
             )
     }
 }
@@ -104,7 +169,13 @@ pub fn render_folder_item<V: 'static>(
         format_size(folder.total_size)
     );
 
-    let drag_info = DraggedFolder::new(index, folder.path.clone());
+    let drag_info = DraggedFolder::new(
+        index,
+        folder.path.clone(),
+        folder.album_art.clone(),
+        folder.file_count,
+        folder.total_size,
+    );
     let album_art_path = folder.album_art.clone();
 
     let on_drop_clone = on_drop.clone();
@@ -211,19 +282,22 @@ mod tests {
     #[test]
     fn test_dragged_folder_creation() {
         let path = PathBuf::from("/Users/test/Music/Album");
-        let dragged = DraggedFolder::new(0, path.clone());
+        let dragged = DraggedFolder::new(0, path.clone(), None, 10, 50_000_000);
 
         assert_eq!(dragged.index, 0);
         assert_eq!(dragged.path, path);
+        assert_eq!(dragged.file_count, 10);
+        assert_eq!(dragged.total_size, 50_000_000);
     }
 
     #[test]
     fn test_dragged_folder_with_position() {
         let path = PathBuf::from("/Users/test/Music/Album");
-        let dragged = DraggedFolder::new(0, path).with_position(Point {
-            x: px(100.),
-            y: px(200.),
-        });
+        let dragged = DraggedFolder::new(0, path, Some("/art.jpg".to_string()), 5, 25_000_000)
+            .with_position(Point {
+                x: px(100.),
+                y: px(200.),
+            });
 
         assert_eq!(dragged.position.x, px(100.));
         assert_eq!(dragged.position.y, px(200.));
