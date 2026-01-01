@@ -8,7 +8,7 @@
 use gpui::{div, prelude::*, rgb, AsyncApp, Context, ExternalPaths, IntoElement, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::conversion::{
@@ -71,6 +71,64 @@ impl ConversionState {
     }
 }
 
+/// Shared state for tracking folder import progress across threads
+#[derive(Clone)]
+pub struct ImportState {
+    /// Whether import is currently running
+    pub is_importing: Arc<AtomicBool>,
+    /// Number of folders scanned
+    pub completed: Arc<AtomicUsize>,
+    /// Total number of folders to scan
+    pub total: Arc<AtomicUsize>,
+    /// Scanned folders waiting to be added to the list
+    pub scanned_folders: Arc<Mutex<Vec<MusicFolder>>>,
+}
+
+impl ImportState {
+    pub fn new() -> Self {
+        Self {
+            is_importing: Arc::new(AtomicBool::new(false)),
+            completed: Arc::new(AtomicUsize::new(0)),
+            total: Arc::new(AtomicUsize::new(0)),
+            scanned_folders: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn reset(&self, total: usize) {
+        self.is_importing.store(true, Ordering::SeqCst);
+        self.completed.store(0, Ordering::SeqCst);
+        self.total.store(total, Ordering::SeqCst);
+        self.scanned_folders.lock().unwrap().clear();
+    }
+
+    pub fn finish(&self) {
+        self.is_importing.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_importing(&self) -> bool {
+        self.is_importing.load(Ordering::SeqCst)
+    }
+
+    pub fn progress(&self) -> (usize, usize) {
+        (
+            self.completed.load(Ordering::SeqCst),
+            self.total.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Push a scanned folder to the queue
+    pub fn push_folder(&self, folder: MusicFolder) {
+        self.scanned_folders.lock().unwrap().push(folder);
+        self.completed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Drain all scanned folders from the queue
+    pub fn drain_folders(&self) -> Vec<MusicFolder> {
+        let mut folders = self.scanned_folders.lock().unwrap();
+        std::mem::take(&mut *folders)
+    }
+}
+
 pub struct FolderList {
     /// The list of scanned music folders
     folders: Vec<MusicFolder>,
@@ -82,6 +140,8 @@ pub struct FolderList {
     scroll_handle: ScrollHandle,
     /// Conversion progress state
     conversion_state: ConversionState,
+    /// Import progress state
+    import_state: ImportState,
 }
 
 impl FolderList {
@@ -92,6 +152,7 @@ impl FolderList {
             appearance_subscription_set: false,
             scroll_handle: ScrollHandle::new(),
             conversion_state: ConversionState::new(),
+            import_state: ImportState::new(),
         }
     }
 
@@ -120,12 +181,39 @@ impl FolderList {
 
     /// Add folders from external drop (Finder)
     ///
-    /// Scans each folder and only adds directories that aren't already in the list.
-    pub fn add_external_folders(&mut self, paths: &[PathBuf]) {
-        for path in paths {
-            if path.is_dir() && !self.contains_path(path) {
-                // Scan the folder to get metadata
-                match scan_music_folder(path) {
+    /// Scans each folder asynchronously in a background thread.
+    /// Only adds directories that aren't already in the list.
+    pub fn add_external_folders(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        // Don't start if already importing
+        if self.import_state.is_importing() {
+            println!("Import already in progress");
+            return;
+        }
+
+        // Filter to only new directories (check on main thread before spawning)
+        let new_paths: Vec<PathBuf> = paths
+            .iter()
+            .filter(|p| p.is_dir() && !self.contains_path(p))
+            .cloned()
+            .collect();
+
+        if new_paths.is_empty() {
+            return;
+        }
+
+        println!("Starting async import of {} folders", new_paths.len());
+
+        // Reset import state
+        self.import_state.reset(new_paths.len());
+
+        // Clone state for background thread
+        let state = self.import_state.clone();
+
+        // Spawn background thread for scanning
+        std::thread::spawn(move || {
+            for path in new_paths {
+                println!("Scanning: {}", path.display());
+                match scan_music_folder(&path) {
                     Ok(folder) => {
                         println!(
                             "Scanned folder: {} ({} files, {} bytes)",
@@ -133,14 +221,21 @@ impl FolderList {
                             folder.file_count,
                             folder.total_size
                         );
-                        self.folders.push(folder);
+                        state.push_folder(folder);
                     }
                     Err(e) => {
                         eprintln!("Failed to scan folder {}: {}", path.display(), e);
+                        // Still increment completed so we know when done
+                        state.completed.fetch_add(1, Ordering::SeqCst);
                     }
                 }
             }
-        }
+            state.finish();
+            println!("Import complete");
+        });
+
+        // Start polling for results
+        Self::start_import_polling(self.import_state.clone(), cx);
     }
 
     /// Add a single folder to the list
@@ -306,8 +401,8 @@ impl Render for FolderList {
         };
 
         // Capture listeners first (before borrowing for status bar)
-        let on_external_drop = cx.listener(|this, paths: &ExternalPaths, _window, _cx| {
-            this.add_external_folders(paths.paths());
+        let on_external_drop = cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+            this.add_external_folders(paths.paths(), cx);
             this.drop_target_index = None;
         });
 
@@ -465,9 +560,61 @@ impl FolderList {
             // Right side: Convert & Burn button / Progress display
             .child({
                 let is_converting = self.conversion_state.is_converting();
+                let is_importing = self.import_state.is_importing();
                 let (completed, failed, total) = self.conversion_state.progress();
+                let (import_completed, import_total) = self.import_state.progress();
 
-                if is_converting {
+                if is_importing {
+                    // Show import progress
+                    let progress_fraction = if import_total > 0 {
+                        import_completed as f32 / import_total as f32
+                    } else {
+                        0.0
+                    };
+
+                    div()
+                        .id(SharedString::from("import-progress"))
+                        .w(gpui::px(140.0))
+                        .h(gpui::px(70.0))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme.accent)
+                        .overflow_hidden()
+                        .relative()
+                        // Background progress fill
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .h_full()
+                                .w(gpui::relative(progress_fraction))
+                                .bg(theme.accent)
+                        )
+                        // Text overlay
+                        .child(
+                            div()
+                                .size_full()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .relative()
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .text_color(gpui::white())
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .child(format!("{}/{}", import_completed, import_total))
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(gpui::white())
+                                        .child("Importing...")
+                                )
+                        )
+                } else if is_converting {
                     // Show progress bar during conversion
                     let progress_fraction = if total > 0 {
                         (completed + failed) as f32 / total as f32
@@ -695,6 +842,52 @@ impl FolderList {
                 }
 
                 // Final refresh to show completion state
+                let _ = async_cx.refresh();
+            }
+        }).detach();
+    }
+
+    /// Start a polling loop that drains imported folders and updates the UI
+    fn start_import_polling(state: ImportState, cx: &mut Context<Self>) {
+        cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                loop {
+                    let cx_for_after_await = async_cx.clone();
+
+                    // Wait 50ms between updates
+                    Timer::after(std::time::Duration::from_millis(50)).await;
+
+                    // Drain any scanned folders and add to the list
+                    let folders = state.drain_folders();
+                    if !folders.is_empty() {
+                        let _ = this.update(&mut async_cx, |this, _cx| {
+                            for folder in folders {
+                                this.folders.push(folder);
+                            }
+                        });
+                    }
+
+                    // Check if we should continue
+                    if !state.is_importing() {
+                        break;
+                    }
+
+                    // Refresh UI
+                    let _ = cx_for_after_await.refresh();
+
+                    async_cx = cx_for_after_await;
+                }
+
+                // Final drain and refresh
+                let folders = state.drain_folders();
+                if !folders.is_empty() {
+                    let _ = this.update(&mut async_cx, |this, _cx| {
+                        for folder in folders {
+                            this.folders.push(folder);
+                        }
+                    });
+                }
                 let _ = async_cx.refresh();
             }
         }).detach();
