@@ -6,5 +6,3 @@
 pub mod cd;
 pub mod iso;
 
-pub use cd::{burn_iso, check_cd_inserted};
-pub use iso::{copy_dir_recursive, create_iso};

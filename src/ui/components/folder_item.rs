@@ -1,7 +1,7 @@
 //! FolderItem component - A single draggable folder entry in the list
 
 use gpui::{
-    div, img, prelude::*, px, rgb, rgba, Context, Half, IntoElement, Pixels, Point, Render,
+    div, img, prelude::*, px, rgb, Context, Half, IntoElement, Pixels, Point, Render,
     SharedString, Window,
 };
 use std::path::{Path, PathBuf};

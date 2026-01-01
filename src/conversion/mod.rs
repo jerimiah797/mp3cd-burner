@@ -5,11 +5,8 @@
 mod ffmpeg;
 mod parallel;
 
-pub use ffmpeg::{convert_file, convert_file_with_mkdir, ConversionResult};
-pub use parallel::{
-    calculate_worker_count, convert_files_parallel, convert_files_parallel_with_callback,
-    ConversionJob, ConversionProgress,
-};
+pub use ffmpeg::ConversionResult;
+pub use parallel::{convert_files_parallel_with_callback, ConversionJob, ConversionProgress};
 
 use std::path::PathBuf;
 

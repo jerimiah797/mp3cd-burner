@@ -1,4 +1,6 @@
 //! Application state types
+//! (Future feature)
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

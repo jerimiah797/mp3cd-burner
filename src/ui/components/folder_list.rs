@@ -14,7 +14,7 @@ use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::conversion::{
     ensure_output_dir, verify_ffmpeg, convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
 };
-use crate::core::{format_duration, format_size, get_audio_files, scan_music_folder, MusicFolder};
+use crate::core::{format_duration, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
 
 /// The main folder list view
@@ -96,16 +96,19 @@ impl FolderList {
     }
 
     /// Returns the number of folders in the list
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.folders.len()
     }
 
     /// Returns true if the list is empty
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.folders.is_empty()
     }
 
     /// Returns an iterator over the folders
+    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &MusicFolder> {
         self.folders.iter()
     }
@@ -141,6 +144,7 @@ impl FolderList {
     }
 
     /// Add a single folder to the list
+    #[allow(dead_code)]
     pub fn add_folder(&mut self, path: PathBuf) {
         if path.is_dir() && !self.contains_path(&path) {
             if let Ok(folder) = scan_music_folder(&path) {
@@ -166,21 +170,25 @@ impl FolderList {
     }
 
     /// Clear all folders
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.folders.clear();
     }
 
     /// Get all folder paths (for saving profiles, etc.)
+    #[allow(dead_code)]
     pub fn get_folder_paths(&self) -> Vec<PathBuf> {
         self.folders.iter().map(|f| f.path.clone()).collect()
     }
 
     /// Get all folders
+    #[allow(dead_code)]
     pub fn get_folders(&self) -> &[MusicFolder] {
         &self.folders
     }
 
     /// Set folders from a saved profile (re-scans each folder)
+    #[allow(dead_code)]
     pub fn set_folders(&mut self, paths: Vec<PathBuf>) {
         self.folders.clear();
         for path in paths {

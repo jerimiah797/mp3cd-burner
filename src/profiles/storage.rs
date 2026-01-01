@@ -1,3 +1,7 @@
+//! Profile storage for saving/loading folder configurations
+//! (Future feature)
+#![allow(dead_code)]
+
 use super::types::BurnProfile;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,7 @@
+//! Profile types for saving/loading folder configurations
+//! (Future feature)
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 /// Represents a burn profile - a saved configuration for burning a CD

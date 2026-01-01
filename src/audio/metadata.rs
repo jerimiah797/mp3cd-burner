@@ -125,7 +125,7 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
         .format(&hint, mss, &format_opts, &metadata_opts)
         .map_err(|e| format!("Failed to probe audio format: {}", e))?;
 
-    let mut format = probed.format;
+    let format = probed.format;
     let track = format.default_track()
         .ok_or_else(|| "No default track found".to_string())?;
 

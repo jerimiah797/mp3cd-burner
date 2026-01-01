@@ -3,6 +3,8 @@
 //! This module implements smart bitrate calculation to fit audio content
 //! onto a 700MB CD. It uses an iterative approach to find the optimal
 //! encoding bitrate while minimizing quality loss.
+//! (Future: Stage 6)
+#![allow(dead_code)]
 
 use super::AudioFileInfo;
 

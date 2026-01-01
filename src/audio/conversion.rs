@@ -1,4 +1,6 @@
-// Audio conversion module - handles encoding strategy and file processing
+//! Audio conversion module - handles encoding strategy and file processing
+//! (Future: Stage 6)
+#![allow(dead_code)]
 
 /// Represents different encoding strategies for audio files
 #[derive(Debug, Clone, PartialEq, Eq)]

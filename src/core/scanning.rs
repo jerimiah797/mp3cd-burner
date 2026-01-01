@@ -165,11 +165,13 @@ pub fn get_audio_files(path: &Path) -> Result<Vec<AudioFileInfo>, String> {
 }
 
 /// Calculate the total duration of a list of audio files
+#[allow(dead_code)]
 pub fn total_duration(files: &[AudioFileInfo]) -> f64 {
     files.iter().map(|f| f.duration).sum()
 }
 
 /// Calculate the total size of a list of audio files
+#[allow(dead_code)]
 pub fn total_size(files: &[AudioFileInfo]) -> u64 {
     files.iter().map(|f| f.size).sum()
 }

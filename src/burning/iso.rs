@@ -1,4 +1,6 @@
 //! ISO creation using hdiutil
+//! (Future: Stage 9)
+#![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use super::ConversionResult;
 
 /// Calculate the optimal number of parallel workers based on CPU cores
-pub fn calculate_worker_count() -> usize {
+fn calculate_worker_count() -> usize {
     let available = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -130,18 +130,6 @@ async fn convert_file_async(
             error: Some(format!("Failed to spawn ffmpeg: {}", e)),
         },
     }
-}
-
-/// Convert multiple files in parallel
-///
-/// Returns the total number of successful and failed conversions
-pub async fn convert_files_parallel(
-    ffmpeg_path: PathBuf,
-    jobs: Vec<ConversionJob>,
-    bitrate: u32,
-    progress: Arc<ConversionProgress>,
-) -> (usize, usize) {
-    convert_files_parallel_with_callback(ffmpeg_path, jobs, bitrate, progress, || {}).await
 }
 
 /// Convert multiple files in parallel with a callback after each file completes

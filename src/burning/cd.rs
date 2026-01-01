@@ -1,4 +1,6 @@
 //! CD burning using hdiutil/drutil
+//! (Future: Stage 10)
+#![allow(dead_code)]
 
 use std::path::Path;
 use std::process::{Command, Stdio};
