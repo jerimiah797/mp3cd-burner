@@ -5,6 +5,7 @@
 
 mod audio;
 mod burning;
+mod conversion;
 mod core;
 mod profiles;
 mod ui;

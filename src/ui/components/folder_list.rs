@@ -9,7 +9,8 @@ use gpui::{div, prelude::*, rgb, Context, ExternalPaths, IntoElement, Render, Sc
 use std::path::PathBuf;
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
-use crate::core::{format_duration, format_size, scan_music_folder, MusicFolder};
+use crate::conversion::{ensure_output_dir, verify_ffmpeg, convert_file_with_mkdir};
+use crate::core::{format_duration, format_size, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
 
 /// The main folder list view
@@ -413,14 +414,92 @@ impl FolderList {
                     .when(has_folders, |el| {
                         el.cursor_pointer().hover(|s| s.bg(success_hover))
                     })
-                    .on_click(cx.listener(move |_this, _event, _window, _cx| {
+                    .on_click(cx.listener(move |this, _event, _window, _cx| {
                         if has_folders {
                             println!("Convert & Burn clicked!");
-                            // TODO: Implement conversion
+                            this.run_conversion();
                         }
                     }))
                     .child("Convert\n& Burn"),
             )
+    }
+
+    /// Run the conversion process for all folders
+    fn run_conversion(&self) {
+        println!("Starting conversion...");
+
+        // Verify ffmpeg is available
+        let ffmpeg_path = match verify_ffmpeg() {
+            Ok(path) => {
+                println!("Using ffmpeg at: {:?}", path);
+                path
+            }
+            Err(e) => {
+                eprintln!("FFmpeg not found: {}", e);
+                return;
+            }
+        };
+
+        // Create output directory
+        let output_dir = match ensure_output_dir() {
+            Ok(dir) => {
+                println!("Output directory: {:?}", dir);
+                dir
+            }
+            Err(e) => {
+                eprintln!("Failed to create output directory: {}", e);
+                return;
+            }
+        };
+
+        // Calculate target bitrate
+        let bitrate = self.calculated_bitrate();
+        println!("Target bitrate: {} kbps", bitrate);
+
+        // Process each folder
+        let mut total_converted = 0u32;
+        let mut total_failed = 0u32;
+
+        for (folder_idx, folder) in self.folders.iter().enumerate() {
+            // Create numbered album folder (01-AlbumName, 02-AlbumName, etc.)
+            let folder_name = folder.path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Unknown");
+            let album_dir_name = format!("{:02}-{}", folder_idx + 1, folder_name);
+            let album_output_dir = output_dir.join(&album_dir_name);
+
+            println!("Processing folder: {} -> {}", folder.path.display(), album_dir_name);
+
+            // Get all audio files in this folder
+            let audio_files = match get_audio_files(&folder.path) {
+                Ok(files) => files,
+                Err(e) => {
+                    eprintln!("Failed to get audio files from {}: {}", folder.path.display(), e);
+                    continue;
+                }
+            };
+
+            // Convert each file
+            for audio_file in &audio_files {
+                let result = convert_file_with_mkdir(
+                    &ffmpeg_path,
+                    &audio_file.path,
+                    &album_output_dir,
+                    bitrate,
+                );
+
+                if result.success {
+                    total_converted += 1;
+                } else {
+                    total_failed += 1;
+                    if let Some(error) = &result.error {
+                        eprintln!("Failed to convert {:?}: {}", audio_file.path, error);
+                    }
+                }
+            }
+        }
+
+        println!("Conversion complete: {} converted, {} failed", total_converted, total_failed);
     }
 }
 
