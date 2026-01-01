@@ -3,8 +3,12 @@
 //! Handles transcoding audio files to MP3 using ffmpeg.
 
 mod ffmpeg;
+mod parallel;
 
 pub use ffmpeg::{convert_file, convert_file_with_mkdir, ConversionResult};
+pub use parallel::{
+    calculate_worker_count, convert_files_parallel, ConversionJob, ConversionProgress,
+};
 
 use std::path::PathBuf;
 

@@ -7,9 +7,13 @@
 
 use gpui::{div, prelude::*, rgb, Context, ExternalPaths, IntoElement, Render, ScrollHandle, SharedString, Window};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
-use crate::conversion::{ensure_output_dir, verify_ffmpeg, convert_file_with_mkdir};
+use crate::conversion::{
+    ensure_output_dir, verify_ffmpeg, convert_files_parallel, ConversionJob, ConversionProgress,
+};
 use crate::core::{format_duration, format_size, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
 
@@ -20,6 +24,53 @@ use crate::ui::Theme;
 /// - External drag-drop from Finder (ExternalPaths)
 /// - Internal drag-drop for reordering
 /// - Empty state rendering
+/// Shared state for tracking conversion progress across threads
+#[derive(Clone)]
+pub struct ConversionState {
+    /// Whether conversion is currently running
+    pub is_converting: Arc<AtomicBool>,
+    /// Number of files completed
+    pub completed: Arc<AtomicUsize>,
+    /// Number of files failed
+    pub failed: Arc<AtomicUsize>,
+    /// Total number of files to convert
+    pub total: Arc<AtomicUsize>,
+}
+
+impl ConversionState {
+    pub fn new() -> Self {
+        Self {
+            is_converting: Arc::new(AtomicBool::new(false)),
+            completed: Arc::new(AtomicUsize::new(0)),
+            failed: Arc::new(AtomicUsize::new(0)),
+            total: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn reset(&self, total: usize) {
+        self.is_converting.store(true, Ordering::SeqCst);
+        self.completed.store(0, Ordering::SeqCst);
+        self.failed.store(0, Ordering::SeqCst);
+        self.total.store(total, Ordering::SeqCst);
+    }
+
+    pub fn finish(&self) {
+        self.is_converting.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_converting(&self) -> bool {
+        self.is_converting.load(Ordering::SeqCst)
+    }
+
+    pub fn progress(&self) -> (usize, usize, usize) {
+        (
+            self.completed.load(Ordering::SeqCst),
+            self.failed.load(Ordering::SeqCst),
+            self.total.load(Ordering::SeqCst),
+        )
+    }
+}
+
 pub struct FolderList {
     /// The list of scanned music folders
     folders: Vec<MusicFolder>,
@@ -29,6 +80,8 @@ pub struct FolderList {
     appearance_subscription_set: bool,
     /// Handle for scroll state
     scroll_handle: ScrollHandle,
+    /// Conversion progress state
+    conversion_state: ConversionState,
 }
 
 impl FolderList {
@@ -38,6 +91,7 @@ impl FolderList {
             drop_target_index: None,
             appearance_subscription_set: false,
             scroll_handle: ScrollHandle::new(),
+            conversion_state: ConversionState::new(),
         }
     }
 
@@ -424,8 +478,14 @@ impl FolderList {
             )
     }
 
-    /// Run the conversion process for all folders
-    fn run_conversion(&self) {
+    /// Run the conversion process for all folders (async, in background thread)
+    fn run_conversion(&mut self) {
+        // Don't start if already converting
+        if self.conversion_state.is_converting() {
+            println!("Conversion already in progress");
+            return;
+        }
+
         println!("Starting conversion...");
 
         // Verify ffmpeg is available
@@ -456,9 +516,8 @@ impl FolderList {
         let bitrate = self.calculated_bitrate();
         println!("Target bitrate: {} kbps", bitrate);
 
-        // Process each folder
-        let mut total_converted = 0u32;
-        let mut total_failed = 0u32;
+        // Build list of conversion jobs
+        let mut jobs: Vec<ConversionJob> = Vec::new();
 
         for (folder_idx, folder) in self.folders.iter().enumerate() {
             // Create numbered album folder (01-AlbumName, 02-AlbumName, etc.)
@@ -468,7 +527,7 @@ impl FolderList {
             let album_dir_name = format!("{:02}-{}", folder_idx + 1, folder_name);
             let album_output_dir = output_dir.join(&album_dir_name);
 
-            println!("Processing folder: {} -> {}", folder.path.display(), album_dir_name);
+            println!("Preparing folder: {} -> {}", folder.path.display(), album_dir_name);
 
             // Get all audio files in this folder
             let audio_files = match get_audio_files(&folder.path) {
@@ -479,27 +538,53 @@ impl FolderList {
                 }
             };
 
-            // Convert each file
-            for audio_file in &audio_files {
-                let result = convert_file_with_mkdir(
-                    &ffmpeg_path,
-                    &audio_file.path,
-                    &album_output_dir,
-                    bitrate,
-                );
+            // Create a job for each file
+            for audio_file in audio_files {
+                let file_stem = audio_file.path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("output");
+                let output_path = album_output_dir.join(format!("{}.mp3", file_stem));
 
-                if result.success {
-                    total_converted += 1;
-                } else {
-                    total_failed += 1;
-                    if let Some(error) = &result.error {
-                        eprintln!("Failed to convert {:?}: {}", audio_file.path, error);
-                    }
-                }
+                jobs.push(ConversionJob {
+                    input_path: audio_file.path,
+                    output_path,
+                });
             }
         }
 
-        println!("Conversion complete: {} converted, {} failed", total_converted, total_failed);
+        let total_jobs = jobs.len();
+        if total_jobs == 0 {
+            println!("No files to convert");
+            return;
+        }
+
+        // Reset conversion state
+        self.conversion_state.reset(total_jobs);
+
+        // Clone state for the background thread
+        let state = self.conversion_state.clone();
+
+        // Spawn background thread with tokio runtime
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+            rt.block_on(async {
+                let progress = Arc::new(ConversionProgress::new(total_jobs));
+
+                let (completed, failed) = convert_files_parallel(
+                    ffmpeg_path,
+                    jobs,
+                    bitrate,
+                    progress,
+                ).await;
+
+                println!("Conversion complete: {} converted, {} failed", completed, failed);
+                state.finish();
+            });
+        });
+
+        println!("Conversion started in background ({} files)", total_jobs);
     }
 }
 
