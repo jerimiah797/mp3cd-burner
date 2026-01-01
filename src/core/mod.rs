@@ -11,6 +11,6 @@ mod scanning;
 mod state;
 
 pub use scanning::{
-    format_duration, format_size, get_audio_files, scan_music_folder,
+    find_album_folders, format_duration, format_size, get_audio_files, scan_music_folder,
     AudioFileInfo, MusicFolder,
 };

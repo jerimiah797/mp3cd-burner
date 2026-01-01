@@ -16,7 +16,7 @@ use crate::conversion::{
     calculate_multipass_bitrate, ensure_output_dir, verify_ffmpeg,
     convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
 };
-use crate::core::{format_duration, get_audio_files, scan_music_folder, MusicFolder};
+use crate::core::{find_album_folders, format_duration, get_audio_files, scan_music_folder, MusicFolder};
 use crate::ui::Theme;
 
 /// Calculate total size of files in a directory (recursive)
@@ -216,7 +216,7 @@ impl FolderList {
 
         println!("Starting async import of {} folders", new_paths.len());
 
-        // Reset import state
+        // Reset import state (total will be updated after expansion)
         self.import_state.reset(new_paths.len());
 
         // Clone state for background thread
@@ -224,7 +224,18 @@ impl FolderList {
 
         // Spawn background thread for scanning
         std::thread::spawn(move || {
-            for path in new_paths {
+            // Expand each path into album folders (smart detection)
+            let album_paths: Vec<PathBuf> = new_paths
+                .iter()
+                .flat_map(|p| find_album_folders(p))
+                .collect();
+
+            println!("Expanded to {} album folders", album_paths.len());
+
+            // Reset state with actual count
+            state.total.store(album_paths.len(), Ordering::SeqCst);
+
+            for path in album_paths {
                 println!("Scanning: {}", path.display());
                 match scan_music_folder(&path) {
                     Ok(folder) => {
@@ -322,15 +333,16 @@ impl FolderList {
     }
 
     /// Calculate the optimal bitrate to fit on a 700MB CD
-    /// Returns bitrate in kbps
     ///
     /// Uses multi-pass-aware calculation:
     /// - MP3s are copied (exact size)
     /// - Lossy files transcoded at source bitrate
     /// - Lossless files get remaining space
-    pub fn calculated_bitrate(&self) -> u32 {
+    ///
+    /// Returns the full estimate with bitrate and display logic
+    pub fn calculated_bitrate_estimate(&self) -> Option<crate::conversion::MultipassEstimate> {
         if self.folders.is_empty() {
-            return 320; // Default to max if no folders
+            return None;
         }
 
         // Collect all audio files from cached folder data
@@ -340,12 +352,18 @@ impl FolderList {
             .collect();
 
         if all_files.is_empty() {
-            return 320;
+            return None;
         }
 
         // Use multi-pass-aware calculation
-        let (bitrate, _copy, _lossy, _lossless) = calculate_multipass_bitrate(&all_files);
-        bitrate
+        Some(calculate_multipass_bitrate(&all_files))
+    }
+
+    /// Get the target bitrate for display (convenience wrapper)
+    pub fn calculated_bitrate(&self) -> u32 {
+        self.calculated_bitrate_estimate()
+            .map(|e| e.target_bitrate)
+            .unwrap_or(320)
     }
 
     /// Render the empty state drop zone
@@ -477,8 +495,14 @@ impl FolderList {
         let total_files = self.total_files();
         let total_size = self.total_size();
         let total_duration = self.total_duration();
-        let bitrate = self.calculated_bitrate();
+        let estimate = self.calculated_bitrate_estimate();
         let has_folders = !self.folders.is_empty();
+
+        // Format bitrate display: show "--" if no lossless and no lossy capping needed
+        let bitrate_display = match &estimate {
+            Some(e) if e.should_show_bitrate() => format!("{} kbps", e.target_bitrate),
+            _ => "--".to_string(),
+        };
 
         let success_color = theme.success;
         let success_hover = theme.success_hover;
@@ -576,7 +600,7 @@ impl FolderList {
                                 div()
                                     .text_color(success_color)
                                     .font_weight(gpui::FontWeight::BOLD)
-                                    .child(format!("{} kbps", bitrate)),
+                                    .child(bitrate_display.clone()),
                             ),
                     ),
             )

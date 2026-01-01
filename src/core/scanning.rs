@@ -62,6 +62,67 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
     })
 }
 
+/// Find all "album folders" under a given path
+///
+/// An album folder is a directory that contains audio files directly.
+/// This function handles smart expansion:
+/// - If the path contains audio files directly, returns just that path
+/// - If the path only contains subdirectories, finds all descendant folders
+///   that contain audio files and returns those
+///
+/// This allows users to drag a parent folder (e.g., /Artist/) and have each
+/// album subfolder imported separately.
+pub fn find_album_folders(path: &Path) -> Vec<PathBuf> {
+    if !path.is_dir() {
+        return vec![];
+    }
+
+    // Check if this folder directly contains audio files
+    let has_direct_audio = fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .any(|e| e.path().is_file() && is_audio_file(&e.path()))
+        })
+        .unwrap_or(false);
+
+    if has_direct_audio {
+        // This folder has audio files - import it as-is
+        return vec![path.to_path_buf()];
+    }
+
+    // No direct audio files - look for subfolders that contain audio
+    let mut album_folders = Vec::new();
+
+    // Use WalkDir to find all directories, then check each for audio files
+    for entry in WalkDir::new(path)
+        .follow_links(true)
+        .min_depth(1) // Skip the root path itself
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            // Check if this subdirectory has audio files directly
+            let subdir_has_audio = fs::read_dir(entry_path)
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.path().is_file() && is_audio_file(&e.path()))
+                })
+                .unwrap_or(false);
+
+            if subdir_has_audio {
+                album_folders.push(entry_path.to_path_buf());
+            }
+        }
+    }
+
+    // Sort for consistent ordering
+    album_folders.sort();
+    album_folders
+}
+
 /// Get all audio files in a directory with full metadata
 ///
 /// This function handles deduplication of files that appear in both

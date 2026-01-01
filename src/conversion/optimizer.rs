@@ -178,21 +178,48 @@ pub fn optimize_bitrate(
     (best_bitrate, best_estimate)
 }
 
+/// Result of multi-pass bitrate calculation
+#[derive(Debug, Clone)]
+pub struct MultipassEstimate {
+    /// Target bitrate for lossless files (or cap for lossy if no lossless)
+    pub target_bitrate: u32,
+    /// Number of files that will be copied
+    pub copy_count: usize,
+    /// Number of lossy files that will be transcoded
+    pub lossy_count: usize,
+    /// Number of lossless files that will be transcoded
+    pub lossless_count: usize,
+    /// Maximum source bitrate among lossy files (for UI display logic)
+    pub max_lossy_bitrate: u32,
+    /// Whether the estimated output would exceed CD capacity (before capping)
+    pub would_exceed_capacity: bool,
+}
+
+impl MultipassEstimate {
+    /// Returns true if the target bitrate should be displayed
+    ///
+    /// Show bitrate when:
+    /// - There are lossless files (they will use the target), OR
+    /// - Estimated output exceeds capacity (lossy files need to be capped)
+    pub fn should_show_bitrate(&self) -> bool {
+        self.lossless_count > 0 || self.would_exceed_capacity
+    }
+}
+
 /// Multi-pass-aware bitrate calculation
 ///
 /// Calculates the lossless bitrate by accounting for:
 /// - MP3s being copied (exact size known)
 /// - Lossy files transcoded at source bitrate (estimated size)
 /// - Remaining space goes to lossless files
-///
-/// Returns (lossless_bitrate, copy_count, lossy_count, lossless_count)
-pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> (u32, usize, usize, usize) {
+pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> MultipassEstimate {
     let mut copy_size = 0u64;
     let mut lossy_size = 0u64;
     let mut lossless_duration = 0.0f64;
     let mut copy_count = 0usize;
     let mut lossy_count = 0usize;
     let mut lossless_count = 0usize;
+    let mut max_lossy_bitrate = 0u32;
 
     // Use MAX_BITRATE for categorization so MP3s within threshold are correctly identified as copies
     let categorization_bitrate = MAX_BITRATE;
@@ -224,6 +251,7 @@ pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> (u32, usize, usiz
                 let audio_bytes = (file.duration * *br as f64 * 1000.0 / 8.0) as u64;
                 lossy_size += audio_bytes + 10_000; // 10KB overhead
                 lossy_count += 1;
+                max_lossy_bitrate = max_lossy_bitrate.max(*br);
             }
             EncodingStrategy::ConvertAtTargetBitrate(_) => {
                 // Lossless - just track duration, bitrate calculated from remaining space
@@ -236,17 +264,19 @@ pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> (u32, usize, usiz
     // Apply safety margin to copy and lossy estimates
     let fixed_size = ((copy_size + lossy_size) as f64 * (1.0 + SAFETY_MARGIN)) as u64;
 
+    // Check if lossy-only output would exceed capacity
+    let would_exceed_capacity = lossless_count == 0 && fixed_size > CD_CAPACITY_BYTES;
+
     // Calculate remaining space for lossless
     let remaining_bytes = CD_CAPACITY_BYTES.saturating_sub(fixed_size);
 
     // Calculate optimal lossless bitrate from remaining space
-    let lossless_bitrate = if lossless_duration > 0.0 && remaining_bytes > 0 {
+    let target_bitrate = if lossless_duration > 0.0 && remaining_bytes > 0 {
         // bitrate = bytes * 8 / duration / 1000 (kbps)
         let raw_bitrate = (remaining_bytes as f64 * 8.0 / lossless_duration / 1000.0) as u32;
         raw_bitrate.clamp(MIN_BITRATE, MAX_BITRATE)
     } else if lossless_count == 0 {
-        // No lossless files - return a reasonable default for lossy-only scenario
-        // This is the max bitrate lossy files might be capped to
+        // No lossless files - calculate what cap would be needed if we exceed capacity
         let total_duration: f64 = files.iter().map(|f| f.duration).sum();
         if total_duration > 0.0 {
             let raw = (CD_CAPACITY_BYTES as f64 * 8.0 / total_duration / 1000.0) as u32;
@@ -259,7 +289,14 @@ pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> (u32, usize, usiz
         MIN_BITRATE
     };
 
-    (lossless_bitrate, copy_count, lossy_count, lossless_count)
+    MultipassEstimate {
+        target_bitrate,
+        copy_count,
+        lossy_count,
+        lossless_count,
+        max_lossy_bitrate,
+        would_exceed_capacity,
+    }
 }
 
 #[cfg(test)]

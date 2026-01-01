@@ -7,7 +7,7 @@ mod optimizer;
 mod parallel;
 
 pub use ffmpeg::ConversionResult;
-pub use optimizer::calculate_multipass_bitrate;
+pub use optimizer::{calculate_multipass_bitrate, MultipassEstimate};
 pub use parallel::{convert_files_parallel_with_callback, ConversionJob, ConversionProgress};
 
 use std::path::PathBuf;
