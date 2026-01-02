@@ -12,12 +12,13 @@ use std::sync::{Arc, Mutex};
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
-use crate::burning::{create_iso, burn_iso_with_cancel, check_cd_status, CdStatus};
+use crate::burning::{create_iso, burn_iso_with_cancel, check_cd_status, CdStatus, IsoState, IsoAction, determine_iso_action};
 use crate::conversion::{
     calculate_multipass_bitrate, ensure_output_dir, verify_ffmpeg,
     convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
+    BackgroundEncoderHandle, OutputManager,
 };
-use crate::core::{find_album_folders, format_duration, get_audio_files, scan_music_folder, MusicFolder, AppSettings};
+use crate::core::{find_album_folders, format_duration, get_audio_files, scan_music_folder, MusicFolder, AppSettings, FolderConversionStatus, FolderId};
 use crate::ui::Theme;
 
 /// Calculate total size of files in a directory (recursive)
@@ -244,6 +245,14 @@ pub struct FolderList {
     import_state: ImportState,
     /// Focus handle for receiving actions (None in tests)
     focus_handle: Option<FocusHandle>,
+    /// Background encoder handle for immediate conversion (None until initialized)
+    #[allow(dead_code)]
+    background_encoder: Option<BackgroundEncoderHandle>,
+    /// Output manager for session-based directories (None until initialized)
+    #[allow(dead_code)]
+    output_manager: Option<OutputManager>,
+    /// Current ISO state (for "Burn Another" functionality)
+    iso_state: Option<IsoState>,
 }
 
 impl FolderList {
@@ -256,6 +265,9 @@ impl FolderList {
             conversion_state: ConversionState::new(),
             import_state: ImportState::new(),
             focus_handle: Some(cx.focus_handle()),
+            background_encoder: None,
+            output_manager: None,
+            iso_state: None,
         }
     }
 
@@ -270,6 +282,172 @@ impl FolderList {
             conversion_state: ConversionState::new(),
             import_state: ImportState::new(),
             focus_handle: None,
+            background_encoder: None,
+            output_manager: None,
+            iso_state: None,
+        }
+    }
+
+    /// Initialize the background encoder for immediate folder conversion
+    ///
+    /// This should be called after construction when background encoding is desired.
+    /// If not called, folders will only be converted when "Burn" is clicked (legacy mode).
+    #[allow(dead_code)]
+    pub fn enable_background_encoding(&mut self) -> Result<(), String> {
+        // Create output manager for this session
+        let output_manager = OutputManager::new()?;
+
+        // Clean up old sessions from previous runs
+        output_manager.cleanup_old_sessions()?;
+
+        self.output_manager = Some(output_manager);
+
+        // Note: BackgroundEncoder requires tokio runtime, so we don't start it here.
+        // It will be started lazily when folders are added and we're in an async context.
+        // For now, just mark that background encoding is enabled.
+        println!("Background encoding enabled, session: {:?}",
+            self.output_manager.as_ref().map(|m| m.session_id()));
+
+        Ok(())
+    }
+
+    /// Set the background encoder handle (for use from async context)
+    #[allow(dead_code)]
+    pub fn set_background_encoder(&mut self, handle: BackgroundEncoderHandle) {
+        self.background_encoder = Some(handle);
+    }
+
+    /// Check if background encoding is available
+    #[allow(dead_code)]
+    pub fn has_background_encoder(&self) -> bool {
+        self.background_encoder.is_some()
+    }
+
+    /// Get the output manager if available
+    #[allow(dead_code)]
+    pub fn output_manager(&self) -> Option<&OutputManager> {
+        self.output_manager.as_ref()
+    }
+
+    /// Queue a folder for background encoding (if encoder is available)
+    #[allow(dead_code)]
+    fn queue_folder_for_encoding(&self, folder: &MusicFolder) {
+        if let Some(ref encoder) = self.background_encoder {
+            encoder.add_folder(folder.clone());
+        }
+    }
+
+    /// Notify encoder that a folder was removed
+    #[allow(dead_code)]
+    fn notify_folder_removed(&self, folder: &MusicFolder) {
+        if let Some(ref encoder) = self.background_encoder {
+            encoder.remove_folder(&folder.id);
+        }
+    }
+
+    /// Notify encoder that folders were reordered
+    #[allow(dead_code)]
+    fn notify_folders_reordered(&self) {
+        if let Some(ref encoder) = self.background_encoder {
+            encoder.folders_reordered();
+        }
+    }
+
+    /// Get the conversion status of a specific folder
+    #[allow(dead_code)]
+    pub fn get_folder_conversion_status(&self, folder_id: &crate::core::FolderId) -> FolderConversionStatus {
+        if let Some(ref encoder) = self.background_encoder {
+            let state = encoder.get_state();
+            let guard = state.lock().unwrap();
+
+            // Check if completed
+            if let Some(status) = guard.completed.get(folder_id) {
+                return status.clone();
+            }
+
+            // Check if active
+            if let Some((active_id, _)) = &guard.active {
+                if active_id == folder_id {
+                    return FolderConversionStatus::Converting {
+                        files_completed: 0,
+                        files_total: 0,
+                    };
+                }
+            }
+
+            // Check if queued
+            if guard.queue.iter().any(|(id, _)| id == folder_id) {
+                return FolderConversionStatus::NotConverted;
+            }
+        }
+
+        FolderConversionStatus::NotConverted
+    }
+
+    /// Get the current ISO state
+    #[allow(dead_code)]
+    pub fn iso_state(&self) -> Option<&IsoState> {
+        self.iso_state.as_ref()
+    }
+
+    /// Set the ISO state after successful burn
+    #[allow(dead_code)]
+    pub fn set_iso_state(&mut self, iso_state: IsoState) {
+        self.iso_state = Some(iso_state);
+    }
+
+    /// Clear the ISO state (e.g., when starting fresh)
+    #[allow(dead_code)]
+    pub fn clear_iso_state(&mut self) {
+        self.iso_state = None;
+    }
+
+    /// Check if "Burn Another" is available
+    ///
+    /// Returns true if we have a valid ISO that matches current folders.
+    pub fn can_burn_another(&self) -> bool {
+        match &self.iso_state {
+            Some(iso) => iso.is_ready_to_burn(&self.folders),
+            None => false,
+        }
+    }
+
+    /// Get the list of encoded folder IDs (from background encoder state)
+    fn get_encoded_folder_ids(&self) -> Vec<FolderId> {
+        if let Some(ref encoder) = self.background_encoder {
+            let state = encoder.get_state();
+            let guard = state.lock().unwrap();
+            guard.completed.keys().cloned().collect()
+        } else {
+            // In legacy mode (no background encoder), we don't track this
+            vec![]
+        }
+    }
+
+    /// Determine what action is needed for the current burn request
+    #[allow(dead_code)]
+    pub fn determine_burn_action(&self) -> IsoAction {
+        let encoded_ids = self.get_encoded_folder_ids();
+        determine_iso_action(self.iso_state.as_ref(), &self.folders, &encoded_ids)
+    }
+
+    /// Check if all folders are ready (converted) for burning
+    #[allow(dead_code)]
+    pub fn all_folders_converted(&self) -> bool {
+        if self.folders.is_empty() {
+            return false;
+        }
+
+        if let Some(ref encoder) = self.background_encoder {
+            let state = encoder.get_state();
+            let guard = state.lock().unwrap();
+
+            self.folders.iter().all(|folder| {
+                guard.completed.contains_key(&folder.id)
+            })
+        } else {
+            // In legacy mode, assume not converted until burn process runs
+            false
         }
     }
 
@@ -372,6 +550,8 @@ impl FolderList {
         if path.is_dir() && !self.contains_path(&path) {
             if let Ok(folder) = scan_music_folder(&path) {
                 self.folders.push(folder);
+                // Invalidate ISO since folder list changed
+                self.iso_state = None;
             }
         }
     }
@@ -379,7 +559,11 @@ impl FolderList {
     /// Remove a folder by index
     pub fn remove_folder(&mut self, index: usize) {
         if index < self.folders.len() {
-            self.folders.remove(index);
+            let folder = self.folders.remove(index);
+            // Notify encoder if available
+            self.notify_folder_removed(&folder);
+            // Invalidate ISO since folder list changed
+            self.iso_state = None;
         }
     }
 
@@ -389,6 +573,10 @@ impl FolderList {
             let folder = self.folders.remove(from);
             let insert_at = if to > from { to - 1 } else { to };
             self.folders.insert(insert_at, folder);
+            // Notify encoder about reorder
+            self.notify_folders_reordered();
+            // Invalidate ISO since folder order changed (will need regeneration)
+            self.iso_state = None;
         }
     }
 
@@ -396,6 +584,7 @@ impl FolderList {
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.folders.clear();
+        self.iso_state = None;
     }
 
     /// Get all folder paths (for saving profiles, etc.)
@@ -414,6 +603,7 @@ impl FolderList {
     #[allow(dead_code)]
     pub fn set_folders(&mut self, paths: Vec<PathBuf>) {
         self.folders.clear();
+        self.iso_state = None;
         for path in paths {
             if let Ok(folder) = scan_music_folder(&path) {
                 self.folders.push(folder);
@@ -949,6 +1139,28 @@ impl FolderList {
                                     .child("Erase\n& Burn")
                             )
                         })
+                } else if self.can_burn_another() {
+                    // "Burn Another" button - ISO exists and matches current folders
+                    div()
+                        .id(SharedString::from("burn-another-btn"))
+                        .w(gpui::px(150.0))
+                        .h(gpui::px(70.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(success_color)
+                        .text_color(gpui::white())
+                        .text_lg()
+                        .rounded_md()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(success_hover))
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            println!("Burn Another clicked!");
+                            this.burn_existing_iso(window, cx);
+                        }))
+                        .child("Burn\nAnother")
                 } else {
                     // Normal Convert & Burn button
                     div()
@@ -1445,6 +1657,172 @@ impl FolderList {
         cx.notify();
     }
 
+    /// Burn an existing ISO (for "Burn Another" functionality)
+    ///
+    /// This skips the conversion step and directly burns the existing ISO.
+    fn burn_existing_iso(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Get the ISO path from iso_state
+        let iso_path = match &self.iso_state {
+            Some(iso) if iso.file_exists() => iso.path.clone(),
+            _ => {
+                eprintln!("No valid ISO available for burning");
+                return;
+            }
+        };
+
+        // Don't start if already converting/burning
+        if self.conversion_state.is_converting() {
+            println!("Already burning");
+            return;
+        }
+
+        println!("Burning existing ISO: {:?}", iso_path);
+
+        // Reset state for burning only (no file conversion)
+        self.conversion_state.reset(0);
+        self.conversion_state.set_stage(BurnStage::WaitingForCd);
+
+        let state = self.conversion_state.clone();
+        let cancel_token = self.conversion_state.cancel_requested.clone();
+        let simulate_burn = cx.global::<AppSettings>().simulate_burn;
+
+        // Spawn background thread with tokio runtime (matches main burn flow)
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(async {
+                // Check for simulate mode first
+                if simulate_burn {
+                    println!("\n=== SIMULATED BURN (Burn Another) ===");
+                    println!("Would burn ISO: {}", iso_path.display());
+                    state.set_stage(BurnStage::Complete);
+                    state.finish();
+                    return;
+                }
+
+                println!("\n=== Waiting for blank CD (Burn Another) ===");
+
+                // Poll for CD insertion
+                let mut erase_first = false;
+                let mut cd_ready = false;
+
+                for _ in 0..120 {
+                    if cancel_token.load(Ordering::SeqCst) {
+                        println!("Burn cancelled while waiting for CD");
+                        state.set_stage(BurnStage::Cancelled);
+                        state.finish();
+                        return;
+                    }
+
+                    match check_cd_status() {
+                        Ok(CdStatus::Blank) => {
+                            println!("Blank CD detected");
+                            cd_ready = true;
+                            break;
+                        }
+                        Ok(CdStatus::ErasableWithData) => {
+                            println!("Erasable disc (CD-RW) with data detected");
+                            state.set_stage(BurnStage::ErasableDiscDetected);
+
+                            // Wait for user to approve erase or cancel
+                            loop {
+                                if cancel_token.load(Ordering::SeqCst) {
+                                    println!("Burn cancelled");
+                                    state.set_stage(BurnStage::Cancelled);
+                                    state.finish();
+                                    return;
+                                }
+                                if state.erase_approved.load(Ordering::SeqCst) {
+                                    println!("User approved erase - will erase and burn");
+                                    erase_first = true;
+                                    cd_ready = true;
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                            break;
+                        }
+                        Ok(CdStatus::NonErasable) => {
+                            println!("Non-erasable disc detected - please insert a blank disc");
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                        }
+                        Ok(CdStatus::NoDisc) => {
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+                        Err(e) => {
+                            eprintln!("Error checking CD: {}", e);
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+                    }
+                }
+
+                if !cd_ready {
+                    println!("No usable CD found after timeout");
+                    state.set_stage(BurnStage::Complete);
+                    state.finish();
+                    return;
+                }
+
+                // === BURN CD ===
+                if erase_first {
+                    state.set_stage(BurnStage::Erasing);
+                    println!("\n=== Erasing and Burning CD ===");
+                } else {
+                    state.set_stage(BurnStage::Burning);
+                    println!("\n=== Burning CD ===");
+                }
+
+                // Track progress
+                let state_for_progress = state.clone();
+                let last_progress = Arc::new(std::sync::atomic::AtomicI32::new(-1));
+                let last_progress_clone = last_progress.clone();
+                let is_erasing = erase_first;
+
+                let progress_callback = Box::new(move |progress: i32| {
+                    let current_stage = state_for_progress.get_stage();
+                    let prev = last_progress_clone.load(Ordering::SeqCst);
+
+                    if progress < 0 {
+                        if prev >= 95 && current_stage == BurnStage::Burning {
+                            state_for_progress.set_stage(BurnStage::Finishing);
+                        }
+                        return;
+                    }
+
+                    last_progress_clone.store(progress, Ordering::SeqCst);
+
+                    if is_erasing && prev > 50 && progress < 20 && current_stage == BurnStage::Erasing {
+                        state_for_progress.set_stage(BurnStage::Burning);
+                    }
+
+                    state_for_progress.set_burn_progress(progress);
+                });
+
+                match burn_iso_with_cancel(&iso_path, Some(progress_callback), Some(cancel_token.clone()), erase_first) {
+                    Ok(()) => {
+                        println!("CD burned successfully!");
+                        state.set_stage(BurnStage::Complete);
+                    }
+                    Err(e) if e.contains("cancelled") => {
+                        println!("Burn was cancelled");
+                        state.set_stage(BurnStage::Cancelled);
+                    }
+                    Err(e) => {
+                        eprintln!("Burn failed: {}", e);
+                        state.set_stage(BurnStage::Complete);
+                    }
+                }
+                state.finish();
+            });
+        });
+
+        // Start polling for progress updates
+        let window_handle = window.window_handle();
+        Self::start_progress_polling(self.conversion_state.clone(), window_handle, cx);
+
+        println!("Burn Another started");
+        cx.notify();
+    }
+
     /// Start a polling loop that updates the UI periodically during conversion
     fn start_progress_polling(
         state: ConversionState,
@@ -1454,7 +1832,7 @@ impl FolderList {
         // state is already cloned - no need to read entity
 
         // Clone in sync part BEFORE the async block - key to avoiding lifetime issues
-        cx.spawn(move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
+        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone(); // Clone here, in sync context
             async move {
                 // Poll until conversion finishes
@@ -1479,6 +1857,25 @@ impl FolderList {
 
                 // Final refresh to show completion state
                 let _ = async_cx.refresh();
+
+                // Save iso_state as soon as ISO is available (for "Burn Another" functionality)
+                // This happens even if burn is cancelled - ISO is still usable
+                let iso_path = state.iso_path.lock().unwrap().clone();
+                if let Some(path) = iso_path {
+                    let _ = this.update(&mut async_cx, |folder_list, _cx| {
+                        // Only update if we don't already have this ISO saved
+                        let should_update = match &folder_list.iso_state {
+                            Some(existing) => existing.path != path,
+                            None => true,
+                        };
+                        if should_update {
+                            if let Ok(iso_state) = IsoState::new(path, &folder_list.folders) {
+                                folder_list.iso_state = Some(iso_state);
+                                println!("ISO state saved - ready for Burn/Burn Another");
+                            }
+                        }
+                    });
+                }
 
                 // Show success dialog if completed (not cancelled)
                 let final_stage = state.get_stage();
@@ -1515,6 +1912,8 @@ impl FolderList {
                             for folder in folders {
                                 this.folders.push(folder);
                             }
+                            // Invalidate ISO since folder list changed
+                            this.iso_state = None;
                         });
                     }
 
@@ -1536,6 +1935,8 @@ impl FolderList {
                         for folder in folders {
                             this.folders.push(folder);
                         }
+                        // Invalidate ISO since folder list changed
+                        this.iso_state = None;
                     });
                 }
                 let _ = async_cx.refresh();
@@ -1551,13 +1952,16 @@ mod tests {
 
     /// Helper to create a test MusicFolder
     fn test_folder(path: &str) -> MusicFolder {
+        use crate::core::{FolderConversionStatus, FolderId};
         MusicFolder {
+            id: FolderId::from_path(std::path::Path::new(path)),
             path: PathBuf::from(path),
             file_count: 10,
             total_size: 50_000_000,
             total_duration: 2400.0, // 40 minutes
             album_art: None,
             audio_files: Vec::new(),
+            conversion_status: FolderConversionStatus::default(),
         }
     }
 

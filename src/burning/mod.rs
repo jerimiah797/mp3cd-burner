@@ -5,6 +5,8 @@
 
 pub mod cd;
 pub mod iso;
+pub mod iso_state;
 
 pub use cd::{burn_iso_with_cancel, check_cd_status, CdStatus};
 pub use iso::create_iso;
+pub use iso_state::{determine_iso_action, IsoAction, IsoState, MAX_ISO_SIZE_BYTES};

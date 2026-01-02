@@ -9,10 +9,13 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::audio::{get_album_art, get_audio_metadata, is_audio_file};
+use crate::core::folder_state::{FolderConversionStatus, FolderId};
 
 /// Represents metadata about a music folder
 #[derive(Debug, Clone)]
 pub struct MusicFolder {
+    /// Unique identifier for this folder (based on path + mtime)
+    pub id: FolderId,
     pub path: PathBuf,
     pub file_count: u32,
     pub total_size: u64,
@@ -20,6 +23,8 @@ pub struct MusicFolder {
     pub album_art: Option<String>,
     /// Cached audio file info for bitrate calculation
     pub audio_files: Vec<AudioFileInfo>,
+    /// Current conversion status for background encoding
+    pub conversion_status: FolderConversionStatus,
 }
 
 /// Represents metadata about an audio file
@@ -52,13 +57,18 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
     // Extract album art from the first audio file
     let album_art = audio_files.first().and_then(|f| get_album_art(&f.path));
 
+    // Generate unique folder ID based on path and modification time
+    let id = FolderId::from_path(path);
+
     Ok(MusicFolder {
+        id,
         path: path.to_path_buf(),
         file_count,
         total_size,
         total_duration,
         album_art,
         audio_files,
+        conversion_status: FolderConversionStatus::default(),
     })
 }
 

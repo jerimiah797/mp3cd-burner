@@ -66,46 +66,52 @@ src/
 
 **Total: 35 tests passing**
 
-### Phase 4: Core Features ⏳ IN PROGRESS
+### Phase 4: Core Features ✅ DONE
 - [x] Folder scanning (scan_music_folder, get_audio_files) - 7 tests
 - [x] MusicFolder and AudioFileInfo types
 - [x] UI integration (folders scanned on drop, show file count & size)
 - [x] Bitrate calculation (smart encoding logic) - 11 tests
-- [ ] Progress tracking during conversion
-- [ ] Process management (ChildProcesses, CancellationFlag)
+- [x] Progress tracking during conversion (real-time UI updates)
+- [x] Process management (cancellation support)
 
-**Total: 55 tests passing**
+### Phase 5: Conversion Pipeline ✅ DONE
+- [x] FFmpeg integration (embedded binary, spawn processes)
+- [x] Parallel conversion with semaphore (CPU-aware worker pool)
+- [x] Smart encoding strategies (copy, convert at source/target bitrate)
+- [x] Multi-pass conversion for optimal CD utilization
+- [x] Album art extraction (Symphonia → temp files)
 
-### Phase 5: Conversion Pipeline
-- [ ] FFmpeg integration (spawn processes, track progress)
-- [ ] Parallel conversion with semaphore
-- [ ] Smart encoding strategies (copy, convert at source/target bitrate)
-- [ ] Album art handling
-
-### Phase 6: CD Burning
-- [ ] ISO creation (hdiutil) - backend ready
-- [ ] CD burning (drutil) - backend ready
-- [ ] CD check dialog loop
+### Phase 6: CD Burning ✅ DONE
+- [x] ISO creation (hdiutil makehybrid)
+- [x] CD burning (hdiutil burn with puppetstrings progress)
+- [x] CD detection loop (blank, CD-RW with data, non-erasable)
+- [x] CD-RW erase + burn in single operation
+- [x] Burn progress tracking with phase detection (erase → burn → finishing)
+- [x] Success dialog on completion
 - [ ] "Burn Another" mode
 
 ### Phase 7: Native Menus ✅ PARTIALLY DONE
 - [x] Application menu (About, Quit)
 - [x] File menu (structure in place - New, Open, Save, Save As)
-- [x] Options menu (structure in place - Simulate, No Lossy, Embed Art)
+- [x] Options menu (Simulate Burn with checkmark toggle)
 - [x] Keyboard shortcuts (Cmd+Q)
-- [ ] Wire up menu actions to actual functionality
-- [ ] Checkmark toggles for Options menu
+- [x] Open Output Folder action
+- [ ] Wire up remaining File menu actions
+- [ ] No Lossy Conversions toggle
+- [ ] Embed Album Art toggle
 
 ### Phase 8: Profile System
 - [ ] Save/Load profiles with file dialogs
 - [ ] Recent profiles in menu
 - [ ] Unsaved changes detection
 
-### Phase 9: Polish
-- [ ] Album art display
-- [ ] Dark mode support
+### Phase 9: Polish ✅ MOSTLY DONE
+- [x] Album art display in folder cards
+- [x] Dark mode support (system appearance detection)
+- [x] Minimum window size (500x300)
+- [x] Error handling & user feedback (dialogs, progress states)
+- [x] Streamlined UI (hidden cancel, consistent button sizing)
 - [ ] Window state persistence
-- [ ] Error handling & user feedback
 
 ## What Was Directly Copied
 
@@ -126,10 +132,12 @@ These modules had **no Tauri dependencies** and were copied as-is:
 
 1. ~~**Folder scanning** - Need to port scan_music_folder logic~~ ✅ DONE
 2. ~~**Bitrate calculation** - Smart encoding logic~~ ✅ DONE
-3. **FFmpeg conversion** - The main convert_files_background logic from lib.rs
-4. **Menu actions** - Wire File/Options menus to actual functionality
-5. **File dialogs** - Use GPUI's cx.prompt_for_paths() for Open/Save
-6. **Progress UI** - Show conversion/burn progress in the UI
+3. ~~**FFmpeg conversion** - The main convert_files_background logic from lib.rs~~ ✅ DONE
+4. ~~**Progress UI** - Show conversion/burn progress in the UI~~ ✅ DONE
+5. **Menu actions** - Wire remaining File/Options menus to actual functionality
+6. **File dialogs** - Use GPUI's cx.prompt_for_paths() for Open/Save profiles
+7. **Profile system** - Save/load burn profiles
+8. **"Burn Another" mode** - Re-burn same ISO without re-converting
 
 ## Key Architectural Differences
 
