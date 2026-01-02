@@ -34,6 +34,44 @@ impl MusicFolder {
     }
 }
 
+#[cfg(test)]
+impl MusicFolder {
+    /// Create a MusicFolder for testing purposes
+    ///
+    /// Creates a folder with sensible defaults:
+    /// - 10 files, 50MB total, 40 minutes duration
+    /// - No album art, empty audio files list
+    /// - Default conversion status
+    pub fn new_for_test(path: &str) -> Self {
+        Self {
+            id: FolderId::from_path(Path::new(path)),
+            path: PathBuf::from(path),
+            file_count: 10,
+            total_size: 50_000_000,
+            total_duration: 2400.0, // 40 minutes
+            album_art: None,
+            audio_files: Vec::new(),
+            conversion_status: FolderConversionStatus::default(),
+        }
+    }
+
+    /// Create a MusicFolder for testing with a custom name-based ID
+    ///
+    /// Uses the name directly as the FolderId (useful for hash testing)
+    pub fn new_for_test_with_id(name: &str) -> Self {
+        Self {
+            id: FolderId(name.to_string()),
+            path: PathBuf::from(format!("/test/{}", name)),
+            file_count: 5,
+            total_size: 50_000_000,
+            total_duration: 300.0,
+            album_art: None,
+            audio_files: Vec::new(),
+            conversion_status: FolderConversionStatus::default(),
+        }
+    }
+}
+
 /// Represents metadata about an audio file
 #[derive(Debug, Clone)]
 pub struct AudioFileInfo {

@@ -186,22 +186,7 @@ pub fn load_profile_from_path(path: &Path) -> Result<LoadedProfile, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FolderConversionStatus, FolderId};
     use tempfile::TempDir;
-
-    /// Helper to create a test MusicFolder
-    fn test_folder(path: &str) -> MusicFolder {
-        MusicFolder {
-            id: FolderId::from_path(Path::new(path)),
-            path: PathBuf::from(path),
-            file_count: 10,
-            total_size: 50_000_000,
-            total_duration: 2400.0,
-            album_art: None,
-            audio_files: Vec::new(),
-            conversion_status: FolderConversionStatus::default(),
-        }
-    }
 
     #[test]
     fn test_create_profile_empty_folders() {
@@ -212,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_create_profile_with_folders() {
-        let folders = vec![test_folder("/test/album")];
+        let folders = vec![MusicFolder::new_for_test("/test/album")];
 
         let profile = create_profile("My Album".to_string(), &folders, None, None);
         assert_eq!(profile.profile_name, "My Album");
@@ -225,7 +210,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let profile_path = temp_dir.path().join("test.burn");
 
-        let folders = vec![test_folder("/test/album")];
+        let folders = vec![MusicFolder::new_for_test("/test/album")];
 
         // Save
         let result = save_profile_to_path(

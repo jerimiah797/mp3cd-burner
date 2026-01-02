@@ -4,21 +4,6 @@ use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-/// Helper to create a test MusicFolder
-fn test_folder(path: &str) -> MusicFolder {
-    use crate::core::{FolderConversionStatus, FolderId};
-    MusicFolder {
-        id: FolderId::from_path(std::path::Path::new(path)),
-        path: PathBuf::from(path),
-        file_count: 10,
-        total_size: 50_000_000,
-        total_duration: 2400.0, // 40 minutes
-        album_art: None,
-        audio_files: Vec::new(),
-        conversion_status: FolderConversionStatus::default(),
-    }
-}
-
 #[test]
 fn test_folder_list_new() {
     let list = FolderList::new_for_test();
@@ -29,8 +14,8 @@ fn test_folder_list_new() {
 #[test]
 fn test_add_folder() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(test_folder("/test/folder1"));
-    list.folders.push(test_folder("/test/folder2"));
+    list.folders.push(MusicFolder::new_for_test("/test/folder1"));
+    list.folders.push(MusicFolder::new_for_test("/test/folder2"));
 
     assert_eq!(list.len(), 2);
 }
@@ -38,8 +23,8 @@ fn test_add_folder() {
 #[test]
 fn test_remove_folder() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(test_folder("/test/folder1"));
-    list.folders.push(test_folder("/test/folder2"));
+    list.folders.push(MusicFolder::new_for_test("/test/folder1"));
+    list.folders.push(MusicFolder::new_for_test("/test/folder2"));
 
     list.remove_folder(0);
 
@@ -50,9 +35,9 @@ fn test_remove_folder() {
 #[test]
 fn test_move_folder_forward() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(test_folder("/test/a"));
-    list.folders.push(test_folder("/test/b"));
-    list.folders.push(test_folder("/test/c"));
+    list.folders.push(MusicFolder::new_for_test("/test/a"));
+    list.folders.push(MusicFolder::new_for_test("/test/b"));
+    list.folders.push(MusicFolder::new_for_test("/test/c"));
 
     // Move "a" to position 2 (after "b")
     list.move_folder(0, 2);
@@ -65,9 +50,9 @@ fn test_move_folder_forward() {
 #[test]
 fn test_move_folder_backward() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(test_folder("/test/a"));
-    list.folders.push(test_folder("/test/b"));
-    list.folders.push(test_folder("/test/c"));
+    list.folders.push(MusicFolder::new_for_test("/test/a"));
+    list.folders.push(MusicFolder::new_for_test("/test/b"));
+    list.folders.push(MusicFolder::new_for_test("/test/c"));
 
     // Move "c" to position 0 (before "a")
     list.move_folder(2, 0);
@@ -80,8 +65,8 @@ fn test_move_folder_backward() {
 #[test]
 fn test_clear() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(test_folder("/test/folder1"));
-    list.folders.push(test_folder("/test/folder2"));
+    list.folders.push(MusicFolder::new_for_test("/test/folder1"));
+    list.folders.push(MusicFolder::new_for_test("/test/folder2"));
 
     list.clear();
 
@@ -91,8 +76,8 @@ fn test_clear() {
 #[test]
 fn test_total_files() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(test_folder("/test/folder1")); // 10 files
-    list.folders.push(test_folder("/test/folder2")); // 10 files
+    list.folders.push(MusicFolder::new_for_test("/test/folder1")); // 10 files
+    list.folders.push(MusicFolder::new_for_test("/test/folder2")); // 10 files
 
     assert_eq!(list.total_files(), 20);
 }
@@ -100,8 +85,8 @@ fn test_total_files() {
 #[test]
 fn test_total_size() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(test_folder("/test/folder1")); // 50MB
-    list.folders.push(test_folder("/test/folder2")); // 50MB
+    list.folders.push(MusicFolder::new_for_test("/test/folder1")); // 50MB
+    list.folders.push(MusicFolder::new_for_test("/test/folder2")); // 50MB
 
     assert_eq!(list.total_size(), 100_000_000);
 }

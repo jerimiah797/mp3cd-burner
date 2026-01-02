@@ -17,10 +17,7 @@ use super::status_bar::{
     render_erase_burn_button_base, render_import_progress, render_iso_too_large,
     render_progress_box, render_stats_panel, StatusBarState,
 };
-use crate::burning::{
-    coordinate_burn, create_iso, BurnConfig,
-    IsoAction, IsoState, determine_iso_action,
-};
+use crate::burning::{determine_iso_action, IsoAction, IsoState};
 use crate::conversion::{calculate_multipass_bitrate, BackgroundEncoderHandle, OutputManager};
 use crate::core::{
     find_album_folders, scan_music_folder,
@@ -69,6 +66,8 @@ pub struct FolderList {
     last_calculated_bitrate: Option<u32>,
     /// Whether we need to grab initial focus (for menu items to work)
     needs_initial_focus: bool,
+    /// Flag to clear folders after save completes (for New -> Save flow)
+    pending_new_after_save: bool,
 }
 
 impl FolderList {
@@ -90,6 +89,7 @@ impl FolderList {
             last_folder_change: None,
             last_calculated_bitrate: None,
             needs_initial_focus: true,
+            pending_new_after_save: false,
         }
     }
 
@@ -113,6 +113,7 @@ impl FolderList {
             last_folder_change: None,
             last_calculated_bitrate: None,
             needs_initial_focus: false,
+            pending_new_after_save: false,
         }
     }
 
@@ -698,12 +699,75 @@ impl FolderList {
     }
 
     /// Clear current state for a new profile (called from File > New menu)
-    pub fn new_profile(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// If there are unsaved folders, shows a confirmation dialog first.
+    pub fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // If no folders, just clear immediately
+        if self.folders.is_empty() {
+            self.clear_for_new_profile(cx);
+            return;
+        }
+
+        // Show confirmation dialog
+        let receiver = window.prompt(
+            PromptLevel::Warning,
+            "Unsaved Changes",
+            Some("You have folders that haven't been saved to a Burn Profile. What would you like to do?"),
+            &["Save Burn Profile...", "Don't Save", "Cancel"],
+            cx,
+        );
+
+        let window_handle = window.window_handle();
+
+        cx.spawn(move |this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                if let Ok(choice) = receiver.await {
+                    match choice {
+                        0 => {
+                            // Save - show save dialog, then clear
+                            println!("User chose to save - showing save dialog");
+                            let _ = async_cx.update_window(window_handle, |_, window, cx| {
+                                let _ = this_handle.update(cx, |this, cx| {
+                                    // Set flag to clear after save
+                                    this.pending_new_after_save = true;
+                                    this.save_profile_dialog(window, cx);
+                                });
+                            });
+                        }
+                        1 => {
+                            // Don't Save - clear immediately
+                            println!("User chose not to save - clearing");
+                            let _ = async_cx.update(|cx| {
+                                let _ = this_handle.update(cx, |this, cx| {
+                                    this.clear_for_new_profile(cx);
+                                });
+                            });
+                        }
+                        2 => {
+                            // Cancel - do nothing
+                            println!("User cancelled new profile");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }).detach();
+    }
+
+    /// Actually clear the state for a new profile
+    fn clear_for_new_profile(&mut self, cx: &mut Context<Self>) {
         self.folders.clear();
         self.iso_state = None;
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
-        println!("New profile - cleared all folders");
+        self.last_folder_change = None;
+        self.last_calculated_bitrate = None;
+        // Clear the encoder state and delete converted files
+        if let Some(encoder) = &self.background_encoder {
+            encoder.clear_all();
+        }
+        println!("New profile - cleared all folders and encoder state");
         cx.notify();
     }
 
@@ -754,14 +818,28 @@ impl FolderList {
         cx.spawn(|this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
             async move {
-                if let Ok(Ok(Some(path))) = receiver.await {
-                    let _ = this_handle.update(&mut async_cx, |this, _cx| {
-                        if let Err(e) = this.save_profile(&path, profile_name) {
-                            eprintln!("Failed to save profile: {}", e);
-                        } else {
-                            println!("Profile saved to: {:?}", path);
-                        }
-                    });
+                match receiver.await {
+                    Ok(Ok(Some(path))) => {
+                        let _ = this_handle.update(&mut async_cx, |this, cx| {
+                            if let Err(e) = this.save_profile(&path, profile_name) {
+                                eprintln!("Failed to save profile: {}", e);
+                                this.pending_new_after_save = false;
+                            } else {
+                                println!("Profile saved to: {:?}", path);
+                                // If we were saving as part of New flow, now clear the folders
+                                if this.pending_new_after_save {
+                                    this.pending_new_after_save = false;
+                                    this.clear_for_new_profile(cx);
+                                }
+                            }
+                        });
+                    }
+                    _ => {
+                        // Cancelled or error - reset the flag
+                        let _ = this_handle.update(&mut async_cx, |this, _cx| {
+                            this.pending_new_after_save = false;
+                        });
+                    }
                 }
             }
         }).detach();
@@ -962,8 +1040,8 @@ impl Render for FolderList {
         });
 
         // Profile action handlers
-        let on_new_profile = cx.listener(|this, _: &NewProfile, _window, cx| {
-            this.new_profile(cx);
+        let on_new_profile = cx.listener(|this, _: &NewProfile, window, cx| {
+            this.new_profile(window, cx);
         });
         let on_open_profile = cx.listener(|this, _: &OpenProfile, window, cx| {
             this.open_profile(window, cx);
@@ -1195,10 +1273,22 @@ impl FolderList {
         }
 
         // Check if background encoder is available
-        if self.background_encoder.is_none() {
-            eprintln!("Background encoder not available - cannot burn");
-            return;
-        }
+        let encoder_handle = match &self.background_encoder {
+            Some(handle) => handle.clone(),
+            None => {
+                eprintln!("Background encoder not available - cannot burn");
+                return;
+            }
+        };
+
+        // Get output manager for ISO creation
+        let output_manager = match &self.output_manager {
+            Some(om) => om.clone(),
+            None => {
+                eprintln!("No output manager available");
+                return;
+            }
+        };
 
         println!("Starting burn process...");
 
@@ -1210,88 +1300,20 @@ impl FolderList {
         self.conversion_state.reset(total_folders);
 
         if all_converted {
-            // All folders already converted - go straight to ISO/burn
             println!("All {} folders already converted", total_folders);
             self.conversion_state.set_stage(BurnStage::CreatingIso);
         } else {
-            // Still converting - show waiting stage
             println!("Waiting for background conversion to complete...");
             self.conversion_state.set_stage(BurnStage::Converting);
         }
 
         let state = self.conversion_state.clone();
         let simulate_burn = cx.global::<AppSettings>().simulate_burn;
+        let folders: Vec<_> = self.folders.iter().cloned().collect();
 
-        // Get output manager for ISO creation
-        let output_manager = match &self.output_manager {
-            Some(om) => om.clone(),
-            None => {
-                eprintln!("No output manager available");
-                return;
-            }
-        };
-
-        // Get encoder handle to check completion
-        let encoder_handle = self.background_encoder.as_ref().unwrap().clone();
-
-        // Spawn background thread to wait for conversion and burn
+        // Spawn background thread to execute the full burn workflow
         std::thread::spawn(move || {
-            // Wait for all folders to be converted
-            loop {
-                if state.is_cancelled() {
-                    println!("Burn cancelled while waiting for conversion");
-                    state.set_stage(BurnStage::Cancelled);
-                    state.finish();
-                    return;
-                }
-
-                // Check if all folders are converted
-                let encoder_state = encoder_handle.get_state();
-                let guard = encoder_state.lock().unwrap();
-                let completed_count = guard.completed.len();
-                let queue_empty = guard.queue.is_empty();
-                let active_none = guard.active.is_none();
-                drop(guard);
-
-                // Update progress
-                state.completed.store(completed_count, Ordering::SeqCst);
-
-                if queue_empty && active_none {
-                    println!("All folders converted ({} total)", completed_count);
-                    break;
-                }
-
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-
-            // Create ISO
-            state.set_stage(BurnStage::CreatingIso);
-            println!("\n=== Creating ISO image ===");
-
-            let staging_dir = output_manager.staging_dir();
-            let volume_label = "MP3CD".to_string();
-
-            match create_iso(&staging_dir, &volume_label) {
-                Ok(result) => {
-                    println!("ISO created at: {}", result.iso_path.display());
-                    *state.iso_path.lock().unwrap() = Some(result.iso_path.clone());
-
-                    // Coordinate the burn process
-                    let config = BurnConfig {
-                        simulate: simulate_burn,
-                        ..Default::default()
-                    };
-
-                    let burn_result = coordinate_burn(&result.iso_path, &state, &config);
-                    println!("Burn coordination result: {:?}", burn_result);
-                    state.finish();
-                }
-                Err(e) => {
-                    eprintln!("ISO creation failed: {}", e);
-                    state.set_stage(BurnStage::Complete);
-                    state.finish();
-                }
-            }
+            crate::burning::execute_full_burn(state, encoder_handle, output_manager, folders, simulate_burn);
         });
 
         // Start polling for progress updates
@@ -1329,16 +1351,9 @@ impl FolderList {
         let state = self.conversion_state.clone();
         let simulate_burn = cx.global::<AppSettings>().simulate_burn;
 
-        // Spawn background thread for burn coordination
+        // Spawn background thread for burn execution
         std::thread::spawn(move || {
-            let config = BurnConfig {
-                simulate: simulate_burn,
-                ..Default::default()
-            };
-
-            let result = coordinate_burn(&iso_path, &state, &config);
-            println!("Burn coordination result: {:?}", result);
-            state.finish();
+            crate::burning::execute_burn_existing(state, iso_path, simulate_burn);
         });
 
         // Start polling for progress updates

@@ -41,9 +41,9 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
             name: "File".into(),
             items: vec![
                 MenuItem::action("New", NewProfile),
-                MenuItem::action("Open Profile...", OpenProfile),
+                MenuItem::action("Open Burn Profile...", OpenProfile),
                 MenuItem::separator(),
-                MenuItem::action("Save Profile", SaveProfile),
+                MenuItem::action("Save Burn Profile...", SaveProfile),
             ],
         },
         Menu {

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Background circle (CD outer edge) -->
+  <circle cx="512" cy="512" r="480" fill="url(#cdGradient)" stroke="#888" stroke-width="8"/>
+
+  <!-- CD sheen/reflection effect -->
+  <ellipse cx="512" cy="512" rx="470" ry="470" fill="url(#sheenGradient)" opacity="0.3"/>
+
+  <!-- CD grooves (decorative rings) -->
+  <circle cx="512" cy="512" r="420" fill="none" stroke="#aaa" stroke-width="1" opacity="0.5"/>
+  <circle cx="512" cy="512" r="350" fill="none" stroke="#aaa" stroke-width="1" opacity="0.5"/>
+  <circle cx="512" cy="512" r="280" fill="none" stroke="#aaa" stroke-width="1" opacity="0.5"/>
+  <circle cx="512" cy="512" r="210" fill="none" stroke="#aaa" stroke-width="1" opacity="0.5"/>
+
+  <!-- Center hole -->
+  <circle cx="512" cy="512" r="80" fill="#333"/>
+  <circle cx="512" cy="512" r="70" fill="#555"/>
+
+  <!-- MP3 text background pill -->
+  <rect x="320" y="420" width="384" height="184" rx="40" fill="#1a1a2e"/>
+  <rect x="328" y="428" width="368" height="168" rx="36" fill="url(#pillGradient)"/>
+
+  <!-- MP3 text -->
+  <text x="512" y="545" font-family="SF Pro Display, -apple-system, Helvetica Neue, Arial, sans-serif"
+        font-size="120" font-weight="700" fill="white" text-anchor="middle">MP3</text>
+
+  <!-- Subtle highlight on CD -->
+  <ellipse cx="380" cy="300" rx="150" ry="80" fill="white" opacity="0.15" transform="rotate(-30 380 300)"/>
+
+  <!-- Gradients -->
+  <defs>
+    <radialGradient id="cdGradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#e8e8e8"/>
+      <stop offset="70%" style="stop-color:#d0d0d0"/>
+      <stop offset="100%" style="stop-color:#b8b8b8"/>
+    </radialGradient>
+
+    <linearGradient id="sheenGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff88ff" stop-opacity="0.3"/>
+      <stop offset="25%" style="stop-color:#88ffff" stop-opacity="0.3"/>
+      <stop offset="50%" style="stop-color:#88ff88" stop-opacity="0.2"/>
+      <stop offset="75%" style="stop-color:#ffff88" stop-opacity="0.3"/>
+      <stop offset="100%" style="stop-color:#ff8888" stop-opacity="0.3"/>
+    </linearGradient>
+
+    <linearGradient id="pillGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4a4a6a"/>
+      <stop offset="100%" style="stop-color:#2a2a4a"/>
+    </linearGradient>
+  </defs>
+</svg>

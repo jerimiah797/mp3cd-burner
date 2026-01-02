@@ -8,10 +8,12 @@ pub mod coordinator;
 pub mod iso;
 pub mod iso_manager;
 pub mod iso_state;
+pub mod workflow;
 
 pub use cd::{burn_iso_with_cancel, check_cd_status, CdStatus};
 pub use coordinator::{coordinate_burn, BurnConfig, BurnCoordinationResult};
 pub use iso::create_iso;
+pub use workflow::{execute_burn_existing, execute_full_burn};
 pub use iso_manager::{
     create_iso_state, generate_iso, spawn_iso_generation, IsoGenerationCheck, IsoGenerationResult,
 };

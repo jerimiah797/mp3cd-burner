@@ -32,6 +32,8 @@ pub enum EncoderCommand {
     FoldersReordered,
     /// Recalculate lossless bitrate with new target
     RecalculateBitrate { target_bitrate: u32 },
+    /// Clear all state (for New profile)
+    ClearAll,
     /// Shutdown the encoder
     Shutdown,
 }
@@ -185,6 +187,11 @@ impl BackgroundEncoderHandle {
         let _ = self.command_tx.send(EncoderCommand::Shutdown);
     }
 
+    /// Clear all state (for New profile)
+    pub fn clear_all(&self) {
+        let _ = self.command_tx.send(EncoderCommand::ClearAll);
+    }
+
     /// Get the current state (for reading status)
     pub fn get_state(&self) -> Arc<Mutex<BackgroundEncoderState>> {
         self.state.clone()
@@ -306,6 +313,25 @@ async fn run_encoder_loop(
                 EncoderCommand::FoldersReordered => {
                     // No action needed - ISO staging handles reordering
                     println!("Folders reordered - ISO will be regenerated");
+                }
+                EncoderCommand::ClearAll => {
+                    println!("Clearing all encoder state for new profile");
+                    let mut s = state.lock().unwrap();
+                    // Cancel any active encoding
+                    if let Some((_, cancel_token, _)) = &s.active {
+                        cancel_token.store(true, Ordering::SeqCst);
+                    }
+                    // Clear all state
+                    s.queue.clear();
+                    s.active = None;
+                    s.completed.clear();
+                    s.pending_bitrate_requeue = None;
+                    drop(s);
+                    // Clean up the session directory (delete all converted files)
+                    if let Err(e) = output_manager.cleanup() {
+                        eprintln!("Failed to clean up session: {}", e);
+                    }
+                    println!("Encoder state cleared");
                 }
                 EncoderCommand::RecalculateBitrate { target_bitrate } => {
                     // Collect re-encoding info with the lock held
@@ -637,7 +663,7 @@ mod tests {
 
         // Add to queue
         let folder_id = FolderId("test1".to_string());
-        let folder = create_test_folder("test1");
+        let folder = MusicFolder::new_for_test_with_id("test1");
         state.queue.push_back((folder_id, folder));
         assert_eq!(state.pending_count(), 1);
 
@@ -676,7 +702,7 @@ mod tests {
         assert!(!state.is_pending(&id1));
 
         // Add to queue
-        state.queue.push_back((id1.clone(), create_test_folder("test")));
+        state.queue.push_back((id1.clone(), MusicFolder::new_for_test_with_id("test")));
         assert!(state.is_pending(&id1));
         assert!(!state.is_pending(&id2));
 
@@ -702,24 +728,10 @@ mod tests {
                     output_size: 1000,
                     completed_at: 0,
                 },
-                create_test_folder("completed_folder"),
+                MusicFolder::new_for_test_with_id("completed_folder"),
             ),
         );
 
         assert!(state.is_completed(&id));
-    }
-
-    // Helper to create a minimal MusicFolder for testing
-    fn create_test_folder(name: &str) -> MusicFolder {
-        MusicFolder {
-            id: FolderId(name.to_string()),
-            path: PathBuf::from(format!("/test/{}", name)),
-            file_count: 0,
-            total_size: 0,
-            total_duration: 0.0,
-            album_art: None,
-            audio_files: vec![],
-            conversion_status: FolderConversionStatus::default(),
-        }
     }
 }

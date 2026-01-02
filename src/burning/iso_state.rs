@@ -166,27 +166,13 @@ pub fn determine_iso_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FolderConversionStatus;
     use std::path::PathBuf;
-
-    fn create_test_folder(name: &str) -> MusicFolder {
-        MusicFolder {
-            id: FolderId(name.to_string()),
-            path: PathBuf::from(format!("/test/{}", name)),
-            file_count: 5,
-            total_size: 50_000_000,
-            total_duration: 300.0,
-            album_art: None,
-            audio_files: vec![],
-            conversion_status: FolderConversionStatus::default(),
-        }
-    }
 
     #[test]
     fn test_iso_state_matches_folders() {
         let folders = vec![
-            create_test_folder("album1"),
-            create_test_folder("album2"),
+            MusicFolder::new_for_test_with_id("album1"),
+            MusicFolder::new_for_test_with_id("album2"),
         ];
 
         let folder_ids: Vec<FolderId> = folders.iter().map(|f| f.id.clone()).collect();
@@ -203,8 +189,8 @@ mod tests {
 
         // Different order should not match
         let reordered = vec![
-            create_test_folder("album2"),
-            create_test_folder("album1"),
+            MusicFolder::new_for_test_with_id("album2"),
+            MusicFolder::new_for_test_with_id("album1"),
         ];
         assert!(!iso.matches_folders(&reordered));
     }
@@ -236,14 +222,14 @@ mod tests {
 
     #[test]
     fn test_determine_iso_action_no_iso() {
-        let folders = vec![create_test_folder("album1")];
+        let folders = vec![MusicFolder::new_for_test_with_id("album1")];
         let action = determine_iso_action(None, &folders, &[]);
         assert_eq!(action, IsoAction::FullConversion);
     }
 
     #[test]
     fn test_determine_iso_action_all_encoded_no_iso() {
-        let folders = vec![create_test_folder("album1")];
+        let folders = vec![MusicFolder::new_for_test_with_id("album1")];
         let encoded = vec![FolderId("album1".to_string())];
         let action = determine_iso_action(None, &folders, &encoded);
         assert_eq!(action, IsoAction::RegenerateIso);
@@ -252,8 +238,8 @@ mod tests {
     #[test]
     fn test_determine_iso_action_partial_encoded() {
         let folders = vec![
-            create_test_folder("album1"),
-            create_test_folder("album2"),
+            MusicFolder::new_for_test_with_id("album1"),
+            MusicFolder::new_for_test_with_id("album2"),
         ];
         let encoded = vec![FolderId("album1".to_string())];
         let action = determine_iso_action(None, &folders, &encoded);
@@ -269,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_determine_iso_action_valid_iso_matches() {
-        let folders = vec![create_test_folder("album1")];
+        let folders = vec![MusicFolder::new_for_test_with_id("album1")];
         let folder_ids: Vec<FolderId> = folders.iter().map(|f| f.id.clone()).collect();
         let hash = calculate_folder_hash(&folder_ids);
 
@@ -293,14 +279,14 @@ mod tests {
     #[test]
     fn test_determine_iso_action_reorder_only() {
         let folders = vec![
-            create_test_folder("album2"), // Reordered
-            create_test_folder("album1"),
+            MusicFolder::new_for_test_with_id("album2"), // Reordered
+            MusicFolder::new_for_test_with_id("album1"),
         ];
 
         // Original order hash
         let original_folders = vec![
-            create_test_folder("album1"),
-            create_test_folder("album2"),
+            MusicFolder::new_for_test_with_id("album1"),
+            MusicFolder::new_for_test_with_id("album2"),
         ];
         let original_ids: Vec<FolderId> = original_folders.iter().map(|f| f.id.clone()).collect();
         let original_hash = calculate_folder_hash(&original_ids);
