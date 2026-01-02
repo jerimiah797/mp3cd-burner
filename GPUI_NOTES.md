@@ -472,3 +472,57 @@ cx.bind_keys([
 - Create listeners before any mutable borrows in render (e.g., before `render_status_bar()`)
 
 ---
+
+## Menu Items Greyed Out Until Focused
+
+**The Problem:** Menu items that dispatch actions to a view (like New, Open, Save) appear greyed out until the user clicks inside the window, even though the window is visible and active.
+
+**The Cause:** GPUI dispatches actions through the focus tree. If no element has focus, there's nowhere to dispatch the action, so menu items are disabled. Creating a `focus_handle` via `cx.focus_handle()` and calling `track_focus()` is not enough - you must explicitly **focus** the handle.
+
+**The Solution:**
+
+Grab focus on first render when you have access to the `Window`:
+
+```rust
+pub struct MyView {
+    focus_handle: Option<FocusHandle>,
+    needs_initial_focus: bool,  // Add this flag
+}
+
+impl MyView {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            focus_handle: Some(cx.focus_handle()),
+            needs_initial_focus: true,  // Set true on construction
+        }
+    }
+}
+
+impl Render for MyView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Grab initial focus so menu items work immediately
+        if self.needs_initial_focus {
+            self.needs_initial_focus = false;
+            if let Some(ref focus_handle) = self.focus_handle {
+                focus_handle.focus(window);  // Requires &mut Window, not available in new()
+            }
+        }
+
+        div()
+            .track_focus(self.focus_handle.as_ref().unwrap())
+            .on_action(...)  // Now works immediately!
+    }
+}
+```
+
+**Why Not Focus in `new()`?**
+
+The `focus()` method requires a `&mut Window`, which isn't available during construction (only `Context<Self>` is available). The render method is the earliest point where you have access to the window.
+
+**Key Insight:** Without explicit focus, menu items remain greyed out until:
+- The user clicks inside the window
+- Some other event causes focus to be acquired
+
+This can result in a confusing ~30 second delay before menus "start working".
+
+---

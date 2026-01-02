@@ -7,11 +7,16 @@
 
 use gpui::{div, prelude::*, rgb, AnyWindowHandle, AsyncApp, Context, ExternalPaths, FocusHandle, IntoElement, PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
 use crate::actions::{NewProfile, OpenProfile, SaveProfile};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
+use super::status_bar::{
+    get_stage_color, is_stage_cancelable, render_import_progress, render_iso_too_large,
+    render_stats_panel, ProgressDisplay, StatusBarState,
+};
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::burning::{create_iso, burn_iso_with_cancel, check_cd_status, CdStatus, IsoState, IsoAction, determine_iso_action};
 use crate::conversion::{
@@ -19,7 +24,10 @@ use crate::conversion::{
     convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
     BackgroundEncoderHandle, OutputManager,
 };
-use crate::core::{find_album_folders, format_duration, get_audio_files, scan_music_folder, MusicFolder, AppSettings, FolderConversionStatus, FolderId};
+use crate::core::{
+    find_album_folders, get_audio_files, scan_music_folder,
+    AppSettings, BurnStage, ConversionState, FolderConversionStatus, FolderId, ImportState, MusicFolder,
+};
 use crate::ui::Theme;
 
 /// Calculate total size of files in a directory (recursive)
@@ -33,46 +41,6 @@ fn calculate_directory_size(path: &std::path::Path) -> u64 {
         .sum()
 }
 
-/// Current stage of the burn process
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BurnStage {
-    /// Converting audio files
-    Converting,
-    /// Creating ISO image
-    CreatingIso,
-    /// Waiting for user to insert a blank CD
-    WaitingForCd,
-    /// Detected an erasable disc (CD-RW) with data - waiting for user to confirm erase
-    ErasableDiscDetected,
-    /// Erasing CD-RW before burning
-    Erasing,
-    /// Burning ISO to CD
-    Burning,
-    /// Finishing up (closing session, verifying)
-    Finishing,
-    /// Process complete (success or simulated)
-    Complete,
-    /// Process was cancelled
-    Cancelled,
-}
-
-impl BurnStage {
-    #[allow(dead_code)]
-    pub fn display_text(&self) -> &'static str {
-        match self {
-            BurnStage::Converting => "Converting...",
-            BurnStage::CreatingIso => "Creating ISO...",
-            BurnStage::WaitingForCd => "Insert blank CD",
-            BurnStage::ErasableDiscDetected => "Erase disc?",
-            BurnStage::Erasing => "Erasing...",
-            BurnStage::Burning => "Burning...",
-            BurnStage::Finishing => "Finishing...",
-            BurnStage::Complete => "Complete!",
-            BurnStage::Cancelled => "Cancelled",
-        }
-    }
-}
-
 /// The main folder list view
 ///
 /// Handles:
@@ -80,157 +48,6 @@ impl BurnStage {
 /// - External drag-drop from Finder (ExternalPaths)
 /// - Internal drag-drop for reordering
 /// - Empty state rendering
-/// Shared state for tracking conversion progress across threads
-#[derive(Clone)]
-pub struct ConversionState {
-    /// Whether conversion is currently running
-    pub is_converting: Arc<AtomicBool>,
-    /// Whether cancellation has been requested
-    pub cancel_requested: Arc<AtomicBool>,
-    /// Whether user has approved erasing a CD-RW
-    pub erase_approved: Arc<AtomicBool>,
-    /// Number of files completed
-    pub completed: Arc<AtomicUsize>,
-    /// Number of files failed
-    pub failed: Arc<AtomicUsize>,
-    /// Total number of files to convert
-    pub total: Arc<AtomicUsize>,
-    /// Current stage of the burn process
-    pub stage: Arc<Mutex<BurnStage>>,
-    /// Burn progress percentage (0-100, or -1 for indeterminate)
-    pub burn_progress: Arc<std::sync::atomic::AtomicI32>,
-    /// Path to the created ISO (for re-burning)
-    pub iso_path: Arc<Mutex<Option<PathBuf>>>,
-}
-
-impl ConversionState {
-    pub fn new() -> Self {
-        Self {
-            is_converting: Arc::new(AtomicBool::new(false)),
-            cancel_requested: Arc::new(AtomicBool::new(false)),
-            erase_approved: Arc::new(AtomicBool::new(false)),
-            completed: Arc::new(AtomicUsize::new(0)),
-            failed: Arc::new(AtomicUsize::new(0)),
-            total: Arc::new(AtomicUsize::new(0)),
-            stage: Arc::new(Mutex::new(BurnStage::Converting)),
-            burn_progress: Arc::new(std::sync::atomic::AtomicI32::new(-1)),
-            iso_path: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub fn reset(&self, total: usize) {
-        self.is_converting.store(true, Ordering::SeqCst);
-        self.cancel_requested.store(false, Ordering::SeqCst);
-        self.erase_approved.store(false, Ordering::SeqCst);
-        self.completed.store(0, Ordering::SeqCst);
-        self.failed.store(0, Ordering::SeqCst);
-        self.total.store(total, Ordering::SeqCst);
-        *self.stage.lock().unwrap() = BurnStage::Converting;
-        self.burn_progress.store(-1, Ordering::SeqCst);
-        *self.iso_path.lock().unwrap() = None;
-    }
-
-    pub fn finish(&self) {
-        self.is_converting.store(false, Ordering::SeqCst);
-    }
-
-    pub fn set_stage(&self, stage: BurnStage) {
-        *self.stage.lock().unwrap() = stage;
-    }
-
-    pub fn get_stage(&self) -> BurnStage {
-        *self.stage.lock().unwrap()
-    }
-
-    pub fn set_burn_progress(&self, progress: i32) {
-        self.burn_progress.store(progress, Ordering::SeqCst);
-    }
-
-    pub fn get_burn_progress(&self) -> i32 {
-        self.burn_progress.load(Ordering::SeqCst)
-    }
-
-    /// Request cancellation of the current conversion
-    pub fn request_cancel(&self) {
-        self.cancel_requested.store(true, Ordering::SeqCst);
-    }
-
-    /// Check if cancellation has been requested
-    pub fn is_cancelled(&self) -> bool {
-        self.cancel_requested.load(Ordering::SeqCst)
-    }
-
-    pub fn is_converting(&self) -> bool {
-        self.is_converting.load(Ordering::SeqCst)
-    }
-
-    pub fn progress(&self) -> (usize, usize, usize) {
-        (
-            self.completed.load(Ordering::SeqCst),
-            self.failed.load(Ordering::SeqCst),
-            self.total.load(Ordering::SeqCst),
-        )
-    }
-}
-
-/// Shared state for tracking folder import progress across threads
-#[derive(Clone)]
-pub struct ImportState {
-    /// Whether import is currently running
-    pub is_importing: Arc<AtomicBool>,
-    /// Number of folders scanned
-    pub completed: Arc<AtomicUsize>,
-    /// Total number of folders to scan
-    pub total: Arc<AtomicUsize>,
-    /// Scanned folders waiting to be added to the list
-    pub scanned_folders: Arc<Mutex<Vec<MusicFolder>>>,
-}
-
-impl ImportState {
-    pub fn new() -> Self {
-        Self {
-            is_importing: Arc::new(AtomicBool::new(false)),
-            completed: Arc::new(AtomicUsize::new(0)),
-            total: Arc::new(AtomicUsize::new(0)),
-            scanned_folders: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn reset(&self, total: usize) {
-        self.is_importing.store(true, Ordering::SeqCst);
-        self.completed.store(0, Ordering::SeqCst);
-        self.total.store(total, Ordering::SeqCst);
-        self.scanned_folders.lock().unwrap().clear();
-    }
-
-    pub fn finish(&self) {
-        self.is_importing.store(false, Ordering::SeqCst);
-    }
-
-    pub fn is_importing(&self) -> bool {
-        self.is_importing.load(Ordering::SeqCst)
-    }
-
-    pub fn progress(&self) -> (usize, usize) {
-        (
-            self.completed.load(Ordering::SeqCst),
-            self.total.load(Ordering::SeqCst),
-        )
-    }
-
-    /// Push a scanned folder to the queue
-    pub fn push_folder(&self, folder: MusicFolder) {
-        self.scanned_folders.lock().unwrap().push(folder);
-        self.completed.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Drain all scanned folders from the queue
-    pub fn drain_folders(&self) -> Vec<MusicFolder> {
-        let mut folders = self.scanned_folders.lock().unwrap();
-        std::mem::take(&mut *folders)
-    }
-}
-
 pub struct FolderList {
     /// The list of scanned music folders
     folders: Vec<MusicFolder>,
@@ -263,6 +80,8 @@ pub struct FolderList {
     last_folder_change: Option<std::time::Instant>,
     /// Last calculated bitrate (to detect changes that require re-encoding)
     last_calculated_bitrate: Option<u32>,
+    /// Whether we need to grab initial focus (for menu items to work)
+    needs_initial_focus: bool,
 }
 
 impl FolderList {
@@ -283,6 +102,7 @@ impl FolderList {
             iso_has_been_burned: false,
             last_folder_change: None,
             last_calculated_bitrate: None,
+            needs_initial_focus: true,
         }
     }
 
@@ -305,6 +125,7 @@ impl FolderList {
             iso_has_been_burned: false,
             last_folder_change: None,
             last_calculated_bitrate: None,
+            needs_initial_focus: false,
         }
     }
 
@@ -955,6 +776,9 @@ impl FolderList {
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
 
+        // Track folders that need encoding (don't queue yet - need to calculate bitrate first)
+        let mut folders_needing_encoding: Vec<MusicFolder> = Vec::new();
+
         // Load folders
         for folder_path_str in &profile.folders {
             let folder_path = PathBuf::from(folder_path_str);
@@ -973,12 +797,32 @@ impl FolderList {
                         }
                     }
                 } else {
-                    // Needs encoding - queue it
-                    self.queue_folder_for_encoding(&folder);
+                    // Needs encoding - track it for later
+                    folders_needing_encoding.push(folder.clone());
                 }
 
                 self.folders.push(folder);
             }
+        }
+
+        // Now that all folders are loaded, calculate the correct bitrate BEFORE queueing
+        if !folders_needing_encoding.is_empty() {
+            let target_bitrate = self.calculated_bitrate();
+            println!("Profile loaded - calculated bitrate: {} kbps", target_bitrate);
+
+            // Update encoder with correct bitrate before queueing folders
+            if let Some(ref encoder) = self.background_encoder {
+                encoder.recalculate_bitrate(target_bitrate);
+            }
+
+            // Now queue all folders that need encoding (with correct bitrate)
+            for folder in folders_needing_encoding {
+                self.queue_folder_for_encoding(&folder);
+            }
+
+            // Set last_folder_change so debounced recalc doesn't override with stale value
+            self.last_folder_change = Some(std::time::Instant::now());
+            self.last_calculated_bitrate = Some(target_bitrate);
         }
 
         // Restore ISO state if valid
@@ -1231,6 +1075,14 @@ impl Render for FolderList {
             .detach();
         }
 
+        // Grab initial focus so menu items work immediately
+        if self.needs_initial_focus {
+            self.needs_initial_focus = false;
+            if let Some(ref focus_handle) = self.focus_handle {
+                focus_handle.focus(window);
+            }
+        }
+
         // Get theme based on OS appearance
         let theme = Theme::from_appearance(window.appearance());
         let is_empty = self.folders.is_empty();
@@ -1309,28 +1161,34 @@ impl Render for FolderList {
 }
 
 impl FolderList {
+    /// Build the StatusBarState from current FolderList state
+    fn build_status_bar_state(&self) -> StatusBarState {
+        StatusBarState {
+            total_files: self.total_files(),
+            total_size: self.total_size(),
+            total_duration: self.total_duration(),
+            bitrate_estimate: self.calculated_bitrate_estimate(),
+            has_folders: !self.folders.is_empty(),
+            is_importing: self.import_state.is_importing(),
+            import_progress: self.import_state.progress(),
+            is_converting: self.conversion_state.is_converting(),
+            conversion_progress: self.conversion_state.progress(),
+            burn_stage: self.conversion_state.get_stage(),
+            burn_progress: self.conversion_state.get_burn_progress(),
+            is_cancelled: self.conversion_state.is_cancelled(),
+            can_burn_another: self.can_burn_another(),
+            iso_exceeds_limit: self.iso_exceeds_limit(),
+            iso_size_mb: self.iso_size_mb(),
+            iso_has_been_burned: self.iso_has_been_burned,
+        }
+    }
+
     /// Render the status bar with detailed stats and action button
     fn render_status_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let total_files = self.total_files();
-        let total_size = self.total_size();
-        let total_duration = self.total_duration();
-        let estimate = self.calculated_bitrate_estimate();
-        let has_folders = !self.folders.is_empty();
-
-        // Format bitrate display: show "--" if no lossless and no lossy capping needed
-        let bitrate_display = match &estimate {
-            Some(e) if e.should_show_bitrate() => format!("{} kbps", e.target_bitrate),
-            _ => "--".to_string(),
-        };
-
+        let state = self.build_status_bar_state();
         let success_color = theme.success;
         let success_hover = theme.success_hover;
         let text_muted = theme.text_muted;
-        let text_color = theme.text;
-        let bg = theme.bg;
-
-        // Format size in MB
-        let size_mb = total_size as f64 / (1024.0 * 1024.0);
 
         div()
             .py_4()
@@ -1338,133 +1196,79 @@ impl FolderList {
             .flex()
             .items_center()
             .justify_between()
-            .bg(bg)
+            .bg(theme.bg)
             .border_t_1()
             .border_color(theme.border)
             .text_sm()
-            // Left side: stats in rows
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_color(text_muted)
-                    // Row 1: Files and Duration
-                    .child(
-                        div()
-                            .flex()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_1()
-                                    .child("Files:")
-                                    .child(
-                                        div()
-                                            .text_color(text_color)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .child(format!("{}", total_files)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_1()
-                                    .child("Duration:")
-                                    .child(
-                                        div()
-                                            .text_color(text_color)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .child(format_duration(total_duration)),
-                                    ),
-                            ),
-                    )
-                    // Row 2: Size and Target
-                    .child(
-                        div()
-                            .flex()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_1()
-                                    .child("Size:")
-                                    .child(
-                                        div()
-                                            .text_color(text_color)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .child(format!("{:.2} MB", size_mb)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_1()
-                                    .child("Target:")
-                                    .child(
-                                        div()
-                                            .text_color(text_color)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .child("700 MB"),
-                                    ),
-                            ),
-                    )
-                    // Row 3: Bitrate (in accent/success color) and CD-RW indicator
-                    .child(
-                        div()
-                            .flex()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_1()
-                                    .child("Bitrate:")
-                                    .child(
-                                        div()
-                                            .text_color(success_color)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .child(bitrate_display.clone()),
-                                    ),
-                            )
-                            // CD-RW indicator (only show when erasable disc detected)
-                            .when(
-                                self.conversion_state.is_converting()
-                                    && self.conversion_state.get_stage() == BurnStage::ErasableDiscDetected,
-                                |el| {
-                                    el.child(
-                                        div()
-                                            .text_color(theme.danger)
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .child("CD-RW"),
-                                    )
-                                }
-                            ),
-                    ),
-            )
-            // Right side: Convert & Burn button / Progress display
-            .child({
-                let is_converting = self.conversion_state.is_converting();
-                let is_importing = self.import_state.is_importing();
-                let (completed, failed, total) = self.conversion_state.progress();
-                let (import_completed, import_total) = self.import_state.progress();
+            // Left side: stats panel (delegated to helper)
+            .child(render_stats_panel(&state, theme))
+            // Right side: action panel
+            .child(self.render_action_panel(&state, theme, success_color, success_hover, text_muted, cx))
+    }
 
-                if is_importing {
-                    // Show import progress
-                    let progress_fraction = if import_total > 0 {
-                        import_completed as f32 / import_total as f32
-                    } else {
-                        0.0
-                    };
+    /// Render the right action panel (progress displays and buttons)
+    fn render_action_panel(
+        &self,
+        state: &StatusBarState,
+        theme: &Theme,
+        success_color: gpui::Hsla,
+        success_hover: gpui::Hsla,
+        text_muted: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        if state.is_importing {
+            render_import_progress(state, theme).into_any_element()
+        } else if state.is_converting {
+            self.render_conversion_progress(state, theme, success_color, success_hover, cx)
+                .into_any_element()
+        } else if state.can_burn_another && state.iso_exceeds_limit {
+            render_iso_too_large(state.iso_size_mb.unwrap_or(0.0), theme).into_any_element()
+        } else if state.can_burn_another {
+            self.render_burn_button(state.iso_has_been_burned, success_color, success_hover, cx)
+                .into_any_element()
+        } else {
+            self.render_convert_burn_button(state.has_folders, success_color, success_hover, text_muted, cx)
+                .into_any_element()
+        }
+    }
 
+    /// Render conversion/burn progress with cancel support
+    fn render_conversion_progress(
+        &self,
+        state: &StatusBarState,
+        theme: &Theme,
+        success_color: gpui::Hsla,
+        success_hover: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let progress = ProgressDisplay::from_state(state);
+        let stage_color = get_stage_color(state, theme);
+        let is_cancelable = is_stage_cancelable(state);
+
+        div()
+            .id(SharedString::from("convert-progress-container"))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .items_center()
+            // Progress display (hide when waiting for user to approve erase)
+            .when(state.burn_stage != BurnStage::ErasableDiscDetected, |el| {
+                el.child(
                     div()
-                        .id(SharedString::from("import-progress"))
+                        .id(SharedString::from("progress-display"))
                         .w(gpui::px(150.0))
                         .h(gpui::px(70.0))
                         .rounded_md()
                         .border_1()
-                        .border_color(theme.accent)
+                        .border_color(stage_color)
                         .overflow_hidden()
                         .relative()
+                        .when(is_cancelable, |el| {
+                            el.cursor_pointer()
+                                .on_click(cx.listener(|this, _event, _window, _cx| {
+                                    this.conversion_state.request_cancel();
+                                }))
+                        })
                         // Background progress fill
                         .child(
                             div()
@@ -1472,8 +1276,8 @@ impl FolderList {
                                 .left_0()
                                 .top_0()
                                 .h_full()
-                                .w(gpui::relative(progress_fraction))
-                                .bg(theme.accent)
+                                .w(gpui::relative(progress.fraction))
+                                .bg(stage_color),
                         )
                         // Text overlay
                         .child(
@@ -1484,222 +1288,36 @@ impl FolderList {
                                 .items_center()
                                 .justify_center()
                                 .relative()
+                                .when(!progress.text.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .text_lg()
+                                            .text_color(gpui::white())
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(progress.text.clone()),
+                                    )
+                                })
                                 .child(
                                     div()
                                         .text_lg()
                                         .text_color(gpui::white())
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(format!("{}/{}", import_completed, import_total))
-                                )
-                                .child(
-                                    div()
-                                        .text_lg()
-                                        .text_color(gpui::white())
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child("Importing...")
-                                )
-                        )
-                } else if is_converting {
-                    // Show progress bar during conversion/burn with cancel button
-                    let stage = self.conversion_state.get_stage();
-                    let burn_progress = self.conversion_state.get_burn_progress();
-                    let is_cancelled = self.conversion_state.is_cancelled();
-                    let cancel_color = theme.danger;
-
-                    // Calculate progress based on current stage
-                    let (progress_fraction, progress_text, stage_text) = match stage {
-                        BurnStage::Converting => {
-                            let frac = if total > 0 {
-                                (completed + failed) as f32 / total as f32
-                            } else {
-                                0.0
-                            };
-                            (frac, format!("{}/{}", completed + failed, total), "Converting...")
-                        }
-                        BurnStage::CreatingIso => {
-                            (1.0, "".to_string(), "Creating ISO...")
-                        }
-                        BurnStage::WaitingForCd => {
-                            (1.0, "".to_string(), "Insert blank CD")
-                        }
-                        BurnStage::ErasableDiscDetected => {
-                            (1.0, "".to_string(), "CD-RW detected")
-                        }
-                        BurnStage::Erasing => {
-                            let frac = if burn_progress >= 0 {
-                                burn_progress as f32 / 100.0
-                            } else {
-                                0.0
-                            };
-                            let text = if burn_progress >= 0 {
-                                format!("{}%", burn_progress)
-                            } else {
-                                "".to_string()
-                            };
-                            (frac, text, "Erasing...")
-                        }
-                        BurnStage::Burning => {
-                            let frac = if burn_progress >= 0 {
-                                burn_progress as f32 / 100.0
-                            } else {
-                                0.0 // Start at 0 until we get real progress
-                            };
-                            let text = if burn_progress >= 0 {
-                                format!("{}%", burn_progress)
-                            } else {
-                                "".to_string()
-                            };
-                            (frac, text, "Burning...")
-                        }
-                        BurnStage::Finishing => {
-                            (1.0, "".to_string(), "Finishing...")
-                        }
-                        BurnStage::Complete => {
-                            (1.0, "✓".to_string(), "Complete!")
-                        }
-                        BurnStage::Cancelled => {
-                            (0.0, "".to_string(), "Cancelled")
-                        }
-                    };
-
-                    let stage_color = match stage {
-                        BurnStage::Cancelled => cancel_color,
-                        BurnStage::Complete => success_color,
-                        _ if is_cancelled => cancel_color,
-                        _ => success_color,
-                    };
-
+                                        .child(
+                                            if state.is_cancelled && state.burn_stage != BurnStage::Cancelled {
+                                                "Cancelling..."
+                                            } else {
+                                                progress.stage_text
+                                            },
+                                        ),
+                                ),
+                        ),
+                )
+            })
+            // Erase & Burn button (only show when erasable disc detected)
+            .when(state.burn_stage == BurnStage::ErasableDiscDetected, |el| {
+                el.child(
                     div()
-                        .id(SharedString::from("convert-progress-container"))
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .items_center()
-                        // Progress display (hide when waiting for user to approve erase)
-                        // Clicking the progress display cancels the operation (hidden feature)
-                        .when(stage != BurnStage::ErasableDiscDetected, |el| {
-                            // Determine if this stage is cancelable
-                            let is_cancelable = stage != BurnStage::Complete
-                                && stage != BurnStage::Cancelled
-                                && !is_cancelled;
-
-                            el.child(
-                                div()
-                                    .id(SharedString::from("progress-display"))
-                                    .w(gpui::px(150.0))
-                                    .h(gpui::px(70.0))
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(stage_color)
-                                    .overflow_hidden()
-                                    .relative()
-                                    .when(is_cancelable, |el| {
-                                        el.cursor_pointer()
-                                            .on_click(cx.listener(|this, _event, _window, _cx| {
-                                                this.conversion_state.request_cancel();
-                                            }))
-                                    })
-                                    // Background progress fill
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left_0()
-                                            .top_0()
-                                            .h_full()
-                                            .w(gpui::relative(progress_fraction))
-                                            .bg(stage_color)
-                                    )
-                                    // Text overlay
-                                    .child(
-                                        div()
-                                            .size_full()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .justify_center()
-                                            .relative()
-                                            .when(!progress_text.is_empty(), |el| {
-                                                el.child(
-                                                    div()
-                                                        .text_lg()
-                                                        .text_color(gpui::white())
-                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                        .child(progress_text.clone())
-                                                )
-                                            })
-                                            .child(
-                                                div()
-                                                    .text_lg()
-                                                    .text_color(gpui::white())
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .child(if is_cancelled && stage != BurnStage::Cancelled {
-                                                        "Cancelling..."
-                                                    } else {
-                                                        stage_text
-                                                    })
-                                            )
-                                    )
-                            )
-                        })
-                        // Erase & Burn button (only show when erasable disc detected)
-                        .when(stage == BurnStage::ErasableDiscDetected, |el| {
-                            el.child(
-                                div()
-                                    .id(SharedString::from("erase-burn-btn"))
-                                    .w(gpui::px(150.0))
-                                    .h(gpui::px(70.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(success_color)
-                                    .text_color(gpui::white())
-                                    .text_lg()
-                                    .rounded_md()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(success_hover))
-                                    .on_click(cx.listener(|this, _event, _window, _cx| {
-                                        println!("Erase & Burn clicked");
-                                        this.conversion_state.erase_approved.store(true, Ordering::SeqCst);
-                                    }))
-                                    .child("Erase\n& Burn")
-                            )
-                        })
-                } else if self.can_burn_another() && self.iso_exceeds_limit() {
-                    // ISO exists but is too large for CD - show warning
-                    let size_mb = self.iso_size_mb().unwrap_or(0.0);
-                    let size_text = format!("{:.0} MB\nToo Large!", size_mb);
-                    let danger_color = theme.danger;
-                    div()
-                        .id(SharedString::from("iso-too-large-btn"))
-                        .w(gpui::px(150.0))
-                        .h(gpui::px(70.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(danger_color)
-                        .text_color(gpui::white())
-                        .text_sm()
-                        .rounded_md()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_center()
-                        .child(size_text)
-                } else if self.can_burn_another() {
-                    // ISO exists and matches current folders, and is within size limit
-                    // Show "Burn" if first time, "Burn Another" if already burned once
-                    let button_text = if self.iso_has_been_burned {
-                        "Burn\nAnother"
-                    } else {
-                        "Burn"
-                    };
-                    let button_id = if self.iso_has_been_burned {
-                        "burn-another-btn"
-                    } else {
-                        "burn-btn"
-                    };
-                    div()
-                        .id(SharedString::from(button_id))
+                        .id(SharedString::from("erase-burn-btn"))
                         .w(gpui::px(150.0))
                         .h(gpui::px(70.0))
                         .flex()
@@ -1713,38 +1331,80 @@ impl FolderList {
                         .text_center()
                         .cursor_pointer()
                         .hover(|s| s.bg(success_hover))
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            println!("Burn clicked!");
-                            this.burn_existing_iso(window, cx);
+                        .on_click(cx.listener(|this, _event, _window, _cx| {
+                            println!("Erase & Burn clicked");
+                            this.conversion_state.erase_approved.store(true, Ordering::SeqCst);
                         }))
-                        .child(button_text)
-                } else {
-                    // Normal Convert & Burn button
-                    div()
-                        .id(SharedString::from("convert-burn-btn"))
-                        .w(gpui::px(150.0))
-                        .h(gpui::px(70.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(if has_folders { success_color } else { text_muted })
-                        .text_color(gpui::white())
-                        .text_lg()
-                        .rounded_md()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_center()
-                        .when(has_folders, |el| {
-                            el.cursor_pointer().hover(|s| s.bg(success_hover))
-                        })
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            if has_folders {
-                                println!("Convert & Burn clicked!");
-                                this.run_conversion(window, cx);
-                            }
-                        }))
-                        .child("Convert\n& Burn")
-                }
+                        .child("Erase\n& Burn"),
+                )
             })
+    }
+
+    /// Render Burn/Burn Another button
+    fn render_burn_button(
+        &self,
+        iso_has_been_burned: bool,
+        success_color: gpui::Hsla,
+        success_hover: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let button_text = if iso_has_been_burned { "Burn\nAnother" } else { "Burn" };
+        let button_id = if iso_has_been_burned { "burn-another-btn" } else { "burn-btn" };
+
+        div()
+            .id(SharedString::from(button_id))
+            .w(gpui::px(150.0))
+            .h(gpui::px(70.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(success_color)
+            .text_color(gpui::white())
+            .text_lg()
+            .rounded_md()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_center()
+            .cursor_pointer()
+            .hover(|s| s.bg(success_hover))
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                println!("Burn clicked!");
+                this.burn_existing_iso(window, cx);
+            }))
+            .child(button_text)
+    }
+
+    /// Render Convert & Burn button
+    fn render_convert_burn_button(
+        &self,
+        has_folders: bool,
+        success_color: gpui::Hsla,
+        success_hover: gpui::Hsla,
+        text_muted: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id(SharedString::from("convert-burn-btn"))
+            .w(gpui::px(150.0))
+            .h(gpui::px(70.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(if has_folders { success_color } else { text_muted })
+            .text_color(gpui::white())
+            .text_lg()
+            .rounded_md()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_center()
+            .when(has_folders, |el| {
+                el.cursor_pointer().hover(|s| s.bg(success_hover))
+            })
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                if has_folders {
+                    println!("Convert & Burn clicked!");
+                    this.run_conversion(window, cx);
+                }
+            }))
+            .child("Convert\n& Burn")
     }
 
     /// Cancel any ongoing conversion

@@ -64,7 +64,7 @@ src/
 - [x] Copy `profiles/` module (types, storage) - 3 tests
 - [x] Adapt state management (simplified, no Tauri State needed yet)
 
-**Total: 35 tests passing**
+**Total: 117 tests passing**
 
 ### Phase 4: Core Features ✅ DONE
 - [x] Folder scanning (scan_music_folder, get_audio_files) - 7 tests
@@ -88,20 +88,20 @@ src/
 - [x] CD-RW erase + burn in single operation
 - [x] Burn progress tracking with phase detection (erase → burn → finishing)
 - [x] Success dialog on completion
-- [ ] "Burn Another" mode
+- [x] "Burn Another" mode (re-burn same ISO without re-converting)
 
-### Phase 7: Native Menus ✅ PARTIALLY DONE
+### Phase 7: Native Menus ✅ DONE
 - [x] Application menu (About, Quit)
-- [x] File menu (structure in place - New, Open, Save, Save As)
+- [x] File menu (New, Open, Save, Save As - fully wired via focus tree)
 - [x] Options menu (Simulate Burn with checkmark toggle)
-- [x] Keyboard shortcuts (Cmd+Q)
+- [x] Keyboard shortcuts (Cmd+N, Cmd+O, Cmd+S, Cmd+Q)
 - [x] Open Output Folder action
-- [ ] Wire up remaining File menu actions
 - [ ] No Lossy Conversions toggle
 - [ ] Embed Album Art toggle
 
-### Phase 8: Profile System
-- [ ] Save/Load profiles with file dialogs
+### Phase 8: Profile System ✅ DONE
+- [x] Save/Load profiles with file dialogs
+- [x] New profile clears folder list
 - [ ] Recent profiles in menu
 - [ ] Unsaved changes detection
 
@@ -134,10 +134,21 @@ These modules had **no Tauri dependencies** and were copied as-is:
 2. ~~**Bitrate calculation** - Smart encoding logic~~ ✅ DONE
 3. ~~**FFmpeg conversion** - The main convert_files_background logic from lib.rs~~ ✅ DONE
 4. ~~**Progress UI** - Show conversion/burn progress in the UI~~ ✅ DONE
-5. **Menu actions** - Wire remaining File/Options menus to actual functionality
-6. **File dialogs** - Use GPUI's cx.prompt_for_paths() for Open/Save profiles
-7. **Profile system** - Save/load burn profiles
-8. **"Burn Another" mode** - Re-burn same ISO without re-converting
+5. ~~**Menu actions** - Wire remaining File/Options menus to actual functionality~~ ✅ DONE
+6. ~~**File dialogs** - Use GPUI's cx.prompt_for_paths() for Open/Save profiles~~ ✅ DONE
+7. ~~**Profile system** - Save/load burn profiles~~ ✅ DONE
+8. ~~**"Burn Another" mode** - Re-burn same ISO without re-converting~~ ✅ DONE
+9. **Recent profiles menu** - Show recently opened profiles in File menu
+10. **Unsaved changes detection** - Prompt to save before closing/new
+11. **No Lossy Conversions toggle** - Options menu toggle
+12. **Embed Album Art toggle** - Options menu toggle
+13. **Window state persistence** - Remember window position/size
+
+## New Features (Beyond Original Tauri App)
+
+1. ✅ **Background encoding** - Folders encode immediately as added (no waiting for Burn)
+2. ✅ **Smart re-encoding** - Lossless files automatically re-encode when bitrate changes
+3. ✅ **Priority queue** - Lossy folders encode first, ensuring stable bitrate before lossless
 
 ## Key Architectural Differences
 
