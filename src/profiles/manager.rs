@@ -6,10 +6,63 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::storage::{add_to_recent_profiles, load_profile, save_profile, validate_conversion_state};
-use super::types::{BurnProfile, BurnSettings, SavedFolderState};
+use super::types::{BurnProfile, BurnSettings, ConversionStateValidation, SavedFolderState};
 use crate::burning::IsoState;
 use crate::conversion::OutputManager;
 use crate::core::{FolderConversionStatus, MusicFolder};
+
+/// Setup info for loading a profile asynchronously
+///
+/// This contains all the metadata needed to restore a profile without blocking
+/// on folder scanning. The actual folder scanning happens in a background thread.
+#[derive(Debug, Clone)]
+pub struct ProfileLoadSetup {
+    /// Profile name for display
+    pub profile_name: String,
+    /// Ordered list of folder paths to scan
+    pub folder_paths: Vec<PathBuf>,
+    /// Validation result for saved conversion state
+    pub validation: ConversionStateValidation,
+    /// Saved folder states keyed by path string (for restoration)
+    pub folder_states: HashMap<String, SavedFolderState>,
+    /// ISO path if saved in profile
+    pub iso_path: Option<PathBuf>,
+}
+
+/// Prepare to load a profile (fast, does not scan folders)
+///
+/// This reads and validates the profile, returning setup info needed for async loading.
+/// The actual folder scanning should be done in a background thread.
+pub fn prepare_profile_load(path: &Path) -> Result<ProfileLoadSetup, String> {
+    let profile = load_profile(path)?;
+    let validation = validate_conversion_state(&profile);
+
+    println!("Loading profile: {}", profile.profile_name);
+    println!("  Valid folders: {:?}", validation.valid_folders);
+    println!("  Invalid folders: {:?}", validation.invalid_folders);
+    println!("  ISO valid: {}", validation.iso_valid);
+
+    let folder_paths: Vec<PathBuf> = profile.folders.iter().map(PathBuf::from).collect();
+
+    let folder_states = profile.folder_states.clone().unwrap_or_default();
+
+    let iso_path = if validation.iso_valid {
+        profile.iso_path.as_ref().map(PathBuf::from)
+    } else {
+        None
+    };
+
+    // Update recent profiles
+    let _ = add_to_recent_profiles(&path.to_string_lossy());
+
+    Ok(ProfileLoadSetup {
+        profile_name: profile.profile_name,
+        folder_paths,
+        validation,
+        folder_states,
+        iso_path,
+    })
+}
 
 /// Create a BurnProfile from the current folder list state
 ///
@@ -100,84 +153,6 @@ pub fn save_profile_to_path(
     add_to_recent_profiles(&path.to_string_lossy())?;
     println!("Profile saved to: {}", path.display());
     Ok(())
-}
-
-/// Result of loading a profile - contains the data needed to restore state
-pub struct LoadedProfile {
-    /// Folders that were successfully scanned
-    pub folders: Vec<MusicFolder>,
-    /// Folders that need encoding (valid state not found)
-    pub folders_needing_encoding: Vec<MusicFolder>,
-    /// ISO state if valid
-    pub iso_state: Option<IsoState>,
-}
-
-/// Load a profile from disk and validate its state
-///
-/// This will:
-/// 1. Load the profile from disk
-/// 2. Validate the saved conversion state
-/// 3. Scan folders and restore conversion status where valid
-/// 4. Return which folders need re-encoding
-pub fn load_profile_from_path(path: &Path) -> Result<LoadedProfile, String> {
-    use crate::core::scan_music_folder;
-
-    let profile = load_profile(path)?;
-    let validation = validate_conversion_state(&profile);
-
-    println!("Loading profile: {}", profile.profile_name);
-    println!("  Valid folders: {:?}", validation.valid_folders);
-    println!("  Invalid folders: {:?}", validation.invalid_folders);
-    println!("  ISO valid: {}", validation.iso_valid);
-
-    let mut folders = Vec::new();
-    let mut folders_needing_encoding = Vec::new();
-
-    // Load folders
-    for folder_path_str in &profile.folders {
-        let folder_path = PathBuf::from(folder_path_str);
-        if let Ok(mut folder) = scan_music_folder(&folder_path) {
-            // Check if this folder has valid saved state
-            if validation.valid_folders.contains(folder_path_str) {
-                // Restore conversion status from saved state
-                if let Some(ref folder_states) = profile.folder_states {
-                    if let Some(saved) = folder_states.get(folder_path_str) {
-                        folder.conversion_status = FolderConversionStatus::Converted {
-                            output_dir: PathBuf::from(&saved.output_dir),
-                            lossless_bitrate: saved.lossless_bitrate,
-                            output_size: saved.output_size,
-                            completed_at: 0, // Not stored in v1.1
-                        };
-                    }
-                }
-            } else {
-                // Needs encoding - track it for later
-                folders_needing_encoding.push(folder.clone());
-            }
-
-            folders.push(folder);
-        }
-    }
-
-    // Restore ISO state if valid
-    let iso_state = if validation.iso_valid {
-        if let Some(ref iso_path_str) = profile.iso_path {
-            IsoState::new(PathBuf::from(iso_path_str), &folders).ok()
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Update recent profiles
-    let _ = add_to_recent_profiles(&path.to_string_lossy());
-
-    Ok(LoadedProfile {
-        folders,
-        folders_needing_encoding,
-        iso_state,
-    })
 }
 
 #[cfg(test)]

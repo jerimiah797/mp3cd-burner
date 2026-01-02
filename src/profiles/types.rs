@@ -98,7 +98,7 @@ impl SavedFolderState {
 }
 
 /// Result of validating a profile's conversion state
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConversionStateValidation {
     /// Whether the session directory exists
     pub session_exists: bool,

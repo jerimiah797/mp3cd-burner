@@ -23,6 +23,7 @@ use crate::core::{
     find_album_folders, scan_music_folder,
     AppSettings, BurnStage, ConversionState, FolderConversionStatus, FolderId, ImportState, MusicFolder,
 };
+use crate::profiles::ProfileLoadSetup;
 use crate::ui::Theme;
 
 /// The main folder list view
@@ -68,6 +69,8 @@ pub struct FolderList {
     needs_initial_focus: bool,
     /// Flag to clear folders after save completes (for New -> Save flow)
     pending_new_after_save: bool,
+    /// Pending profile load setup (for async profile loading)
+    pending_profile_load: Option<ProfileLoadSetup>,
 }
 
 impl FolderList {
@@ -90,6 +93,7 @@ impl FolderList {
             last_calculated_bitrate: None,
             needs_initial_focus: true,
             pending_new_after_save: false,
+            pending_profile_load: None,
         }
     }
 
@@ -114,6 +118,7 @@ impl FolderList {
             last_calculated_bitrate: None,
             needs_initial_focus: false,
             pending_new_after_save: false,
+            pending_profile_load: None,
         }
     }
 
@@ -627,12 +632,26 @@ impl FolderList {
     /// Load a profile and restore its state
     ///
     /// This will:
-    /// 1. Load the profile from disk
-    /// 2. Validate the saved conversion state
-    /// 3. Restore folders with valid conversion state
-    /// 4. Queue folders needing re-encoding to the background encoder
+    /// 1. Load the profile metadata from disk (fast)
+    /// 2. Validate the saved conversion state (fast)
+    /// 3. Scan folders asynchronously (background thread)
+    /// 4. Restore conversion status for valid folders
+    /// 5. Queue folders needing re-encoding to the background encoder
     pub fn load_profile(&mut self, path: &std::path::Path, cx: &mut Context<Self>) -> Result<(), String> {
-        let loaded = crate::profiles::load_profile_from_path(path)?;
+        // Don't start if already importing
+        if self.import_state.is_importing() {
+            return Err("Import already in progress".to_string());
+        }
+
+        // Prepare the profile load (fast - just reads metadata)
+        let setup = crate::profiles::prepare_profile_load(path)?;
+
+        let folder_count = setup.folder_paths.len();
+        if folder_count == 0 {
+            return Err("Profile has no folders".to_string());
+        }
+
+        println!("Starting async profile load of {} folders", folder_count);
 
         // Clear current state
         self.folders.clear();
@@ -640,34 +659,48 @@ impl FolderList {
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
 
-        // Apply loaded folders
-        self.folders = loaded.folders;
-
-        // Now that all folders are loaded, calculate the correct bitrate BEFORE queueing
-        if !loaded.folders_needing_encoding.is_empty() {
-            let target_bitrate = self.calculated_bitrate();
-            println!("Profile loaded - calculated bitrate: {} kbps", target_bitrate);
-
-            // Update encoder with correct bitrate before queueing folders
-            if let Some(ref encoder) = self.background_encoder {
-                encoder.recalculate_bitrate(target_bitrate);
-            }
-
-            // Now queue all folders that need encoding (with correct bitrate)
-            for folder in loaded.folders_needing_encoding {
-                self.queue_folder_for_encoding(&folder);
-            }
-
-            // Set last_folder_change so debounced recalc doesn't override with stale value
-            self.last_folder_change = Some(std::time::Instant::now());
-            self.last_calculated_bitrate = Some(target_bitrate);
+        // Clear the encoder state and delete converted files
+        if let Some(encoder) = &self.background_encoder {
+            encoder.clear_all();
         }
 
-        // Restore ISO state if valid
-        if let Some(iso_state) = loaded.iso_state {
-            self.iso_state = Some(iso_state);
-            println!("Restored ISO state from profile");
-        }
+        // Store the setup for the polling callback
+        self.pending_profile_load = Some(setup.clone());
+
+        // Reset import state
+        self.import_state.reset(folder_count);
+
+        // Clone state for background thread
+        let state = self.import_state.clone();
+        let folder_paths = setup.folder_paths.clone();
+
+        // Spawn background thread for scanning
+        std::thread::spawn(move || {
+            for path in folder_paths {
+                println!("Scanning: {}", path.display());
+                match scan_music_folder(&path) {
+                    Ok(folder) => {
+                        println!(
+                            "Scanned folder: {} ({} files, {} bytes)",
+                            folder.path.display(),
+                            folder.file_count,
+                            folder.total_size
+                        );
+                        state.push_folder(folder);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to scan folder {}: {}", path.display(), e);
+                        // Still increment completed so we know when done
+                        state.completed.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            state.finish();
+            println!("Profile import complete");
+        });
+
+        // Start polling for results (profile-aware)
+        Self::start_profile_import_polling(self.import_state.clone(), cx);
 
         cx.notify();
         Ok(())
@@ -1524,6 +1557,132 @@ impl FolderList {
                         this.last_folder_change = Some(std::time::Instant::now());
                     });
                 }
+                let _ = async_cx.refresh();
+            }
+        }).detach();
+    }
+
+    /// Start a polling loop for profile import that restores conversion status
+    ///
+    /// This is similar to `start_import_polling` but handles restoration of
+    /// conversion status from the saved profile state.
+    fn start_profile_import_polling(state: ImportState, cx: &mut Context<Self>) {
+        cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                loop {
+                    let cx_for_after_await = async_cx.clone();
+
+                    // Wait 50ms between updates
+                    Timer::after(std::time::Duration::from_millis(50)).await;
+
+                    // Drain any scanned folders and add to the list
+                    let folders = state.drain_folders();
+                    if !folders.is_empty() {
+                        let _ = this.update(&mut async_cx, |this, _cx| {
+                            for mut folder in folders {
+                                // Check if this folder has valid saved state
+                                let folder_path_str = folder.path.to_string_lossy().to_string();
+
+                                if let Some(ref setup) = this.pending_profile_load {
+                                    if setup.validation.valid_folders.contains(&folder_path_str) {
+                                        // Restore conversion status from saved state
+                                        if let Some(saved) = setup.folder_states.get(&folder_path_str) {
+                                            folder.conversion_status = FolderConversionStatus::Converted {
+                                                output_dir: std::path::PathBuf::from(&saved.output_dir),
+                                                lossless_bitrate: saved.lossless_bitrate,
+                                                output_size: saved.output_size,
+                                                completed_at: 0,
+                                            };
+                                            println!("Restored conversion status for: {}", folder_path_str);
+                                        }
+                                    }
+                                }
+
+                                this.folders.push(folder);
+                            }
+                        });
+                    }
+
+                    // Check if we should continue
+                    if !state.is_importing() {
+                        break;
+                    }
+
+                    // Refresh UI
+                    let _ = cx_for_after_await.refresh();
+
+                    async_cx = cx_for_after_await;
+                }
+
+                // Final drain and refresh
+                let folders = state.drain_folders();
+                if !folders.is_empty() {
+                    let _ = this.update(&mut async_cx, |this, _cx| {
+                        for mut folder in folders {
+                            // Check if this folder has valid saved state
+                            let folder_path_str = folder.path.to_string_lossy().to_string();
+
+                            if let Some(ref setup) = this.pending_profile_load {
+                                if setup.validation.valid_folders.contains(&folder_path_str) {
+                                    // Restore conversion status from saved state
+                                    if let Some(saved) = setup.folder_states.get(&folder_path_str) {
+                                        folder.conversion_status = FolderConversionStatus::Converted {
+                                            output_dir: std::path::PathBuf::from(&saved.output_dir),
+                                            lossless_bitrate: saved.lossless_bitrate,
+                                            output_size: saved.output_size,
+                                            completed_at: 0,
+                                        };
+                                        println!("Restored conversion status for: {}", folder_path_str);
+                                    }
+                                }
+                            }
+
+                            this.folders.push(folder);
+                        }
+                    });
+                }
+
+                // Import complete - finalize profile loading
+                let _ = this.update(&mut async_cx, |this, _cx| {
+                    if let Some(setup) = this.pending_profile_load.take() {
+                        println!("Profile import complete: {} folders loaded", this.folders.len());
+
+                        // Restore ISO state if valid
+                        if let Some(iso_path) = setup.iso_path {
+                            if let Ok(iso_state) = crate::burning::IsoState::new(iso_path, &this.folders) {
+                                this.iso_state = Some(iso_state);
+                                println!("Restored ISO state from profile");
+                            }
+                        }
+
+                        // Calculate bitrate and queue folders needing encoding
+                        let folders_needing_encoding: Vec<_> = this.folders
+                            .iter()
+                            .filter(|f| !matches!(f.conversion_status, FolderConversionStatus::Converted { .. }))
+                            .cloned()
+                            .collect();
+
+                        if !folders_needing_encoding.is_empty() {
+                            let target_bitrate = this.calculated_bitrate();
+                            println!("Profile loaded - calculated bitrate: {} kbps", target_bitrate);
+
+                            // Update encoder with correct bitrate before queueing folders
+                            if let Some(ref encoder) = this.background_encoder {
+                                encoder.recalculate_bitrate(target_bitrate);
+                            }
+
+                            // Queue folders needing encoding
+                            for folder in folders_needing_encoding {
+                                this.queue_folder_for_encoding(&folder);
+                            }
+
+                            this.last_folder_change = Some(std::time::Instant::now());
+                            this.last_calculated_bitrate = Some(target_bitrate);
+                        }
+                    }
+                });
+
                 let _ = async_cx.refresh();
             }
         }).detach();
