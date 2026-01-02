@@ -488,7 +488,7 @@ impl FolderList {
     /// Render the populated folder list
     fn render_folder_items(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let drop_target = self.drop_target_index;
-        let mut list = div().w_full().flex().flex_col().gap_1();
+        let mut list = div().w_full().flex().flex_col().gap_2();
 
         for (index, folder) in self.folders.iter().enumerate() {
             let props = FolderItemProps {
@@ -579,7 +579,7 @@ impl Render for FolderList {
                     .w_full()
                     .overflow_scroll()
                     .track_scroll(&self.scroll_handle)
-                    .px_4() // Horizontal padding for breathing room
+                    .px_6() // Horizontal padding for breathing room
                     .py_2() // Vertical padding
                     // Handle drops on the list container
                     .on_drop(on_internal_drop)
@@ -616,8 +616,8 @@ impl FolderList {
         let size_mb = total_size as f64 / (1024.0 * 1024.0);
 
         div()
-            .py_2()
-            .px_4()
+            .py_4()
+            .px_6()
             .flex()
             .items_center()
             .justify_between()
@@ -939,8 +939,11 @@ impl FolderList {
                     // Normal Convert & Burn button
                     div()
                         .id(SharedString::from("convert-burn-btn"))
-                        .px_8()
-                        .py_4()
+                        .px(gpui::px(55.0))  // ~70% wider than original
+                        .h(gpui::px(70.0))   // Match status text block height
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .bg(if has_folders { success_color } else { text_muted })
                         .text_color(gpui::white())
                         .text_lg()
