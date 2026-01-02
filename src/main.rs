@@ -104,6 +104,7 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(500.), px(300.))),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("MP3 CD Burner".into()),
                     appears_transparent: false,
