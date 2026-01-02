@@ -56,6 +56,12 @@ else
     echo "Note: No AppIcon.icns found - app will use default icon"
 fi
 
+# Copy PNG icon for About dialog
+if [ -f "${PROJECT_DIR}/macos/icon_128.png" ]; then
+    echo "Copying PNG icon..."
+    cp "${PROJECT_DIR}/macos/icon_128.png" "${BUNDLE_DIR}/Contents/Resources/"
+fi
+
 # Create PkgInfo
 echo -n "APPL????" > "${BUNDLE_DIR}/Contents/PkgInfo"
 

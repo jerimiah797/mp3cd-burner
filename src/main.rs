@@ -17,7 +17,7 @@ use gpui::{
 };
 use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, NewProfile, OpenProfile, SaveProfile};
 use core::AppSettings;
-use ui::components::FolderList;
+use ui::components::{AboutBox, FolderList};
 
 /// Build the application menus with current settings state
 fn build_menus(settings: &AppSettings) -> Vec<Menu> {
@@ -66,8 +66,8 @@ fn main() {
 
         // Register action handlers
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.on_action(|_: &About, _cx| {
-            println!("MP3 CD Burner v0.1.0 - Built with GPUI");
+        cx.on_action(|_: &About, cx| {
+            AboutBox::open(cx);
         });
         cx.on_action(|_: &OpenOutputDir, _cx| {
             let output_dir = conversion::get_output_dir();
