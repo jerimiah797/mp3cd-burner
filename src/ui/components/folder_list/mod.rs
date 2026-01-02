@@ -21,7 +21,7 @@ use crate::burning::{determine_iso_action, IsoAction, IsoState};
 use crate::conversion::{calculate_multipass_bitrate, BackgroundEncoderHandle, OutputManager};
 use crate::core::{
     find_album_folders, scan_music_folder,
-    AppSettings, BurnStage, ConversionState, FolderConversionStatus, FolderId, ImportState, MusicFolder,
+    AppSettings, BurnStage, ConversionState, DisplaySettings, FolderConversionStatus, FolderId, ImportState, MusicFolder,
 };
 use crate::profiles::ProfileLoadSetup;
 use crate::ui::Theme;
@@ -976,6 +976,8 @@ impl FolderList {
     /// Render the populated folder list
     fn render_folder_items(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let drop_target = self.drop_target_index;
+        // Clone display settings to avoid borrow conflict with cx
+        let display_settings = cx.global::<DisplaySettings>().clone();
         let mut list = div().w_full().flex().flex_col().gap_2();
 
         for (index, folder) in self.folders.iter().enumerate() {
@@ -984,6 +986,9 @@ impl FolderList {
                 folder: folder.clone(),
                 is_drop_target: drop_target == Some(index),
                 theme: *theme,
+                show_file_count: display_settings.show_file_count,
+                show_original_size: display_settings.show_original_size,
+                show_converted_size: display_settings.show_converted_size,
             };
 
             let item = render_folder_item(

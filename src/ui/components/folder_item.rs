@@ -137,6 +137,10 @@ pub struct FolderItemProps {
     pub folder: MusicFolder,
     pub is_drop_target: bool,
     pub theme: Theme,
+    // Display settings
+    pub show_file_count: bool,
+    pub show_original_size: bool,
+    pub show_converted_size: bool,
 }
 
 /// Renders a single folder item in the list
@@ -154,6 +158,9 @@ pub fn render_folder_item<V: 'static>(
         folder,
         is_drop_target,
         theme,
+        show_file_count,
+        show_original_size,
+        show_converted_size,
     } = props;
 
     let folder_name = folder
@@ -162,31 +169,46 @@ pub fn render_folder_item<V: 'static>(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
 
-    // Format metadata for display
-    // Show encoded size if converted, otherwise show original size
-    let file_info = match &folder.conversion_status {
-        FolderConversionStatus::Converted { output_size, .. } => {
-            format!(
-                "{} files, {} → {}",
-                folder.file_count,
-                format_size(folder.total_size),
-                format_size(*output_size)
-            )
+    // Format metadata for display based on display settings
+    // Build up parts conditionally, then join them
+    let file_info = {
+        let mut parts = Vec::new();
+
+        match &folder.conversion_status {
+            FolderConversionStatus::Converted { output_size, .. } => {
+                if show_file_count {
+                    parts.push(format!("{} files", folder.file_count));
+                }
+                if show_original_size {
+                    parts.push(format_size(folder.total_size));
+                }
+                if show_converted_size {
+                    parts.push(format!("→ {}", format_size(*output_size)));
+                }
+            }
+            FolderConversionStatus::Converting { files_completed, files_total } => {
+                // Converting state always shows progress
+                parts.push(format!("{}/{} files", files_completed, files_total));
+                if show_original_size {
+                    parts.push(format_size(folder.total_size));
+                }
+                parts.push("(encoding...)".to_string());
+            }
+            _ => {
+                if show_file_count {
+                    parts.push(format!("{} files", folder.file_count));
+                }
+                if show_original_size {
+                    parts.push(format_size(folder.total_size));
+                }
+            }
         }
-        FolderConversionStatus::Converting { files_completed, files_total } => {
-            format!(
-                "{}/{} files, {} (encoding...)",
-                files_completed,
-                files_total,
-                format_size(folder.total_size)
-            )
-        }
-        _ => {
-            format!(
-                "{} files, {}",
-                folder.file_count,
-                format_size(folder.total_size)
-            )
+
+        if parts.is_empty() {
+            // If nothing to show, use empty string (folder name is always visible)
+            String::new()
+        } else {
+            parts.join(", ")
         }
     };
 

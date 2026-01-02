@@ -10,6 +10,7 @@ actions!(app, [
     About,
     OpenOutputDir,
     ToggleSimulateBurn,
+    OpenDisplaySettings,
     // Profile actions
     NewProfile,
     OpenProfile,

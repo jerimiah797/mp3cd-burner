@@ -15,9 +15,9 @@ use gpui::{
     prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
     WindowBounds, WindowHandle, WindowOptions,
 };
-use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, NewProfile, OpenProfile, SaveProfile};
-use core::AppSettings;
-use ui::components::{AboutBox, FolderList};
+use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, OpenDisplaySettings, NewProfile, OpenProfile, SaveProfile};
+use core::{AppSettings, DisplaySettings};
+use ui::components::{AboutBox, DisplaySettingsModal, FolderList};
 
 /// Build the application menus with current settings state
 fn build_menus(settings: &AppSettings) -> Vec<Menu> {
@@ -53,6 +53,8 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
                 MenuItem::action("No Lossy Conversions", About), // TODO: Implement toggle
                 MenuItem::action("Embed Album Art", About), // TODO: Implement toggle
                 MenuItem::separator(),
+                MenuItem::action("Display Settings...", OpenDisplaySettings),
+                MenuItem::separator(),
                 MenuItem::action("Open Output Folder", OpenOutputDir),
             ],
         },
@@ -63,6 +65,8 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         // Initialize global app settings
         cx.set_global(AppSettings::default());
+        // Load display settings from disk (or use defaults)
+        cx.set_global(DisplaySettings::load());
 
         // Register action handlers
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -88,6 +92,9 @@ fn main() {
             // Rebuild menus to show updated checkmark
             let menus = build_menus(settings);
             cx.set_menus(menus);
+        });
+        cx.on_action(|_: &OpenDisplaySettings, cx| {
+            DisplaySettingsModal::open(cx);
         });
 
         // Note: Profile action handlers are registered on the FolderList view itself

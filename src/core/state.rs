@@ -30,6 +30,97 @@ pub struct AppSettings {
 
 impl Global for AppSettings {}
 
+/// Display settings for folder list items
+///
+/// Controls which details are shown for each folder in the list.
+/// Persisted to ~/Library/Application Support/MP3 CD Burner/display_settings.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplaySettings {
+    /// Show file count (e.g., "12 files")
+    pub show_file_count: bool,
+    /// Show original size (e.g., "500 MB")
+    pub show_original_size: bool,
+    /// Show converted size (e.g., "→ 180 MB")
+    pub show_converted_size: bool,
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self {
+            // Default to verbose in debug builds, sparse in release
+            show_file_count: cfg!(debug_assertions),
+            show_original_size: cfg!(debug_assertions),
+            show_converted_size: cfg!(debug_assertions),
+        }
+    }
+}
+
+impl Global for DisplaySettings {}
+
+impl DisplaySettings {
+    const SETTINGS_FILE: &'static str = "display_settings.json";
+
+    /// Get the app data directory (~/Library/Application Support/MP3 CD Burner/)
+    fn get_app_data_dir() -> Result<PathBuf, String> {
+        let data_dir = dirs::data_dir()
+            .ok_or_else(|| "Could not determine data directory".to_string())?;
+
+        let app_dir = data_dir.join("MP3 CD Burner");
+
+        // Create directory if it doesn't exist
+        if !app_dir.exists() {
+            std::fs::create_dir_all(&app_dir)
+                .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+        }
+
+        Ok(app_dir)
+    }
+
+    /// Load display settings from disk, or return defaults if not found
+    pub fn load() -> Self {
+        match Self::try_load() {
+            Ok(settings) => {
+                println!("Loaded display settings from disk");
+                settings
+            }
+            Err(e) => {
+                println!("Using default display settings: {}", e);
+                Self::default()
+            }
+        }
+    }
+
+    fn try_load() -> Result<Self, String> {
+        let app_dir = Self::get_app_data_dir()?;
+        let settings_path = app_dir.join(Self::SETTINGS_FILE);
+
+        if !settings_path.exists() {
+            return Err("Settings file not found".to_string());
+        }
+
+        let contents = std::fs::read_to_string(&settings_path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+
+        serde_json::from_str(&contents)
+            .map_err(|e| format!("Failed to parse settings: {}", e))
+    }
+
+    /// Save display settings to disk
+    pub fn save(&self) -> Result<(), String> {
+        let app_dir = Self::get_app_data_dir()?;
+        let settings_path = app_dir.join(Self::SETTINGS_FILE);
+
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+
+        std::fs::write(&settings_path, json)
+            .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+        println!("Saved display settings to {:?}", settings_path);
+        Ok(())
+    }
+}
+
 /// Settings for a burn operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BurnSettings {
