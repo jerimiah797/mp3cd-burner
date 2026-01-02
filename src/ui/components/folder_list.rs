@@ -17,29 +17,16 @@ use super::status_bar::{
     get_stage_color, is_stage_cancelable, render_import_progress, render_iso_too_large,
     render_stats_panel, ProgressDisplay, StatusBarState,
 };
-use crate::audio::{determine_encoding_strategy, EncodingStrategy};
-use crate::burning::{create_iso, burn_iso_with_cancel, check_cd_status, CdStatus, IsoState, IsoAction, determine_iso_action};
-use crate::conversion::{
-    calculate_multipass_bitrate, ensure_output_dir, verify_ffmpeg,
-    convert_files_parallel_with_callback, ConversionJob, ConversionProgress,
-    BackgroundEncoderHandle, OutputManager,
+use crate::burning::{
+    coordinate_burn, create_iso, BurnConfig,
+    IsoAction, IsoState, determine_iso_action,
 };
+use crate::conversion::{calculate_multipass_bitrate, BackgroundEncoderHandle, OutputManager};
 use crate::core::{
-    find_album_folders, get_audio_files, scan_music_folder,
+    find_album_folders, scan_music_folder,
     AppSettings, BurnStage, ConversionState, FolderConversionStatus, FolderId, ImportState, MusicFolder,
 };
 use crate::ui::Theme;
-
-/// Calculate total size of files in a directory (recursive)
-fn calculate_directory_size(path: &std::path::Path) -> u64 {
-    walkdir::WalkDir::new(path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum()
-}
 
 /// The main folder list view
 ///
@@ -1423,454 +1410,128 @@ impl FolderList {
         }
     }
 
-    /// Run the conversion process for all folders (async, in background thread)
+    /// Run burn process - waits for background encoding, creates ISO, then burns
+    ///
+    /// This simplified version relies on background encoding to convert folders.
+    /// If conversion isn't complete, it waits for it to finish before burning.
     fn run_conversion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Don't start if already converting
+        // Don't start if already converting/burning
         if self.conversion_state.is_converting() {
-            println!("Conversion already in progress");
+            println!("Already in progress");
             return;
         }
 
-        println!("Starting conversion...");
-
-        // Verify ffmpeg is available
-        let ffmpeg_path = match verify_ffmpeg() {
-            Ok(path) => {
-                println!("Using ffmpeg at: {:?}", path);
-                path
-            }
-            Err(e) => {
-                eprintln!("FFmpeg not found: {}", e);
-                return;
-            }
-        };
-
-        // Create output directory
-        let output_dir = match ensure_output_dir() {
-            Ok(dir) => {
-                println!("Output directory: {:?}", dir);
-                dir
-            }
-            Err(e) => {
-                eprintln!("Failed to create output directory: {}", e);
-                return;
-            }
-        };
-
-        // Calculate initial target bitrate
-        let initial_bitrate = self.calculated_bitrate();
-        println!("Initial calculated bitrate: {} kbps", initial_bitrate);
-
-        // First pass: collect all audio files for optimization
-        let mut all_audio_files = Vec::new();
-        let mut folder_info: Vec<(usize, String, std::path::PathBuf)> = Vec::new();
-
-        for (folder_idx, folder) in self.folders.iter().enumerate() {
-            let folder_name = folder.path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Unknown");
-            let album_dir_name = format!("{:02}-{}", folder_idx + 1, folder_name);
-            let album_output_dir = output_dir.join(&album_dir_name);
-
-            let audio_files = match get_audio_files(&folder.path) {
-                Ok(files) => files,
-                Err(e) => {
-                    eprintln!("Failed to get audio files from {}: {}", folder.path.display(), e);
-                    continue;
-                }
-            };
-
-            for audio_file in audio_files {
-                folder_info.push((all_audio_files.len(), album_dir_name.clone(), album_output_dir.clone()));
-                all_audio_files.push(audio_file);
-            }
-        }
-
-        if all_audio_files.is_empty() {
-            println!("No audio files to convert");
+        // Check if we have folders to burn
+        if self.folders.is_empty() {
+            println!("No folders to burn");
             return;
         }
 
-        // Multi-pass approach: partition files by encoding strategy
-        // - Pass 1: Copy/strip MP3s (exact size known after)
-        // - Pass 2: Transcode lossy at source bitrate (size known after)
-        // - Pass 3: Transcode lossless at calculated bitrate (fills remaining space)
-
-        let mut copy_jobs: Vec<ConversionJob> = Vec::new();
-        let mut lossy_jobs: Vec<ConversionJob> = Vec::new();
-        // For lossless, we store path info and duration - bitrate calculated after passes 1+2
-        let mut lossless_info: Vec<(PathBuf, PathBuf, f64)> = Vec::new(); // (input, output, duration)
-
-        for (idx, audio_file) in all_audio_files.into_iter().enumerate() {
-            let (_, _, ref album_output_dir) = folder_info[idx];
-
-            let file_stem = audio_file.path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("output");
-            let output_path = album_output_dir.join(format!("{}.mp3", file_stem));
-
-            // Determine strategy using initial bitrate (just for categorization)
-            let strategy = determine_encoding_strategy(
-                &audio_file.codec,
-                audio_file.bitrate,
-                initial_bitrate,
-                audio_file.is_lossy,
-                false,
-                false,
-            );
-
-            match &strategy {
-                EncodingStrategy::Copy | EncodingStrategy::CopyWithoutArt => {
-                    copy_jobs.push(ConversionJob {
-                        input_path: audio_file.path,
-                        output_path,
-                        strategy,
-                    });
-                }
-                EncodingStrategy::ConvertAtSourceBitrate(_) => {
-                    lossy_jobs.push(ConversionJob {
-                        input_path: audio_file.path,
-                        output_path,
-                        strategy,
-                    });
-                }
-                EncodingStrategy::ConvertAtTargetBitrate(_) => {
-                    // Store for later - bitrate will be calculated after passes 1+2
-                    lossless_info.push((audio_file.path, output_path, audio_file.duration));
-                }
-            }
-        }
-
-        let total_jobs = copy_jobs.len() + lossy_jobs.len() + lossless_info.len();
-        if total_jobs == 0 {
-            println!("No files to convert");
+        // Check if background encoder is available
+        if self.background_encoder.is_none() {
+            eprintln!("Background encoder not available - cannot burn");
             return;
         }
 
-        println!(
-            "Multi-pass conversion: {} copy, {} lossy transcode, {} lossless (bitrate TBD)",
-            copy_jobs.len(),
-            lossy_jobs.len(),
-            lossless_info.len()
-        );
+        println!("Starting burn process...");
 
-        // Reset conversion state
-        self.conversion_state.reset(total_jobs);
+        // Get conversion state info
+        let all_converted = self.all_folders_converted();
+        let total_folders = self.folders.len();
 
-        // Clone state for the background thread
+        // Reset conversion state for progress tracking
+        self.conversion_state.reset(total_folders);
+
+        if all_converted {
+            // All folders already converted - go straight to ISO/burn
+            println!("All {} folders already converted", total_folders);
+            self.conversion_state.set_stage(BurnStage::CreatingIso);
+        } else {
+            // Still converting - show waiting stage
+            println!("Waiting for background conversion to complete...");
+            self.conversion_state.set_stage(BurnStage::Converting);
+        }
+
         let state = self.conversion_state.clone();
-        let cancel_token = self.conversion_state.cancel_requested.clone();
-        let output_dir_clone = output_dir.clone();
         let simulate_burn = cx.global::<AppSettings>().simulate_burn;
 
-        // Spawn background thread with tokio runtime
+        // Get output manager for ISO creation
+        let output_manager = match &self.output_manager {
+            Some(om) => om.clone(),
+            None => {
+                eprintln!("No output manager available");
+                return;
+            }
+        };
+
+        // Get encoder handle to check completion
+        let encoder_handle = self.background_encoder.as_ref().unwrap().clone();
+
+        // Spawn background thread to wait for conversion and burn
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-
-            rt.block_on(async {
-                let progress = Arc::new(ConversionProgress::new(total_jobs));
-                let mut was_cancelled = false;
-
-                // === PASS 1: Copy MP3s ===
-                let copy_count = copy_jobs.len();
-                if !copy_jobs.is_empty() && !was_cancelled {
-                    println!("\n=== Pass 1: Copying {} MP3 files ===", copy_count);
-                    let progress_for_callback = progress.clone();
-                    let state_for_callback = state.clone();
-
-                    let (_completed, failed, cancelled) = convert_files_parallel_with_callback(
-                        ffmpeg_path.clone(),
-                        copy_jobs,
-                        progress.clone(),
-                        cancel_token.clone(),
-                        move || {
-                            let completed = progress_for_callback.completed_count();
-                            let failed = progress_for_callback.failed_count();
-                            state_for_callback.completed.store(completed, Ordering::SeqCst);
-                            state_for_callback.failed.store(failed, Ordering::SeqCst);
-                        },
-                    ).await;
-
-                    was_cancelled = cancelled;
-                    println!("Pass 1 complete: {} copied, {} failed", copy_count - failed, failed);
-                }
-
-                // === PASS 2: Transcode lossy files ===
-                let lossy_count = lossy_jobs.len();
-                if !lossy_jobs.is_empty() && !was_cancelled {
-                    println!("\n=== Pass 2: Transcoding {} lossy files ===", lossy_count);
-                    let progress_for_callback = progress.clone();
-                    let state_for_callback = state.clone();
-
-                    let (_completed, failed, cancelled) = convert_files_parallel_with_callback(
-                        ffmpeg_path.clone(),
-                        lossy_jobs,
-                        progress.clone(),
-                        cancel_token.clone(),
-                        move || {
-                            let completed = progress_for_callback.completed_count();
-                            let failed = progress_for_callback.failed_count();
-                            state_for_callback.completed.store(completed, Ordering::SeqCst);
-                            state_for_callback.failed.store(failed, Ordering::SeqCst);
-                        },
-                    ).await;
-
-                    was_cancelled = cancelled;
-                    println!("Pass 2 complete: {} transcoded, {} failed", lossy_count - failed, failed);
-                }
-
-                // === Calculate remaining space for lossless ===
-                if !lossless_info.is_empty() && !was_cancelled {
-                    // Measure actual output size after passes 1+2
-                    let current_size = calculate_directory_size(&output_dir_clone);
-                    let cd_capacity: u64 = 685 * 1024 * 1024;
-                    let remaining_space = cd_capacity.saturating_sub(current_size);
-
-                    // Calculate total lossless duration
-                    let total_lossless_duration: f64 = lossless_info.iter().map(|(_, _, d)| d).sum();
-
-                    // Calculate optimal bitrate: remaining_bytes * 8 / duration / 1000 = kbps
-                    // Using CBR mode for lossless, so output size is predictable
-                    // Subtract 2kbps for MP3 header/framing overhead
-                    let optimal_bitrate = if total_lossless_duration > 0.0 {
-                        let raw_bitrate = remaining_space as f64 * 8.0 / total_lossless_duration / 1000.0;
-                        let adjusted_bitrate = (raw_bitrate - 2.0) as u32; // small margin for overhead
-                        adjusted_bitrate.clamp(64, 320)
-                    } else {
-                        256 // fallback
-                    };
-
-                    println!(
-                        "\n=== Pass 3: Transcoding {} lossless files ===",
-                        lossless_info.len()
-                    );
-                    println!(
-                        "Current output: {:.1} MB, Remaining: {:.1} MB, Lossless duration: {:.0}s",
-                        current_size as f64 / 1024.0 / 1024.0,
-                        remaining_space as f64 / 1024.0 / 1024.0,
-                        total_lossless_duration
-                    );
-                    println!("Calculated optimal bitrate: {} kbps", optimal_bitrate);
-
-                    // Build lossless jobs with calculated bitrate
-                    let lossless_jobs: Vec<ConversionJob> = lossless_info
-                        .into_iter()
-                        .map(|(input_path, output_path, _)| ConversionJob {
-                            input_path,
-                            output_path,
-                            strategy: EncodingStrategy::ConvertAtTargetBitrate(optimal_bitrate),
-                        })
-                        .collect();
-
-                    let lossless_count = lossless_jobs.len();
-                    let progress_for_callback = progress.clone();
-                    let state_for_callback = state.clone();
-
-                    let (_completed, failed, cancelled) = convert_files_parallel_with_callback(
-                        ffmpeg_path,
-                        lossless_jobs,
-                        progress.clone(),
-                        cancel_token.clone(),
-                        move || {
-                            let completed = progress_for_callback.completed_count();
-                            let failed = progress_for_callback.failed_count();
-                            state_for_callback.completed.store(completed, Ordering::SeqCst);
-                            state_for_callback.failed.store(failed, Ordering::SeqCst);
-                        },
-                    ).await;
-
-                    was_cancelled = cancelled;
-                    println!("Pass 3 complete: {} transcoded, {} failed", lossless_count - failed, failed);
-                }
-
-                // Final output size
-                let final_size = calculate_directory_size(&output_dir_clone);
-                let utilization = final_size as f64 / (685.0 * 1024.0 * 1024.0) * 100.0;
-
-                // Get final counts from progress tracker (cumulative across all passes)
-                let total_completed = progress.completed_count();
-                let total_failed = progress.failed_count();
-
-                if was_cancelled {
-                    println!(
-                        "\nConversion CANCELLED: {} converted, {} failed before cancel",
-                        total_completed, total_failed
-                    );
+            // Wait for all folders to be converted
+            loop {
+                if state.is_cancelled() {
+                    println!("Burn cancelled while waiting for conversion");
                     state.set_stage(BurnStage::Cancelled);
                     state.finish();
                     return;
                 }
 
-                println!(
-                    "\nConversion complete: {} converted, {} failed",
-                    total_completed, total_failed
-                );
-                println!(
-                    "Final output: {:.1} MB ({:.1}% of CD capacity)",
-                    final_size as f64 / 1024.0 / 1024.0,
-                    utilization
-                );
+                // Check if all folders are converted
+                let encoder_state = encoder_handle.get_state();
+                let guard = encoder_state.lock().unwrap();
+                let completed_count = guard.completed.len();
+                let queue_empty = guard.queue.is_empty();
+                let active_none = guard.active.is_none();
+                drop(guard);
 
-                // === ISO CREATION ===
-                state.set_stage(BurnStage::CreatingIso);
-                println!("\n=== Creating ISO image ===");
+                // Update progress
+                state.completed.store(completed_count, Ordering::SeqCst);
 
-                // Generate volume label from folder names (first few albums)
-                let volume_label = "MP3CD".to_string(); // TODO: generate from folder names
-
-                match create_iso(&output_dir_clone, &volume_label) {
-                    Ok(result) => {
-                        println!("ISO created at: {}", result.iso_path.display());
-                        *state.iso_path.lock().unwrap() = Some(result.iso_path.clone());
-
-                        if simulate_burn {
-                            // Simulated mode - skip actual burning
-                            println!("\n=== SIMULATED BURN ===");
-                            println!("Would burn ISO: {}", result.iso_path.display());
-                            state.set_stage(BurnStage::Complete);
-                            state.finish();
-                        } else {
-                            // Real mode - check for CD and burn
-                            state.set_stage(BurnStage::WaitingForCd);
-                            println!("\n=== Waiting for blank CD ===");
-
-                            // Poll for CD insertion (with timeout)
-                            let mut erase_first = false;
-                            let mut cd_ready = false;
-
-                            for _ in 0..120 {
-                                // Wait up to 120 seconds (longer to allow for erase prompt)
-                                if cancel_token.load(Ordering::SeqCst) {
-                                    println!("Burn cancelled while waiting for CD");
-                                    state.set_stage(BurnStage::Cancelled);
-                                    state.finish();
-                                    return;
-                                }
-
-                                match check_cd_status() {
-                                    Ok(CdStatus::Blank) => {
-                                        println!("Blank CD detected");
-                                        cd_ready = true;
-                                        break;
-                                    }
-                                    Ok(CdStatus::ErasableWithData) => {
-                                        // CD-RW with data - prompt user to erase
-                                        println!("Erasable disc (CD-RW) with data detected");
-                                        state.set_stage(BurnStage::ErasableDiscDetected);
-
-                                        // Wait for user to approve erase or cancel
-                                        loop {
-                                            if cancel_token.load(Ordering::SeqCst) {
-                                                println!("Burn cancelled");
-                                                state.set_stage(BurnStage::Cancelled);
-                                                state.finish();
-                                                return;
-                                            }
-                                            if state.erase_approved.load(Ordering::SeqCst) {
-                                                println!("User approved erase - will erase and burn");
-                                                erase_first = true;
-                                                cd_ready = true;
-                                                break;
-                                            }
-                                            std::thread::sleep(std::time::Duration::from_millis(100));
-                                        }
-                                        break;
-                                    }
-                                    Ok(CdStatus::NonErasable) => {
-                                        // Non-erasable disc with data - wait for different disc
-                                        println!("Non-erasable disc detected - please insert a blank disc");
-                                        std::thread::sleep(std::time::Duration::from_secs(2));
-                                    }
-                                    Ok(CdStatus::NoDisc) => {
-                                        std::thread::sleep(std::time::Duration::from_secs(1));
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error checking CD: {}", e);
-                                        std::thread::sleep(std::time::Duration::from_secs(1));
-                                    }
-                                }
-                            }
-
-                            if !cd_ready {
-                                println!("No usable CD found after timeout");
-                                state.set_stage(BurnStage::Complete);
-                                state.finish();
-                                return;
-                            }
-
-                            // === BURN CD ===
-                            if erase_first {
-                                state.set_stage(BurnStage::Erasing);
-                                println!("\n=== Erasing and Burning CD ===");
-                            } else {
-                                state.set_stage(BurnStage::Burning);
-                                println!("\n=== Burning CD ===");
-                            }
-
-                            // Track progress to detect phase transition (erase -> burn)
-                            let state_for_progress = state.clone();
-                            let last_progress = Arc::new(std::sync::atomic::AtomicI32::new(-1));
-                            let last_progress_clone = last_progress.clone();
-                            let is_erasing = erase_first;
-
-                            let progress_callback = Box::new(move |progress: i32| {
-                                let current_stage = state_for_progress.get_stage();
-                                let prev = last_progress_clone.load(Ordering::SeqCst);
-
-                                // Handle -1 (indeterminate) values
-                                if progress < 0 {
-                                    // If we were at high progress (>=95) in Burning stage, switch to Finishing
-                                    if prev >= 95 && current_stage == BurnStage::Burning {
-                                        state_for_progress.set_stage(BurnStage::Finishing);
-                                    }
-                                    return;
-                                }
-
-                                // Store current progress for next comparison
-                                last_progress_clone.store(progress, Ordering::SeqCst);
-
-                                // Detect phase transition: progress was high (>50) and now low (<20)
-                                // This indicates erase completed and burn started
-                                if is_erasing && prev > 50 && progress < 20 && current_stage == BurnStage::Erasing {
-                                    state_for_progress.set_stage(BurnStage::Burning);
-                                }
-
-                                state_for_progress.set_burn_progress(progress);
-                            });
-
-                            // Pass cancel token and erase flag
-                            match burn_iso_with_cancel(&result.iso_path, Some(progress_callback), Some(cancel_token.clone()), erase_first) {
-                                Ok(()) => {
-                                    println!("CD burned successfully!");
-                                    state.set_stage(BurnStage::Complete);
-                                }
-                                Err(e) if e.contains("cancelled") => {
-                                    println!("Burn was cancelled");
-                                    state.set_stage(BurnStage::Cancelled);
-                                }
-                                Err(e) => {
-                                    eprintln!("Burn failed: {}", e);
-                                    state.set_stage(BurnStage::Complete); // Still mark complete
-                                }
-                            }
-                            state.finish();
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("ISO creation failed: {}", e);
-                        state.set_stage(BurnStage::Complete);
-                        state.finish();
-                    }
+                if queue_empty && active_none {
+                    println!("All folders converted ({} total)", completed_count);
+                    break;
                 }
-            });
+
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+
+            // Create ISO
+            state.set_stage(BurnStage::CreatingIso);
+            println!("\n=== Creating ISO image ===");
+
+            let staging_dir = output_manager.staging_dir();
+            let volume_label = "MP3CD".to_string();
+
+            match create_iso(&staging_dir, &volume_label) {
+                Ok(result) => {
+                    println!("ISO created at: {}", result.iso_path.display());
+                    *state.iso_path.lock().unwrap() = Some(result.iso_path.clone());
+
+                    // Coordinate the burn process
+                    let config = BurnConfig {
+                        simulate: simulate_burn,
+                        ..Default::default()
+                    };
+
+                    let burn_result = coordinate_burn(&result.iso_path, &state, &config);
+                    println!("Burn coordination result: {:?}", burn_result);
+                    state.finish();
+                }
+                Err(e) => {
+                    eprintln!("ISO creation failed: {}", e);
+                    state.set_stage(BurnStage::Complete);
+                    state.finish();
+                }
+            }
         });
 
-        // Start polling for progress updates (pass window handle for success dialog)
+        // Start polling for progress updates
         let window_handle = window.window_handle();
         Self::start_progress_polling(self.conversion_state.clone(), window_handle, cx);
 
-        println!("Multi-pass conversion started ({} files)", total_jobs);
+        println!("Burn process started");
         cx.notify();
     }
 
@@ -1897,139 +1558,20 @@ impl FolderList {
 
         // Reset state for burning only (no file conversion)
         self.conversion_state.reset(0);
-        self.conversion_state.set_stage(BurnStage::WaitingForCd);
 
         let state = self.conversion_state.clone();
-        let cancel_token = self.conversion_state.cancel_requested.clone();
         let simulate_burn = cx.global::<AppSettings>().simulate_burn;
 
-        // Spawn background thread with tokio runtime (matches main burn flow)
+        // Spawn background thread for burn coordination
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-            rt.block_on(async {
-                // Check for simulate mode first
-                if simulate_burn {
-                    println!("\n=== SIMULATED BURN (Burn Another) ===");
-                    println!("Would burn ISO: {}", iso_path.display());
-                    state.set_stage(BurnStage::Complete);
-                    state.finish();
-                    return;
-                }
+            let config = BurnConfig {
+                simulate: simulate_burn,
+                ..Default::default()
+            };
 
-                println!("\n=== Waiting for blank CD (Burn Another) ===");
-
-                // Poll for CD insertion
-                let mut erase_first = false;
-                let mut cd_ready = false;
-
-                for _ in 0..120 {
-                    if cancel_token.load(Ordering::SeqCst) {
-                        println!("Burn cancelled while waiting for CD");
-                        state.set_stage(BurnStage::Cancelled);
-                        state.finish();
-                        return;
-                    }
-
-                    match check_cd_status() {
-                        Ok(CdStatus::Blank) => {
-                            println!("Blank CD detected");
-                            cd_ready = true;
-                            break;
-                        }
-                        Ok(CdStatus::ErasableWithData) => {
-                            println!("Erasable disc (CD-RW) with data detected");
-                            state.set_stage(BurnStage::ErasableDiscDetected);
-
-                            // Wait for user to approve erase or cancel
-                            loop {
-                                if cancel_token.load(Ordering::SeqCst) {
-                                    println!("Burn cancelled");
-                                    state.set_stage(BurnStage::Cancelled);
-                                    state.finish();
-                                    return;
-                                }
-                                if state.erase_approved.load(Ordering::SeqCst) {
-                                    println!("User approved erase - will erase and burn");
-                                    erase_first = true;
-                                    cd_ready = true;
-                                    break;
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
-                            break;
-                        }
-                        Ok(CdStatus::NonErasable) => {
-                            println!("Non-erasable disc detected - please insert a blank disc");
-                            std::thread::sleep(std::time::Duration::from_secs(2));
-                        }
-                        Ok(CdStatus::NoDisc) => {
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                        }
-                        Err(e) => {
-                            eprintln!("Error checking CD: {}", e);
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                        }
-                    }
-                }
-
-                if !cd_ready {
-                    println!("No usable CD found after timeout");
-                    state.set_stage(BurnStage::Complete);
-                    state.finish();
-                    return;
-                }
-
-                // === BURN CD ===
-                if erase_first {
-                    state.set_stage(BurnStage::Erasing);
-                    println!("\n=== Erasing and Burning CD ===");
-                } else {
-                    state.set_stage(BurnStage::Burning);
-                    println!("\n=== Burning CD ===");
-                }
-
-                // Track progress
-                let state_for_progress = state.clone();
-                let last_progress = Arc::new(std::sync::atomic::AtomicI32::new(-1));
-                let last_progress_clone = last_progress.clone();
-                let is_erasing = erase_first;
-
-                let progress_callback = Box::new(move |progress: i32| {
-                    let current_stage = state_for_progress.get_stage();
-                    let prev = last_progress_clone.load(Ordering::SeqCst);
-
-                    if progress < 0 {
-                        if prev >= 95 && current_stage == BurnStage::Burning {
-                            state_for_progress.set_stage(BurnStage::Finishing);
-                        }
-                        return;
-                    }
-
-                    last_progress_clone.store(progress, Ordering::SeqCst);
-
-                    if is_erasing && prev > 50 && progress < 20 && current_stage == BurnStage::Erasing {
-                        state_for_progress.set_stage(BurnStage::Burning);
-                    }
-
-                    state_for_progress.set_burn_progress(progress);
-                });
-
-                match burn_iso_with_cancel(&iso_path, Some(progress_callback), Some(cancel_token.clone()), erase_first) {
-                    Ok(()) => {
-                        println!("CD burned successfully!");
-                        state.set_stage(BurnStage::Complete);
-                    }
-                    Err(e) if e.contains("cancelled") => {
-                        println!("Burn was cancelled");
-                        state.set_stage(BurnStage::Cancelled);
-                    }
-                    Err(e) => {
-                        eprintln!("Burn failed: {}", e);
-                        state.set_stage(BurnStage::Complete);
-                    }
-                }
-                state.finish();
-            });
+            let result = coordinate_burn(&iso_path, &state, &config);
+            println!("Burn coordination result: {:?}", result);
+            state.finish();
         });
 
         // Start polling for progress updates
