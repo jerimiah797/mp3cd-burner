@@ -13,9 +13,9 @@ mod ui;
 
 use gpui::{
     prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
-    WindowBounds, WindowOptions,
+    WindowBounds, WindowHandle, WindowOptions,
 };
-use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn};
+use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, NewProfile, OpenProfile, SaveProfile};
 use core::AppSettings;
 use ui::components::FolderList;
 
@@ -40,11 +40,10 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
         Menu {
             name: "File".into(),
             items: vec![
-                MenuItem::action("New", About), // TODO: Implement New action
-                MenuItem::action("Open Profile...", About), // TODO: Implement
+                MenuItem::action("New", NewProfile),
+                MenuItem::action("Open Profile...", OpenProfile),
                 MenuItem::separator(),
-                MenuItem::action("Save Profile", About), // TODO: Implement
-                MenuItem::action("Save Profile As...", About), // TODO: Implement
+                MenuItem::action("Save Profile", SaveProfile),
             ],
         },
         Menu {
@@ -91,8 +90,17 @@ fn main() {
             cx.set_menus(menus);
         });
 
+        // Note: Profile action handlers are registered on the FolderList view itself
+        // via on_action in render(). The view has focus, so it receives the actions
+        // dispatched from menu items.
+
         // Bind keyboard shortcuts
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-n", NewProfile, None),
+            KeyBinding::new("cmd-o", OpenProfile, None),
+            KeyBinding::new("cmd-s", SaveProfile, None),
+        ]);
 
         // Set up the initial application menu
         let settings = cx.global::<AppSettings>();
@@ -101,7 +109,7 @@ fn main() {
         // Open the main window
         let bounds = Bounds::centered(None, size(px(500.), px(600.)), cx);
 
-        cx.open_window(
+        let window_handle: WindowHandle<FolderList> = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(500.), px(300.))),
@@ -128,6 +136,9 @@ fn main() {
             },
         )
         .unwrap();
+
+        // Suppress unused warning - window_handle is needed for the window to exist
+        let _ = window_handle;
 
         cx.activate(true);
     });

@@ -5,4 +5,13 @@
 use gpui::actions;
 
 // Define actions for menu items
-actions!(app, [Quit, About, OpenOutputDir, ToggleSimulateBurn]);
+actions!(app, [
+    Quit,
+    About,
+    OpenOutputDir,
+    ToggleSimulateBurn,
+    // Profile actions
+    NewProfile,
+    OpenProfile,
+    SaveProfile,
+]);

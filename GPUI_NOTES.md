@@ -377,3 +377,98 @@ div()
 ```
 
 The cursor change to pointer provides a subtle hint without adding visual clutter.
+
+---
+
+## Menu Actions and the Focus Tree
+
+**The Challenge:** Wire up File menu items (New, Open, Save) to call methods on the main view.
+
+**What Didn't Work:**
+
+1. **Global action handlers with window lookup:**
+   ```rust
+   // In main.rs - DOESN'T WORK
+   cx.on_action(|_: &NewProfile, cx| {
+       for handle in cx.windows() {
+           if handle.window_id() == stored_window_id {
+               handle.update(cx, |view, _, cx| {  // "window not found" error!
+                   view.downcast::<FolderList>()?.update(cx, |fl, cx| fl.new_profile(cx));
+               });
+           }
+       }
+   });
+   ```
+   Even when the window was found in `cx.windows()`, `AnyWindowHandle::update()` returned "window not found".
+
+2. **Storing WindowHandle in global state:**
+   Same "window not found" error.
+
+3. **Using `cx.active_window()`:**
+   Same error.
+
+4. **Registering actions on window during init:**
+   ```rust
+   // Caused panic during initialization
+   window.on_action(cx, |_, _: &NewProfile, _, _| { ... });
+   ```
+
+**The Breakthrough Insight:**
+
+GPUI dispatches actions through the **focus tree**, not windows. When a menu item is clicked:
+1. GPUI creates the action (e.g., `NewProfile`)
+2. It looks for handlers by walking up from the **currently focused element**
+3. If an element with focus has `.on_action()` for that action type, the handler is called
+
+**The Solution:**
+
+Register action handlers on the view's container element (which already has focus):
+
+```rust
+impl Render for FolderList {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Create listeners BEFORE any borrows (for status bar, etc.)
+        let on_new_profile = cx.listener(|this, _: &NewProfile, _window, cx| {
+            this.new_profile(cx);
+        });
+        let on_open_profile = cx.listener(|this, _: &OpenProfile, window, cx| {
+            this.open_profile(window, cx);
+        });
+        let on_save_profile = cx.listener(|this, _: &SaveProfile, window, cx| {
+            this.save_profile_dialog(window, cx);
+        });
+
+        let mut container = div().size_full();
+
+        // Container tracks focus
+        if let Some(ref focus_handle) = self.focus_handle {
+            container = container.track_focus(focus_handle);
+        }
+
+        // Register action handlers on the focused container
+        container
+            .on_action(on_new_profile)
+            .on_action(on_open_profile)
+            .on_action(on_save_profile)
+            // ... rest of rendering
+    }
+}
+```
+
+In `main.rs`, just bind keyboard shortcuts:
+```rust
+cx.bind_keys([
+    KeyBinding::new("cmd-n", NewProfile, None),
+    KeyBinding::new("cmd-o", OpenProfile, None),
+    KeyBinding::new("cmd-s", SaveProfile, None),
+]);
+```
+
+**Key Insights:**
+- Actions flow through the focus tree, not windows
+- Register handlers on the element that has `track_focus()`
+- Handlers get natural access to `self` and window context
+- No need for complex window lookups from global handlers
+- Create listeners before any mutable borrows in render (e.g., before `render_status_bar()`)
+
+---

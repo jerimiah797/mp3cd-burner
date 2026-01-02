@@ -5,8 +5,9 @@
 //! - Folder list with drag-and-drop
 //! - Status bar
 
-use gpui::{div, prelude::*, rgb, AnyWindowHandle, AsyncApp, Context, ExternalPaths, FocusHandle, IntoElement, PromptLevel, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
+use gpui::{div, prelude::*, rgb, AnyWindowHandle, AsyncApp, Context, ExternalPaths, FocusHandle, IntoElement, PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
 use std::path::PathBuf;
+use crate::actions::{NewProfile, OpenProfile, SaveProfile};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -840,6 +841,218 @@ impl FolderList {
         }
     }
 
+    /// Create a BurnProfile from the current state
+    ///
+    /// This captures the current folder list and conversion state,
+    /// allowing the profile to be saved and later restored.
+    pub fn create_profile(&self, profile_name: String) -> crate::profiles::BurnProfile {
+        use crate::profiles::{BurnProfile, BurnSettings, SavedFolderState};
+        use std::collections::HashMap;
+
+        let settings = BurnSettings {
+            target_bitrate: "auto".to_string(),
+            no_lossy_conversions: false,
+            embed_album_art: true,
+        };
+
+        let folder_paths: Vec<String> = self.folders
+            .iter()
+            .map(|f| f.path.to_string_lossy().to_string())
+            .collect();
+
+        let mut profile = BurnProfile::new(profile_name, folder_paths, settings);
+
+        // Add conversion state if we have it
+        if let Some(ref output_manager) = self.output_manager {
+            let session_id = output_manager.session_id().to_string();
+
+            // Build folder states map
+            let mut folder_states = HashMap::new();
+            for folder in &self.folders {
+                if let FolderConversionStatus::Converted { output_dir, lossless_bitrate, output_size, .. } = &folder.conversion_status {
+                    // Get source folder mtime
+                    let source_mtime = std::fs::metadata(&folder.path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+
+                    let saved_state = SavedFolderState::new(
+                        folder.id.0.clone(),
+                        output_dir.to_string_lossy().to_string(),
+                        *lossless_bitrate,
+                        *output_size,
+                        source_mtime,
+                        folder.file_count as usize,
+                    );
+                    folder_states.insert(folder.path.to_string_lossy().to_string(), saved_state);
+                }
+            }
+
+            // Get ISO info if available
+            let (iso_path, iso_hash) = match &self.iso_state {
+                Some(iso) => (
+                    Some(iso.path.to_string_lossy().to_string()),
+                    Some(iso.folder_hash.clone()),
+                ),
+                None => (None, None),
+            };
+
+            if !folder_states.is_empty() {
+                profile.set_conversion_state(session_id, folder_states, iso_path, iso_hash);
+            }
+        }
+
+        profile
+    }
+
+    /// Save the current state as a profile to the specified path
+    pub fn save_profile(&self, path: &std::path::Path, profile_name: String) -> Result<(), String> {
+        let profile = self.create_profile(profile_name);
+        crate::profiles::storage::save_profile(&profile, path)?;
+        crate::profiles::storage::add_to_recent_profiles(&path.to_string_lossy())?;
+        println!("Profile saved to: {}", path.display());
+        Ok(())
+    }
+
+    /// Load a profile and restore its state
+    ///
+    /// This will:
+    /// 1. Load the profile from disk
+    /// 2. Validate the saved conversion state
+    /// 3. Restore folders with valid conversion state
+    /// 4. Queue folders needing re-encoding to the background encoder
+    pub fn load_profile(&mut self, path: &std::path::Path, cx: &mut Context<Self>) -> Result<(), String> {
+        use crate::profiles::storage::{load_profile, validate_conversion_state, add_to_recent_profiles};
+
+        let profile = load_profile(path)?;
+        let validation = validate_conversion_state(&profile);
+
+        println!("Loading profile: {}", profile.profile_name);
+        println!("  Valid folders: {:?}", validation.valid_folders);
+        println!("  Invalid folders: {:?}", validation.invalid_folders);
+        println!("  ISO valid: {}", validation.iso_valid);
+
+        // Clear current state
+        self.folders.clear();
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
+        self.iso_has_been_burned = false;
+
+        // Load folders
+        for folder_path_str in &profile.folders {
+            let folder_path = PathBuf::from(folder_path_str);
+            if let Ok(mut folder) = scan_music_folder(&folder_path) {
+                // Check if this folder has valid saved state
+                if validation.valid_folders.contains(folder_path_str) {
+                    // Restore conversion status from saved state
+                    if let Some(ref folder_states) = profile.folder_states {
+                        if let Some(saved) = folder_states.get(folder_path_str) {
+                            folder.conversion_status = FolderConversionStatus::Converted {
+                                output_dir: PathBuf::from(&saved.output_dir),
+                                lossless_bitrate: saved.lossless_bitrate,
+                                output_size: saved.output_size,
+                                completed_at: 0, // Not stored in v1.1
+                            };
+                        }
+                    }
+                } else {
+                    // Needs encoding - queue it
+                    self.queue_folder_for_encoding(&folder);
+                }
+
+                self.folders.push(folder);
+            }
+        }
+
+        // Restore ISO state if valid
+        if validation.iso_valid {
+            if let Some(ref iso_path_str) = profile.iso_path {
+                if let Ok(iso_state) = IsoState::new(PathBuf::from(iso_path_str), &self.folders) {
+                    self.iso_state = Some(iso_state);
+                    println!("Restored ISO state from profile");
+                }
+            }
+        }
+
+        // Update recent profiles
+        let _ = add_to_recent_profiles(&path.to_string_lossy());
+
+        cx.notify();
+        Ok(())
+    }
+
+    /// Clear current state for a new profile (called from File > New menu)
+    pub fn new_profile(&mut self, cx: &mut Context<Self>) {
+        self.folders.clear();
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
+        self.iso_has_been_burned = false;
+        println!("New profile - cleared all folders");
+        cx.notify();
+    }
+
+    /// Show file picker to open a profile (called from File > Open menu)
+    pub fn open_profile(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let options = PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        };
+        let receiver = cx.prompt_for_paths(options);
+        cx.spawn(|this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                if let Ok(Ok(Some(paths))) = receiver.await {
+                    if let Some(path) = paths.first() {
+                        let path = path.clone();
+                        let _ = this_handle.update(&mut async_cx, |this, cx| {
+                            if let Err(e) = this.load_profile(&path, cx) {
+                                eprintln!("Failed to load profile: {}", e);
+                            }
+                        });
+                    }
+                }
+            }
+        }).detach();
+    }
+
+    /// Show save dialog to save current profile (called from File > Save menu)
+    pub fn save_profile_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.folders.is_empty() {
+            println!("No folders to save");
+            return;
+        }
+
+        // Generate a default filename from the first folder
+        let default_name = self.folders.first()
+            .and_then(|f| f.path.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
+
+        let documents_dir = dirs::document_dir()
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let receiver = cx.prompt_for_new_path(&documents_dir, Some(&format!("{}.burn", default_name)));
+        let profile_name = default_name.clone();
+        cx.spawn(|this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                if let Ok(Ok(Some(path))) = receiver.await {
+                    let _ = this_handle.update(&mut async_cx, |this, _cx| {
+                        if let Err(e) = this.save_profile(&path, profile_name) {
+                            eprintln!("Failed to save profile: {}", e);
+                        } else {
+                            println!("Profile saved to: {:?}", path);
+                        }
+                    });
+                }
+            }
+        }).detach();
+    }
+
     /// Calculate total files across all folders
     pub fn total_files(&self) -> u32 {
         self.folders.iter().map(|f| f.file_count).sum()
@@ -938,7 +1151,7 @@ impl FolderList {
 
 impl Render for FolderList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Subscribe to appearance changes (once)
+        // Subscribe to appearance changes and register action handlers (once)
         if !self.appearance_subscription_set {
             self.appearance_subscription_set = true;
             cx.observe_window_appearance(window, |_this, _window, cx| {
@@ -958,7 +1171,7 @@ impl Render for FolderList {
             self.render_folder_items(&theme, cx).into_any_element()
         };
 
-        // Capture listeners first (before borrowing for status bar)
+        // Capture all listeners first (before borrowing for status bar)
         let on_external_drop = cx.listener(|this, paths: &ExternalPaths, _window, cx| {
             this.add_external_folders(paths.paths(), cx);
             this.drop_target_index = None;
@@ -968,6 +1181,17 @@ impl Render for FolderList {
             let target = this.folders.len();
             this.move_folder(dragged.index, target);
             this.drop_target_index = None;
+        });
+
+        // Profile action handlers
+        let on_new_profile = cx.listener(|this, _: &NewProfile, _window, cx| {
+            this.new_profile(cx);
+        });
+        let on_open_profile = cx.listener(|this, _: &OpenProfile, window, cx| {
+            this.open_profile(window, cx);
+        });
+        let on_save_profile = cx.listener(|this, _: &SaveProfile, window, cx| {
+            this.save_profile_dialog(window, cx);
         });
 
         // Build status bar after listeners
@@ -986,6 +1210,9 @@ impl Render for FolderList {
         }
 
         container
+            .on_action(on_new_profile)
+            .on_action(on_open_profile)
+            .on_action(on_save_profile)
             // Handle external file drops on the entire window
             .on_drop(on_external_drop)
             // Style when dragging external files over window
