@@ -112,7 +112,20 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|cx| FolderList::new(cx)),
+            |_window, cx| {
+                cx.new(|cx| {
+                    let mut folder_list = FolderList::new(cx);
+                    // Enable background encoding for immediate folder conversion
+                    if let Err(e) = folder_list.enable_background_encoding() {
+                        eprintln!("Warning: Could not enable background encoding: {}", e);
+                        eprintln!("Falling back to legacy mode (convert on burn)");
+                    } else {
+                        // Start polling for encoder events
+                        folder_list.start_encoder_polling(cx);
+                    }
+                    folder_list
+                })
+            },
         )
         .unwrap();
 

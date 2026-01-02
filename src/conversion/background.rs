@@ -10,6 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -196,16 +197,24 @@ pub struct BackgroundEncoder {
 
 impl BackgroundEncoder {
     /// Create a new background encoder
-    pub fn new() -> Result<(Self, BackgroundEncoderHandle, mpsc::UnboundedReceiver<EncoderEvent>), String> {
+    ///
+    /// This spawns a background thread with its own Tokio runtime to process
+    /// encoding tasks. The handle can be used to send commands, and the event
+    /// receiver can be polled for progress updates.
+    ///
+    /// Returns (encoder, handle, event_receiver, output_manager) where:
+    /// - event_receiver uses std::sync::mpsc so it can be polled from any thread without async
+    /// - output_manager is the shared output manager used by the encoder (use this for ISO staging!)
+    pub fn new() -> Result<(Self, BackgroundEncoderHandle, std_mpsc::Receiver<EncoderEvent>, OutputManager), String> {
         let output_manager = OutputManager::new()?;
         let ffmpeg_path = verify_ffmpeg()?;
         let state = Arc::new(Mutex::new(BackgroundEncoderState::new()));
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = std_mpsc::channel();
 
         let encoder = Self {
-            output_manager,
+            output_manager: output_manager.clone(),
             state: state.clone(),
             ffmpeg_path,
         };
@@ -215,23 +224,29 @@ impl BackgroundEncoder {
             state: state.clone(),
         };
 
-        // Start the encoder task
+        // Start the encoder in a background thread with its own Tokio runtime
+        // (GPUI doesn't provide a Tokio runtime, so we create one)
         let state_clone = state.clone();
-        let output_manager_clone = encoder.output_manager.clone();
+        let output_manager_clone = output_manager.clone();
         let ffmpeg_path_clone = encoder.ffmpeg_path.clone();
 
-        tokio::spawn(async move {
-            run_encoder_loop(
-                state_clone,
-                output_manager_clone,
-                ffmpeg_path_clone,
-                command_rx,
-                event_tx,
-            )
-            .await;
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("Failed to create Tokio runtime for background encoder");
+
+            rt.block_on(async move {
+                run_encoder_loop(
+                    state_clone,
+                    output_manager_clone,
+                    ffmpeg_path_clone,
+                    command_rx,
+                    event_tx,
+                )
+                .await;
+            });
         });
 
-        Ok((encoder, handle, event_rx))
+        Ok((encoder, handle, event_rx, output_manager))
     }
 
     /// Get a reference to the output manager
@@ -246,7 +261,7 @@ async fn run_encoder_loop(
     output_manager: OutputManager,
     ffmpeg_path: PathBuf,
     mut command_rx: mpsc::UnboundedReceiver<EncoderCommand>,
-    event_tx: mpsc::UnboundedSender<EncoderEvent>,
+    event_tx: std_mpsc::Sender<EncoderEvent>,
 ) {
     state.lock().unwrap().is_running = true;
     println!("Background encoder started");

@@ -246,13 +246,18 @@ pub struct FolderList {
     /// Focus handle for receiving actions (None in tests)
     focus_handle: Option<FocusHandle>,
     /// Background encoder handle for immediate conversion (None until initialized)
-    #[allow(dead_code)]
     background_encoder: Option<BackgroundEncoderHandle>,
+    /// Event receiver for background encoder progress updates (std::sync::mpsc for easy polling)
+    encoder_event_rx: Option<std::sync::mpsc::Receiver<crate::conversion::EncoderEvent>>,
     /// Output manager for session-based directories (None until initialized)
     #[allow(dead_code)]
     output_manager: Option<OutputManager>,
     /// Current ISO state (for "Burn Another" functionality)
     iso_state: Option<IsoState>,
+    /// Whether auto-ISO generation has been attempted (prevents retry loop on failure)
+    iso_generation_attempted: bool,
+    /// Whether the current ISO has been burned at least once (for "Burn Another" vs "Burn")
+    iso_has_been_burned: bool,
 }
 
 impl FolderList {
@@ -266,8 +271,11 @@ impl FolderList {
             import_state: ImportState::new(),
             focus_handle: Some(cx.focus_handle()),
             background_encoder: None,
+            encoder_event_rx: None,
             output_manager: None,
             iso_state: None,
+            iso_generation_attempted: false,
+            iso_has_been_burned: false,
         }
     }
 
@@ -283,8 +291,11 @@ impl FolderList {
             import_state: ImportState::new(),
             focus_handle: None,
             background_encoder: None,
+            encoder_event_rx: None,
             output_manager: None,
             iso_state: None,
+            iso_generation_attempted: false,
+            iso_has_been_burned: false,
         }
     }
 
@@ -292,23 +303,34 @@ impl FolderList {
     ///
     /// This should be called after construction when background encoding is desired.
     /// If not called, folders will only be converted when "Burn" is clicked (legacy mode).
-    #[allow(dead_code)]
     pub fn enable_background_encoding(&mut self) -> Result<(), String> {
-        // Create output manager for this session
-        let output_manager = OutputManager::new()?;
+        use crate::conversion::BackgroundEncoder;
+
+        // Create the background encoder (this spawns its own thread with Tokio runtime)
+        // IMPORTANT: Use the output_manager returned by the encoder - it's the same one
+        // used for encoding, so ISO staging will find the encoded files!
+        let (_encoder, handle, event_rx, output_manager) = BackgroundEncoder::new()?;
 
         // Clean up old sessions from previous runs
         output_manager.cleanup_old_sessions()?;
 
+        // Store the handle, event receiver, and output manager
+        self.background_encoder = Some(handle);
+        self.encoder_event_rx = Some(event_rx);
         self.output_manager = Some(output_manager);
 
-        // Note: BackgroundEncoder requires tokio runtime, so we don't start it here.
-        // It will be started lazily when folders are added and we're in an async context.
-        // For now, just mark that background encoding is enabled.
         println!("Background encoding enabled, session: {:?}",
             self.output_manager.as_ref().map(|m| m.session_id()));
 
         Ok(())
+    }
+
+    /// Start polling for encoder events (called after enabling background encoding)
+    ///
+    /// This must be called with a GPUI context to start the polling loop.
+    pub fn start_encoder_polling(&self, cx: &mut Context<Self>) {
+        // Start the polling loop
+        Self::start_encoder_event_polling(cx);
     }
 
     /// Set the background encoder handle (for use from async context)
@@ -412,6 +434,21 @@ impl FolderList {
         }
     }
 
+    /// Check if the current ISO exceeds the CD size limit
+    ///
+    /// Returns true if we have an ISO but it's too large for a CD.
+    pub fn iso_exceeds_limit(&self) -> bool {
+        match &self.iso_state {
+            Some(iso) => iso.exceeds_cd_limit(),
+            None => false,
+        }
+    }
+
+    /// Get the ISO size in MB (for display)
+    pub fn iso_size_mb(&self) -> Option<f64> {
+        self.iso_state.as_ref().map(|iso| iso.size_bytes as f64 / (1024.0 * 1024.0))
+    }
+
     /// Get the list of encoded folder IDs (from background encoder state)
     fn get_encoded_folder_ids(&self) -> Vec<FolderId> {
         if let Some(ref encoder) = self.background_encoder {
@@ -432,7 +469,6 @@ impl FolderList {
     }
 
     /// Check if all folders are ready (converted) for burning
-    #[allow(dead_code)]
     pub fn all_folders_converted(&self) -> bool {
         if self.folders.is_empty() {
             return false;
@@ -449,6 +485,189 @@ impl FolderList {
             // In legacy mode, assume not converted until burn process runs
             false
         }
+    }
+
+    /// Poll encoder events and handle them
+    ///
+    /// Returns true if any events were processed (useful for knowing if UI needs refresh)
+    fn poll_encoder_events(&mut self) -> bool {
+        use crate::conversion::EncoderEvent;
+
+        let rx = match self.encoder_event_rx.as_ref() {
+            Some(rx) => rx,
+            None => return false,
+        };
+
+        let mut events_processed = false;
+
+        // Drain all available events
+        while let Ok(event) = rx.try_recv() {
+            events_processed = true;
+
+            match event {
+                EncoderEvent::FolderStarted { id, files_total } => {
+                    println!("Encoding started: {:?} ({} files)", id, files_total);
+                }
+                EncoderEvent::FolderProgress { id, files_completed, files_total } => {
+                    // Could update per-folder progress UI here
+                    println!("Encoding progress: {:?} {}/{}", id, files_completed, files_total);
+                }
+                EncoderEvent::FolderCompleted { id, output_dir, output_size, lossless_bitrate } => {
+                    println!("Encoding complete: {:?} -> {:?} ({} bytes, bitrate: {:?})",
+                        id, output_dir, output_size, lossless_bitrate);
+
+                    // Update the folder's conversion status
+                    if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
+                        folder.conversion_status = FolderConversionStatus::Converted {
+                            output_dir,
+                            lossless_bitrate,
+                            output_size,
+                            completed_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        };
+                    }
+                }
+                EncoderEvent::FolderFailed { id, error } => {
+                    eprintln!("Encoding failed: {:?} - {}", id, error);
+                }
+                EncoderEvent::FolderCancelled(id) => {
+                    println!("Encoding cancelled: {:?}", id);
+                }
+                EncoderEvent::BitrateRecalculated { new_bitrate, reencode_needed } => {
+                    println!("Bitrate recalculated to {} kbps, {} folders need re-encoding",
+                        new_bitrate, reencode_needed.len());
+                }
+            }
+        }
+
+        events_processed
+    }
+
+    /// Check if ISO needs to be generated and do it if ready
+    ///
+    /// This should be called periodically to auto-generate ISO when all folders are encoded.
+    /// Returns true if ISO generation was triggered.
+    fn maybe_generate_iso(&mut self, cx: &mut Context<Self>) -> bool {
+        // Don't generate if we already have a valid ISO
+        if self.can_burn_another() {
+            return false;
+        }
+
+        // Don't generate if we already attempted (prevents infinite retry on failure)
+        // This flag is reset when folders change
+        if self.iso_generation_attempted {
+            return false;
+        }
+
+        // Don't generate if no folders or not all converted
+        if self.folders.is_empty() || !self.all_folders_converted() {
+            return false;
+        }
+
+        // Don't generate if already converting/burning
+        if self.conversion_state.is_converting() {
+            return false;
+        }
+
+        // Mark as attempted to prevent retry loop
+        self.iso_generation_attempted = true;
+
+        println!("All folders encoded - generating ISO automatically...");
+
+        // Get the output manager to access encoded folder paths
+        let output_manager = match &self.output_manager {
+            Some(om) => om.clone(),
+            None => return false,
+        };
+
+        // Build staging directory with numbered symlinks
+        let folders_for_staging: Vec<_> = self.folders.iter().cloned().collect();
+
+        // Spawn background thread to create ISO
+        let folders = folders_for_staging.clone();
+        let state = self.conversion_state.clone();
+
+        // Mark as converting (for ISO stage)
+        state.reset(0);
+        state.set_stage(BurnStage::CreatingIso);
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(async {
+                // Create staging directory with symlinks
+                match output_manager.create_iso_staging(&folders) {
+                    Ok(staging_dir) => {
+                        println!("ISO staging directory: {:?}", staging_dir);
+
+                        // Create ISO from staging directory
+                        let volume_label = "MP3CD".to_string();
+                        match crate::burning::create_iso(&staging_dir, &volume_label) {
+                            Ok(result) => {
+                                println!("ISO created successfully: {:?}", result.iso_path);
+                                *state.iso_path.lock().unwrap() = Some(result.iso_path);
+                                state.set_stage(BurnStage::Complete);
+                            }
+                            Err(e) => {
+                                eprintln!("ISO creation failed: {}", e);
+                                state.set_stage(BurnStage::Complete);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to create ISO staging: {}", e);
+                        state.set_stage(BurnStage::Complete);
+                    }
+                }
+                state.finish();
+            });
+        });
+
+        // Start polling for ISO creation progress
+        Self::start_iso_creation_polling(self.conversion_state.clone(), folders_for_staging, cx);
+
+        cx.notify();
+        true
+    }
+
+    /// Start polling for ISO creation completion (lightweight - just waits for it to finish)
+    fn start_iso_creation_polling(
+        state: ConversionState,
+        folders: Vec<MusicFolder>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                loop {
+                    let cx_for_after_await = async_cx.clone();
+                    Timer::after(std::time::Duration::from_millis(100)).await;
+
+                    // Check if ISO creation is done
+                    if !state.is_converting() {
+                        break;
+                    }
+
+                    let _ = cx_for_after_await.refresh();
+                    async_cx = cx_for_after_await;
+                }
+
+                // ISO creation finished - save iso_state
+                let iso_path = state.iso_path.lock().unwrap().clone();
+                if let Some(path) = iso_path {
+                    let _ = this.update(&mut async_cx, |folder_list, _cx| {
+                        if let Ok(iso_state) = IsoState::new(path.clone(), &folders) {
+                            folder_list.iso_state = Some(iso_state);
+                            println!("ISO state saved - ready for Burn");
+                        }
+                    });
+                }
+
+                let _ = async_cx.refresh();
+            }
+        })
+        .detach();
     }
 
     /// Returns the number of folders in the list
@@ -549,9 +768,13 @@ impl FolderList {
     pub fn add_folder(&mut self, path: PathBuf) {
         if path.is_dir() && !self.contains_path(&path) {
             if let Ok(folder) = scan_music_folder(&path) {
+                // Queue for background encoding if available
+                self.queue_folder_for_encoding(&folder);
                 self.folders.push(folder);
                 // Invalidate ISO since folder list changed
                 self.iso_state = None;
+                self.iso_generation_attempted = false;
+                self.iso_has_been_burned = false;
             }
         }
     }
@@ -564,6 +787,8 @@ impl FolderList {
             self.notify_folder_removed(&folder);
             // Invalidate ISO since folder list changed
             self.iso_state = None;
+            self.iso_generation_attempted = false;
+            self.iso_has_been_burned = false;
         }
     }
 
@@ -577,6 +802,8 @@ impl FolderList {
             self.notify_folders_reordered();
             // Invalidate ISO since folder order changed (will need regeneration)
             self.iso_state = None;
+            self.iso_generation_attempted = false;
+            self.iso_has_been_burned = false;
         }
     }
 
@@ -585,6 +812,8 @@ impl FolderList {
     pub fn clear(&mut self) {
         self.folders.clear();
         self.iso_state = None;
+        self.iso_generation_attempted = false;
+        self.iso_has_been_burned = false;
     }
 
     /// Get all folder paths (for saving profiles, etc.)
@@ -1139,10 +1368,40 @@ impl FolderList {
                                     .child("Erase\n& Burn")
                             )
                         })
-                } else if self.can_burn_another() {
-                    // "Burn Another" button - ISO exists and matches current folders
+                } else if self.can_burn_another() && self.iso_exceeds_limit() {
+                    // ISO exists but is too large for CD - show warning
+                    let size_mb = self.iso_size_mb().unwrap_or(0.0);
+                    let size_text = format!("{:.0} MB\nToo Large!", size_mb);
+                    let danger_color = theme.danger;
                     div()
-                        .id(SharedString::from("burn-another-btn"))
+                        .id(SharedString::from("iso-too-large-btn"))
+                        .w(gpui::px(150.0))
+                        .h(gpui::px(70.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(danger_color)
+                        .text_color(gpui::white())
+                        .text_sm()
+                        .rounded_md()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_center()
+                        .child(size_text)
+                } else if self.can_burn_another() {
+                    // ISO exists and matches current folders, and is within size limit
+                    // Show "Burn" if first time, "Burn Another" if already burned once
+                    let button_text = if self.iso_has_been_burned {
+                        "Burn\nAnother"
+                    } else {
+                        "Burn"
+                    };
+                    let button_id = if self.iso_has_been_burned {
+                        "burn-another-btn"
+                    } else {
+                        "burn-btn"
+                    };
+                    div()
+                        .id(SharedString::from(button_id))
                         .w(gpui::px(150.0))
                         .h(gpui::px(70.0))
                         .flex()
@@ -1157,10 +1416,10 @@ impl FolderList {
                         .cursor_pointer()
                         .hover(|s| s.bg(success_hover))
                         .on_click(cx.listener(move |this, _event, window, cx| {
-                            println!("Burn Another clicked!");
+                            println!("Burn clicked!");
                             this.burn_existing_iso(window, cx);
                         }))
-                        .child("Burn\nAnother")
+                        .child(button_text)
                 } else {
                     // Normal Convert & Burn button
                     div()
@@ -1880,6 +2139,11 @@ impl FolderList {
                 // Show success dialog if completed (not cancelled)
                 let final_stage = state.get_stage();
                 if final_stage == BurnStage::Complete {
+                    // Mark that the ISO has been burned (for "Burn Another" button text)
+                    let _ = this.update(&mut async_cx, |folder_list, _cx| {
+                        folder_list.iso_has_been_burned = true;
+                    });
+
                     let _ = async_cx.update_window(window_handle, |_, window, cx| {
                         let _ = window.prompt(
                             PromptLevel::Info,
@@ -1892,6 +2156,55 @@ impl FolderList {
                 }
             }
         }).detach();
+    }
+
+    /// Start a polling loop for background encoder events
+    ///
+    /// This polls the encoder event channel and updates folder conversion status.
+    /// When all folders are encoded, it triggers automatic ISO generation.
+    fn start_encoder_event_polling(cx: &mut Context<Self>) {
+        cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                loop {
+                    let cx_for_after_await = async_cx.clone();
+
+                    // Wait 100ms between updates (encoder events don't need to be as responsive)
+                    Timer::after(std::time::Duration::from_millis(100)).await;
+
+                    // Poll encoder events and check if ISO should be generated
+                    let should_continue = this
+                        .update(&mut async_cx, |this, cx| {
+                            // Poll any encoder events
+                            let had_events = this.poll_encoder_events();
+
+                            // Check if we should auto-generate ISO
+                            if this.maybe_generate_iso(cx) {
+                                // ISO generation was triggered
+                                println!("Auto-ISO generation triggered");
+                            }
+
+                            // Refresh UI if we had events
+                            if had_events {
+                                cx.notify();
+                            }
+
+                            // Continue polling as long as we have a background encoder
+                            this.background_encoder.is_some()
+                        })
+                        .unwrap_or(false);
+
+                    if !should_continue {
+                        break;
+                    }
+
+                    // Refresh UI
+                    let _ = cx_for_after_await.refresh();
+                    async_cx = cx_for_after_await;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Start a polling loop that drains imported folders and updates the UI
@@ -1910,10 +2223,14 @@ impl FolderList {
                     if !folders.is_empty() {
                         let _ = this.update(&mut async_cx, |this, _cx| {
                             for folder in folders {
+                                // Queue for background encoding if available
+                                this.queue_folder_for_encoding(&folder);
                                 this.folders.push(folder);
                             }
                             // Invalidate ISO since folder list changed
                             this.iso_state = None;
+                            this.iso_generation_attempted = false;
+                            this.iso_has_been_burned = false;
                         });
                     }
 
@@ -1933,10 +2250,14 @@ impl FolderList {
                 if !folders.is_empty() {
                     let _ = this.update(&mut async_cx, |this, _cx| {
                         for folder in folders {
+                            // Queue for background encoding if available
+                            this.queue_folder_for_encoding(&folder);
                             this.folders.push(folder);
                         }
                         // Invalidate ISO since folder list changed
                         this.iso_state = None;
+                        this.iso_generation_attempted = false;
+                        this.iso_has_been_burned = false;
                     });
                 }
                 let _ = async_cx.refresh();

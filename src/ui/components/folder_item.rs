@@ -6,7 +6,7 @@ use gpui::{
 };
 use std::path::{Path, PathBuf};
 
-use crate::core::{format_size, MusicFolder};
+use crate::core::{format_size, FolderConversionStatus, MusicFolder};
 use crate::ui::Theme;
 
 /// Data carried during a drag operation for internal reordering
@@ -163,11 +163,32 @@ pub fn render_folder_item<V: 'static>(
         .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
 
     // Format metadata for display
-    let file_info = format!(
-        "{} files, {}",
-        folder.file_count,
-        format_size(folder.total_size)
-    );
+    // Show encoded size if converted, otherwise show original size
+    let file_info = match &folder.conversion_status {
+        FolderConversionStatus::Converted { output_size, .. } => {
+            format!(
+                "{} files, {} → {}",
+                folder.file_count,
+                format_size(folder.total_size),
+                format_size(*output_size)
+            )
+        }
+        FolderConversionStatus::Converting { files_completed, files_total } => {
+            format!(
+                "{}/{} files, {} (encoding...)",
+                files_completed,
+                files_total,
+                format_size(folder.total_size)
+            )
+        }
+        _ => {
+            format!(
+                "{} files, {}",
+                folder.file_count,
+                format_size(folder.total_size)
+            )
+        }
+    };
 
     let drag_info = DraggedFolder::new(
         index,

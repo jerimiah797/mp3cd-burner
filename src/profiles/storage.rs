@@ -2,9 +2,10 @@
 //! (Future feature)
 #![allow(dead_code)]
 
-use super::types::BurnProfile;
+use super::types::{BurnProfile, ConversionStateValidation};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 const RECENT_PROFILES_FILE: &str = "recent_profiles.json";
 const MAX_RECENT_PROFILES: usize = 10;
@@ -29,6 +30,88 @@ pub fn load_profile(path: &Path) -> Result<BurnProfile, String> {
         .map_err(|e| format!("Failed to parse profile file: {}", e))?;
 
     Ok(profile)
+}
+
+/// Validate a profile's saved conversion state
+///
+/// Checks if:
+/// - Session directory exists
+/// - Output directories exist for each folder
+/// - Source folders haven't been modified
+/// - ISO file exists (if saved)
+pub fn validate_conversion_state(profile: &BurnProfile) -> ConversionStateValidation {
+    let mut validation = ConversionStateValidation {
+        session_exists: false,
+        valid_folders: Vec::new(),
+        invalid_folders: Vec::new(),
+        iso_valid: false,
+    };
+
+    // Check if profile has conversion state
+    let (session_id, folder_states) = match (&profile.session_id, &profile.folder_states) {
+        (Some(sid), Some(states)) => (sid, states),
+        _ => return validation, // No conversion state saved
+    };
+
+    // Check session directory
+    let session_dir = std::env::temp_dir()
+        .join("mp3cd_output")
+        .join(session_id);
+
+    if !session_dir.exists() {
+        // Session directory gone - all folders invalid
+        validation.invalid_folders = profile.folders.clone();
+        return validation;
+    }
+
+    validation.session_exists = true;
+
+    // Check each folder
+    for folder_path in &profile.folders {
+        if let Some(saved_state) = folder_states.get(folder_path) {
+            // Check if output directory exists
+            let output_dir = session_dir.join(&saved_state.output_dir);
+            if !output_dir.exists() {
+                validation.invalid_folders.push(folder_path.clone());
+                continue;
+            }
+
+            // Check if source folder has been modified
+            let source_path = Path::new(folder_path);
+            if let Ok(metadata) = fs::metadata(source_path) {
+                let current_mtime = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                if saved_state.source_modified(current_mtime) {
+                    // Source changed - needs re-encoding
+                    validation.invalid_folders.push(folder_path.clone());
+                } else {
+                    // Still valid
+                    validation.valid_folders.push(folder_path.clone());
+                }
+            } else {
+                // Can't access source - assume invalid
+                validation.invalid_folders.push(folder_path.clone());
+            }
+        } else {
+            // No saved state for this folder
+            validation.invalid_folders.push(folder_path.clone());
+        }
+    }
+
+    // Check ISO validity
+    if let Some(iso_path) = &profile.iso_path {
+        let iso_exists = Path::new(iso_path).exists();
+        let hash_matches = profile.iso_folder_hash.is_some()
+            && validation.invalid_folders.is_empty();
+        validation.iso_valid = iso_exists && hash_matches;
+    }
+
+    validation
 }
 
 /// Get the path to the app's data directory for storing recent profiles
