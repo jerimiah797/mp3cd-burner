@@ -15,6 +15,9 @@ pub struct DisplaySettingsModal {
     show_file_count: bool,
     show_original_size: bool,
     show_converted_size: bool,
+    show_source_format: bool,
+    show_source_bitrate: bool,
+    show_final_bitrate: bool,
 }
 
 impl DisplaySettingsModal {
@@ -25,17 +28,20 @@ impl DisplaySettingsModal {
             show_file_count: settings.show_file_count,
             show_original_size: settings.show_original_size,
             show_converted_size: settings.show_converted_size,
+            show_source_format: settings.show_source_format,
+            show_source_bitrate: settings.show_source_bitrate,
+            show_final_bitrate: settings.show_final_bitrate,
         }
     }
 
     /// Open the Display Settings window
     pub fn open(cx: &mut gpui::App) -> WindowHandle<Self> {
-        let bounds = Bounds::centered(None, size(px(320.), px(240.)), cx);
+        let bounds = Bounds::centered(None, size(px(320.), px(380.)), cx);
 
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(320.), px(240.))),
+                window_min_size: Some(size(px(320.), px(380.))),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("Display Settings".into()),
                     appears_transparent: false,
@@ -66,11 +72,32 @@ impl DisplaySettingsModal {
         cx.notify();
     }
 
+    fn toggle_source_format(&mut self, cx: &mut Context<Self>) {
+        self.show_source_format = !self.show_source_format;
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    fn toggle_source_bitrate(&mut self, cx: &mut Context<Self>) {
+        self.show_source_bitrate = !self.show_source_bitrate;
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    fn toggle_final_bitrate(&mut self, cx: &mut Context<Self>) {
+        self.show_final_bitrate = !self.show_final_bitrate;
+        self.save_settings(cx);
+        cx.notify();
+    }
+
     fn save_settings(&self, cx: &mut Context<Self>) {
         let settings = cx.global_mut::<DisplaySettings>();
         settings.show_file_count = self.show_file_count;
         settings.show_original_size = self.show_original_size;
         settings.show_converted_size = self.show_converted_size;
+        settings.show_source_format = self.show_source_format;
+        settings.show_source_bitrate = self.show_source_bitrate;
+        settings.show_final_bitrate = self.show_final_bitrate;
 
         // Persist to disk
         if let Err(e) = settings.save() {
@@ -145,6 +172,9 @@ impl Render for DisplaySettingsModal {
         let show_file_count = self.show_file_count;
         let show_original_size = self.show_original_size;
         let show_converted_size = self.show_converted_size;
+        let show_source_format = self.show_source_format;
+        let show_source_bitrate = self.show_source_bitrate;
+        let show_final_bitrate = self.show_final_bitrate;
 
         div()
             .size_full()
@@ -171,6 +201,24 @@ impl Render for DisplaySettingsModal {
             )
             // Checkboxes
             .child(self.render_checkbox(
+                "show-source-format",
+                "Show Source Format",
+                "e.g., \"FLAC\" or \"MP3/AAC\"",
+                show_source_format,
+                &theme,
+                cx,
+                |this, cx| this.toggle_source_format(cx),
+            ))
+            .child(self.render_checkbox(
+                "show-source-bitrate",
+                "Show Source Bitrate",
+                "e.g., \"320k\" or \"128-320k\"",
+                show_source_bitrate,
+                &theme,
+                cx,
+                |this, cx| this.toggle_source_bitrate(cx),
+            ))
+            .child(self.render_checkbox(
                 "show-file-count",
                 "Show File Count",
                 "e.g., \"12 files\"",
@@ -196,6 +244,15 @@ impl Render for DisplaySettingsModal {
                 &theme,
                 cx,
                 |this, cx| this.toggle_converted_size(cx),
+            ))
+            .child(self.render_checkbox(
+                "show-final-bitrate",
+                "Show Final Bitrate",
+                "e.g., \"@192k\"",
+                show_final_bitrate,
+                &theme,
+                cx,
+                |this, cx| this.toggle_final_bitrate(cx),
             ))
     }
 }

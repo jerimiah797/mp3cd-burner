@@ -42,6 +42,12 @@ pub struct DisplaySettings {
     pub show_original_size: bool,
     /// Show converted size (e.g., "→ 180 MB")
     pub show_converted_size: bool,
+    /// Show source format (e.g., "FLAC" or "MP3/AAC")
+    pub show_source_format: bool,
+    /// Show source bitrate (e.g., "320k" or "128-320k")
+    pub show_source_bitrate: bool,
+    /// Show final bitrate after conversion (e.g., "@192k")
+    pub show_final_bitrate: bool,
 }
 
 impl Default for DisplaySettings {
@@ -51,6 +57,9 @@ impl Default for DisplaySettings {
             show_file_count: cfg!(debug_assertions),
             show_original_size: cfg!(debug_assertions),
             show_converted_size: cfg!(debug_assertions),
+            show_source_format: cfg!(debug_assertions),
+            show_source_bitrate: cfg!(debug_assertions),
+            show_final_bitrate: cfg!(debug_assertions),
         }
     }
 }

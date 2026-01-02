@@ -32,6 +32,85 @@ impl MusicFolder {
     pub fn has_lossless_files(&self) -> bool {
         self.audio_files.iter().any(|f| !f.is_lossy)
     }
+
+    /// Returns a summary of source formats (e.g., "FLAC" or "MP3/AAC")
+    pub fn source_format_summary(&self) -> String {
+        use std::collections::HashSet;
+
+        let formats: HashSet<&str> = self
+            .audio_files
+            .iter()
+            .map(|f| Self::normalize_codec(&f.codec))
+            .collect();
+
+        if formats.is_empty() {
+            return String::new();
+        }
+
+        // Sort for consistent display
+        let mut formats: Vec<&str> = formats.into_iter().collect();
+        formats.sort();
+        formats.join("/")
+    }
+
+    /// Normalize codec names for display
+    fn normalize_codec(codec: &str) -> &'static str {
+        let codec_lower = codec.to_lowercase();
+        if codec_lower.contains("flac") {
+            "FLAC"
+        } else if codec_lower.contains("mp3") || codec_lower.contains("mpeg") {
+            "MP3"
+        } else if codec_lower.contains("aac") || codec_lower.contains("m4a") {
+            "AAC"
+        } else if codec_lower.contains("wav") || codec_lower.contains("pcm") {
+            "WAV"
+        } else if codec_lower.contains("ogg") || codec_lower.contains("vorbis") {
+            "OGG"
+        } else if codec_lower.contains("opus") {
+            "OPUS"
+        } else if codec_lower.contains("alac") {
+            "ALAC"
+        } else {
+            "Other"
+        }
+    }
+
+    /// Returns a summary of source bitrates (e.g., "320k" or "128-320k")
+    pub fn source_bitrate_summary(&self) -> String {
+        if self.audio_files.is_empty() {
+            return String::new();
+        }
+
+        // Only include bitrates from lossy files (lossless bitrates are meaningless)
+        let lossy_bitrates: Vec<u32> = self
+            .audio_files
+            .iter()
+            .filter(|f| f.is_lossy && f.bitrate > 0)
+            .map(|f| f.bitrate)
+            .collect();
+
+        if lossy_bitrates.is_empty() {
+            // All files are lossless
+            return "lossless".to_string();
+        }
+
+        let min = lossy_bitrates.iter().min().copied().unwrap_or(0);
+        let max = lossy_bitrates.iter().max().copied().unwrap_or(0);
+
+        if min == max {
+            format!("{}k", min)
+        } else {
+            format!("{}-{}k", min, max)
+        }
+    }
+
+    /// Returns the final bitrate after conversion, if available
+    pub fn final_bitrate(&self) -> Option<u32> {
+        match &self.conversion_status {
+            FolderConversionStatus::Converted { lossless_bitrate, .. } => *lossless_bitrate,
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

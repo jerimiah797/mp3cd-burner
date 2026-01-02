@@ -989,6 +989,9 @@ impl FolderList {
                 show_file_count: display_settings.show_file_count,
                 show_original_size: display_settings.show_original_size,
                 show_converted_size: display_settings.show_converted_size,
+                show_source_format: display_settings.show_source_format,
+                show_source_bitrate: display_settings.show_source_bitrate,
+                show_final_bitrate: display_settings.show_final_bitrate,
             };
 
             let item = render_folder_item(

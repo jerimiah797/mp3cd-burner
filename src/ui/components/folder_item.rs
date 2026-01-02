@@ -141,6 +141,9 @@ pub struct FolderItemProps {
     pub show_file_count: bool,
     pub show_original_size: bool,
     pub show_converted_size: bool,
+    pub show_source_format: bool,
+    pub show_source_bitrate: bool,
+    pub show_final_bitrate: bool,
 }
 
 /// Renders a single folder item in the list
@@ -161,6 +164,9 @@ pub fn render_folder_item<V: 'static>(
         show_file_count,
         show_original_size,
         show_converted_size,
+        show_source_format,
+        show_source_bitrate,
+        show_final_bitrate,
     } = props;
 
     let folder_name = folder
@@ -174,8 +180,24 @@ pub fn render_folder_item<V: 'static>(
     let file_info = {
         let mut parts = Vec::new();
 
+        // Source format (e.g., "FLAC" or "MP3/AAC")
+        if show_source_format {
+            let format = folder.source_format_summary();
+            if !format.is_empty() {
+                parts.push(format);
+            }
+        }
+
+        // Source bitrate (e.g., "320k" or "128-320k")
+        if show_source_bitrate {
+            let bitrate = folder.source_bitrate_summary();
+            if !bitrate.is_empty() {
+                parts.push(bitrate);
+            }
+        }
+
         match &folder.conversion_status {
-            FolderConversionStatus::Converted { output_size, .. } => {
+            FolderConversionStatus::Converted { output_size, lossless_bitrate, .. } => {
                 if show_file_count {
                     parts.push(format!("{} files", folder.file_count));
                 }
@@ -184,6 +206,12 @@ pub fn render_folder_item<V: 'static>(
                 }
                 if show_converted_size {
                     parts.push(format!("→ {}", format_size(*output_size)));
+                }
+                // Final bitrate after conversion (e.g., "@192k")
+                if show_final_bitrate {
+                    if let Some(bitrate) = lossless_bitrate {
+                        parts.push(format!("@{}k", bitrate));
+                    }
                 }
             }
             FolderConversionStatus::Converting { files_completed, files_total } => {
