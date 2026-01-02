@@ -692,17 +692,35 @@ impl FolderList {
                                     ),
                             ),
                     )
-                    // Row 3: Bitrate (in accent/success color)
+                    // Row 3: Bitrate (in accent/success color) and CD-RW indicator
                     .child(
                         div()
                             .flex()
-                            .gap_1()
-                            .child("Bitrate:")
+                            .gap_4()
                             .child(
                                 div()
-                                    .text_color(success_color)
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child(bitrate_display.clone()),
+                                    .flex()
+                                    .gap_1()
+                                    .child("Bitrate:")
+                                    .child(
+                                        div()
+                                            .text_color(success_color)
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(bitrate_display.clone()),
+                                    ),
+                            )
+                            // CD-RW indicator (only show when erasable disc detected)
+                            .when(
+                                self.conversion_state.is_converting()
+                                    && self.conversion_state.get_stage() == BurnStage::ErasableDiscDetected,
+                                |el| {
+                                    el.child(
+                                        div()
+                                            .text_color(theme.danger)
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child("CD-RW"),
+                                    )
+                                }
                             ),
                     ),
             )
@@ -839,56 +857,58 @@ impl FolderList {
                         .flex_col()
                         .gap_2()
                         .items_center()
-                        // Progress display
-                        .child(
-                            div()
-                                .w(gpui::px(140.0))
-                                .h(gpui::px(50.0))
-                                .rounded_md()
-                                .border_1()
-                                .border_color(stage_color)
-                                .overflow_hidden()
-                                .relative()
-                                // Background progress fill
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .left_0()
-                                        .top_0()
-                                        .h_full()
-                                        .w(gpui::relative(progress_fraction))
-                                        .bg(stage_color)
-                                )
-                                // Text overlay
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .flex()
-                                        .flex_col()
-                                        .items_center()
-                                        .justify_center()
-                                        .relative()
-                                        .when(!progress_text.is_empty(), |el| {
-                                            el.child(
+                        // Progress display (hide when waiting for user to approve erase)
+                        .when(stage != BurnStage::ErasableDiscDetected, |el| {
+                            el.child(
+                                div()
+                                    .w(gpui::px(140.0))
+                                    .h(gpui::px(50.0))
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(stage_color)
+                                    .overflow_hidden()
+                                    .relative()
+                                    // Background progress fill
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .top_0()
+                                            .h_full()
+                                            .w(gpui::relative(progress_fraction))
+                                            .bg(stage_color)
+                                    )
+                                    // Text overlay
+                                    .child(
+                                        div()
+                                            .size_full()
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .justify_center()
+                                            .relative()
+                                            .when(!progress_text.is_empty(), |el| {
+                                                el.child(
+                                                    div()
+                                                        .text_lg()
+                                                        .text_color(gpui::white())
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .child(progress_text.clone())
+                                                )
+                                            })
+                                            .child(
                                                 div()
-                                                    .text_lg()
+                                                    .text_sm()
                                                     .text_color(gpui::white())
-                                                    .font_weight(gpui::FontWeight::BOLD)
-                                                    .child(progress_text.clone())
+                                                    .child(if is_cancelled && stage != BurnStage::Cancelled {
+                                                        "Cancelling..."
+                                                    } else {
+                                                        stage_text
+                                                    })
                                             )
-                                        })
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(gpui::white())
-                                                .child(if is_cancelled && stage != BurnStage::Cancelled {
-                                                    "Cancelling..."
-                                                } else {
-                                                    stage_text
-                                                })
-                                        )
-                                )
-                        )
+                                    )
+                            )
+                        })
                         // Erase & Burn button (only show when erasable disc detected)
                         .when(stage == BurnStage::ErasableDiscDetected, |el| {
                             el.child(
