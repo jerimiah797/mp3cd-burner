@@ -13,10 +13,10 @@ mod scanning;
 mod state;
 
 pub use folder_state::{
-    calculate_folder_hash, FolderConversionStatus, FolderId, ListChangeType, ReencodeReason,
+    calculate_folder_hash, FolderConversionStatus, FolderId,
 };
 pub use scanning::{
-    find_album_folders, format_duration, format_size, get_audio_files, scan_music_folder,
+    find_album_folders, format_duration, format_size, scan_music_folder,
     AudioFileInfo, MusicFolder,
 };
-pub use state::{AppSettings, BurnSettings, BurnStage, ConversionState, ImportState};
+pub use state::{AppSettings, BurnStage, ConversionState, ImportState};

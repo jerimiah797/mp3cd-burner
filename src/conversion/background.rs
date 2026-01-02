@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 
 use super::output_manager::OutputManager;
 use super::parallel::{convert_files_parallel_with_callback, ConversionJob, ConversionProgress};
-use super::{get_ffmpeg_path, verify_ffmpeg};
+use super::verify_ffmpeg;
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::core::{FolderConversionStatus, FolderId, MusicFolder};
 

@@ -9,13 +9,11 @@ mod output_manager;
 mod parallel;
 
 pub use background::{
-    calculate_optimal_lossless_bitrate, BackgroundEncoder, BackgroundEncoderHandle,
-    BackgroundEncoderState, EncoderCommand, EncoderEvent, FileCategory, FileToEncode,
+    BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent,
 };
 pub use ffmpeg::ConversionResult;
 pub use optimizer::{calculate_multipass_bitrate, MultipassEstimate};
 pub use output_manager::OutputManager;
-pub use parallel::{convert_files_parallel_with_callback, ConversionJob, ConversionProgress};
 
 use std::path::PathBuf;
 
