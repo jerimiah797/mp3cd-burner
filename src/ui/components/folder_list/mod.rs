@@ -613,31 +613,6 @@ impl FolderList {
         &self.folders
     }
 
-    /// Set folders from a saved profile (re-scans each folder)
-    #[allow(dead_code)]
-    pub fn set_folders(&mut self, paths: Vec<PathBuf>) {
-        self.folders.clear();
-        self.iso_state = None;
-        for path in paths {
-            if let Ok(folder) = scan_music_folder(&path) {
-                self.folders.push(folder);
-            }
-        }
-    }
-
-    /// Create a BurnProfile from the current state
-    ///
-    /// This captures the current folder list and conversion state,
-    /// allowing the profile to be saved and later restored.
-    pub fn create_profile(&self, profile_name: String) -> crate::profiles::BurnProfile {
-        crate::profiles::create_profile(
-            profile_name,
-            &self.folders,
-            self.output_manager.as_ref(),
-            self.iso_state.as_ref(),
-        )
-    }
-
     /// Save the current state as a profile to the specified path
     pub fn save_profile(&self, path: &std::path::Path, profile_name: String) -> Result<(), String> {
         crate::profiles::save_profile_to_path(

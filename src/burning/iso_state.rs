@@ -5,7 +5,7 @@
 //! - Detecting when ISO needs regeneration (folder order changed)
 //! - Detecting when folders need re-encoding (content changed)
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::core::{calculate_folder_hash, FolderId, MusicFolder};
 
@@ -65,16 +65,6 @@ impl IsoState {
     /// Check if the ISO size exceeds the CD limit
     pub fn exceeds_cd_limit(&self) -> bool {
         self.size_bytes > MAX_ISO_SIZE_BYTES
-    }
-
-    /// Invalidate the ISO (e.g., when folders change)
-    pub fn invalidate(&mut self) {
-        self.is_valid = false;
-    }
-
-    /// Get the ISO path
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 }
 

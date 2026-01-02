@@ -41,8 +41,8 @@ pub enum BurnCoordinationResult {
     Cancelled,
     /// No usable CD found within timeout
     NoCdTimeout,
-    /// Burn failed with error
-    Error(String),
+    /// Burn failed with error (string used by Debug impl)
+    Error(#[allow(dead_code)] String),
 }
 
 /// Coordinate the burn process for an ISO file

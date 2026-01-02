@@ -104,8 +104,6 @@ pub fn save_profile_to_path(
 
 /// Result of loading a profile - contains the data needed to restore state
 pub struct LoadedProfile {
-    /// The loaded profile
-    pub profile: BurnProfile,
     /// Folders that were successfully scanned
     pub folders: Vec<MusicFolder>,
     /// Folders that need encoding (valid state not found)
@@ -176,7 +174,6 @@ pub fn load_profile_from_path(path: &Path) -> Result<LoadedProfile, String> {
     let _ = add_to_recent_profiles(&path.to_string_lossy());
 
     Ok(LoadedProfile {
-        profile,
         folders,
         folders_needing_encoding,
         iso_state,

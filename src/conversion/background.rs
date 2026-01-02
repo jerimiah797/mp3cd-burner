@@ -34,8 +34,6 @@ pub enum EncoderCommand {
     RecalculateBitrate { target_bitrate: u32 },
     /// Clear all state (for New profile)
     ClearAll,
-    /// Shutdown the encoder
-    Shutdown,
 }
 
 /// Events emitted by the background encoder
@@ -73,33 +71,6 @@ pub enum EncoderEvent {
     },
 }
 
-/// File category for conversion ordering
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileCategory {
-    /// MP3 files - just copy
-    Mp3Copy,
-    /// Lossy non-MP3 - transcode at source bitrate
-    Lossy,
-    /// Lossless - transcode at target bitrate
-    Lossless,
-}
-
-/// Information about a file to be encoded
-#[derive(Debug, Clone)]
-pub struct FileToEncode {
-    pub input_path: PathBuf,
-    pub output_path: PathBuf,
-    pub category: FileCategory,
-    pub strategy: EncodingStrategy,
-}
-
-/// Per-folder encoding task state
-#[derive(Debug)]
-struct FolderTask {
-    folder: MusicFolder,
-    cancel_token: Arc<AtomicBool>,
-}
-
 /// Shared state for the background encoder
 pub struct BackgroundEncoderState {
     /// Queue of folders waiting to be encoded
@@ -126,11 +97,6 @@ impl BackgroundEncoderState {
             is_running: false,
             pending_bitrate_requeue: None,
         }
-    }
-
-    /// Get the total number of pending and active folders
-    pub fn pending_count(&self) -> usize {
-        self.queue.len() + if self.active.is_some() { 1 } else { 0 }
     }
 
     /// Check if a folder is queued or active
@@ -182,11 +148,6 @@ impl BackgroundEncoderHandle {
             .send(EncoderCommand::RecalculateBitrate { target_bitrate: target });
     }
 
-    /// Shutdown the encoder
-    pub fn shutdown(&self) {
-        let _ = self.command_tx.send(EncoderCommand::Shutdown);
-    }
-
     /// Clear all state (for New profile)
     pub fn clear_all(&self) {
         let _ = self.command_tx.send(EncoderCommand::ClearAll);
@@ -199,6 +160,10 @@ impl BackgroundEncoderHandle {
 }
 
 /// The background encoder that runs conversions
+///
+/// Note: Fields are used internally during construction but not accessed
+/// after new() returns - the handle is used instead for all operations.
+#[allow(dead_code)]
 pub struct BackgroundEncoder {
     output_manager: OutputManager,
     state: Arc<Mutex<BackgroundEncoderState>>,
@@ -258,11 +223,6 @@ impl BackgroundEncoder {
 
         Ok((encoder, handle, event_rx, output_manager))
     }
-
-    /// Get a reference to the output manager
-    pub fn output_manager(&self) -> &OutputManager {
-        &self.output_manager
-    }
 }
 
 /// Main encoder loop - processes commands and runs conversions
@@ -280,11 +240,6 @@ async fn run_encoder_loop(
         // Process any pending commands first
         while let Ok(cmd) = command_rx.try_recv() {
             match cmd {
-                EncoderCommand::Shutdown => {
-                    println!("Background encoder shutting down");
-                    state.lock().unwrap().is_running = false;
-                    return;
-                }
                 EncoderCommand::AddFolder(id, folder) => {
                     let mut s = state.lock().unwrap();
                     // Don't add if already queued/active/completed
@@ -606,45 +561,9 @@ async fn run_encoder_loop(
     }
 }
 
-/// Calculate the optimal lossless bitrate given capacity constraints
-pub fn calculate_optimal_lossless_bitrate(
-    lossless_duration: f64,
-    available_bytes: u64,
-) -> u32 {
-    if lossless_duration <= 0.0 {
-        return 320; // No lossless files, use max
-    }
-
-    // Calculate what bitrate would fit
-    // bitrate (kbps) = (bytes * 8) / (duration * 1000)
-    let available_kbps = (available_bytes as f64 * 8.0) / (lossless_duration * 1000.0);
-
-    // Clamp to valid MP3 bitrates
-    let bitrate = available_kbps.floor() as u32;
-
-    // Round down to nearest standard bitrate
-    match bitrate {
-        0..=95 => 64,
-        96..=127 => 96,
-        128..=159 => 128,
-        160..=191 => 160,
-        192..=223 => 192,
-        224..=255 => 224,
-        256..=319 => 256,
-        _ => 320,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_file_category_ordering() {
-        assert!(FileCategory::Mp3Copy as u8 == 0);
-        assert!(FileCategory::Lossy as u8 == 1);
-        assert!(FileCategory::Lossless as u8 == 2);
-    }
 
     #[test]
     fn test_background_encoder_state_new() {
@@ -654,42 +573,6 @@ mod tests {
         assert_eq!(state.completed.len(), 0);
         assert_eq!(state.lossless_bitrate, 320);
         assert!(!state.is_running);
-    }
-
-    #[test]
-    fn test_background_encoder_state_pending_count() {
-        let mut state = BackgroundEncoderState::new();
-        assert_eq!(state.pending_count(), 0);
-
-        // Add to queue
-        let folder_id = FolderId("test1".to_string());
-        let folder = MusicFolder::new_for_test_with_id("test1");
-        state.queue.push_back((folder_id, folder));
-        assert_eq!(state.pending_count(), 1);
-
-        // Set active
-        let folder_id2 = FolderId("test2".to_string());
-        state.active = Some((folder_id2, Arc::new(AtomicBool::new(false)), false));
-        assert_eq!(state.pending_count(), 2);
-    }
-
-    #[test]
-    fn test_calculate_optimal_lossless_bitrate() {
-        // No duration - max bitrate
-        assert_eq!(calculate_optimal_lossless_bitrate(0.0, 1000000), 320);
-
-        // Large capacity - max bitrate
-        let huge_capacity = 700 * 1024 * 1024; // 700 MB
-        assert_eq!(calculate_optimal_lossless_bitrate(3600.0, huge_capacity), 320);
-
-        // Limited capacity
-        // 60 seconds of audio, 1MB available
-        // bitrate = (1000000 * 8) / (60 * 1000) = 133 kbps -> rounds to 128
-        assert_eq!(calculate_optimal_lossless_bitrate(60.0, 1000000), 128);
-
-        // Very limited
-        // 60 seconds, 500KB = 66 kbps -> rounds to 64
-        assert_eq!(calculate_optimal_lossless_bitrate(60.0, 500000), 64);
     }
 
     #[test]

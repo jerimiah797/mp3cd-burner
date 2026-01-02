@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 
-use super::iso_state::IsoState;
 use super::iso::create_iso;
 use crate::conversion::OutputManager;
 use crate::core::{BurnStage, ConversionState, MusicFolder};
@@ -35,20 +34,12 @@ impl IsoGenerationCheck {
     }
 }
 
-/// Result of ISO generation
-pub struct IsoGenerationResult {
-    /// Path to the created ISO
-    pub iso_path: PathBuf,
-    /// The folders used to create the ISO (for IsoState creation)
-    pub folders: Vec<MusicFolder>,
-}
-
 /// Generate an ISO from the given folders
 ///
 /// This function:
 /// 1. Creates a staging directory with symlinks to encoded folders
 /// 2. Runs hdiutil to create the ISO
-/// 3. Returns the result for IsoState creation
+/// 3. Returns the path to the created ISO
 ///
 /// This is a blocking operation that should be run in a background thread.
 pub fn generate_iso(
@@ -56,7 +47,7 @@ pub fn generate_iso(
     folders: &[MusicFolder],
     volume_label: &str,
     state: &ConversionState,
-) -> Result<IsoGenerationResult, String> {
+) -> Result<PathBuf, String> {
     // Mark as creating ISO
     state.set_stage(BurnStage::CreatingIso);
 
@@ -69,12 +60,10 @@ pub fn generate_iso(
     println!("ISO created successfully: {:?}", result.iso_path);
 
     // Store ISO path in conversion state
-    *state.iso_path.lock().unwrap() = Some(result.iso_path.clone());
+    let iso_path = result.iso_path.clone();
+    *state.iso_path.lock().unwrap() = Some(iso_path.clone());
 
-    Ok(IsoGenerationResult {
-        iso_path: result.iso_path,
-        folders: folders.to_vec(),
-    })
+    Ok(iso_path)
 }
 
 /// Spawn ISO generation in a background thread
@@ -109,11 +98,6 @@ pub fn spawn_iso_generation(
             state.finish();
         });
     });
-}
-
-/// Create an IsoState from a generation result
-pub fn create_iso_state(result: &IsoGenerationResult) -> Result<IsoState, String> {
-    IsoState::new(result.iso_path.clone(), &result.folders)
 }
 
 #[cfg(test)]

@@ -92,23 +92,6 @@ pub fn get_output_dir() -> PathBuf {
     std::env::temp_dir().join("mp3cd_output")
 }
 
-/// Create the output directory if it doesn't exist
-pub fn ensure_output_dir() -> Result<PathBuf, String> {
-    let output_dir = get_output_dir();
-
-    if output_dir.exists() {
-        // Clean existing output
-        std::fs::remove_dir_all(&output_dir)
-            .map_err(|e| format!("Failed to clean output directory: {}", e))?;
-    }
-
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("Failed to create output directory: {}", e))?;
-
-    println!("Output directory ready: {:?}", output_dir);
-    Ok(output_dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

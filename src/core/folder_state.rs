@@ -101,80 +101,6 @@ impl Default for FolderConversionStatus {
     }
 }
 
-impl FolderConversionStatus {
-    /// Check if this folder is currently being converted
-    pub fn is_converting(&self) -> bool {
-        matches!(self, Self::Converting { .. })
-    }
-
-    /// Check if this folder has been successfully converted
-    pub fn is_converted(&self) -> bool {
-        matches!(self, Self::Converted { .. })
-    }
-
-    /// Check if this folder needs re-encoding
-    pub fn needs_reencode(&self) -> bool {
-        matches!(self, Self::NeedsReencode { .. })
-    }
-
-    /// Check if this folder is ready (converted and doesn't need re-encode)
-    pub fn is_ready(&self) -> bool {
-        matches!(self, Self::Converted { .. })
-    }
-
-    /// Get the output directory if converted
-    pub fn output_dir(&self) -> Option<&Path> {
-        match self {
-            Self::Converted { output_dir, .. } => Some(output_dir),
-            _ => None,
-        }
-    }
-
-    /// Get the lossless bitrate if converted
-    pub fn lossless_bitrate(&self) -> Option<u32> {
-        match self {
-            Self::Converted {
-                lossless_bitrate, ..
-            } => *lossless_bitrate,
-            _ => None,
-        }
-    }
-
-    /// Get the output size if converted
-    pub fn output_size(&self) -> Option<u64> {
-        match self {
-            Self::Converted { output_size, .. } => Some(*output_size),
-            _ => None,
-        }
-    }
-
-    /// Get conversion progress as (completed, total) if converting
-    pub fn progress(&self) -> Option<(usize, usize)> {
-        match self {
-            Self::Converting {
-                files_completed,
-                files_total,
-            } => Some((*files_completed, *files_total)),
-            _ => None,
-        }
-    }
-}
-
-/// Type of change detected in the folder list
-#[derive(Debug, Clone, PartialEq)]
-pub enum ListChangeType {
-    /// No changes
-    None,
-    /// Only folder order changed (same folders, different positions)
-    ReorderOnly,
-    /// Folders were added
-    FoldersAdded(Vec<FolderId>),
-    /// Folders were removed
-    FoldersRemoved(Vec<FolderId>),
-    /// Complex change (both added and removed)
-    ContentChanged,
-}
-
 /// Calculate a hash representing the current folder list order
 ///
 /// Used to detect if the ISO needs regeneration after reordering.
@@ -215,27 +141,14 @@ mod tests {
     }
 
     #[test]
-    fn test_folder_conversion_status_is_converted() {
+    fn test_folder_conversion_status_converted() {
         let status = FolderConversionStatus::Converted {
             output_dir: PathBuf::from("/tmp/test"),
             lossless_bitrate: Some(320),
             output_size: 1000,
             completed_at: 0,
         };
-        assert!(status.is_converted());
-        assert!(status.is_ready());
-        assert!(!status.is_converting());
-        assert!(!status.needs_reencode());
-    }
-
-    #[test]
-    fn test_folder_conversion_status_needs_reencode() {
-        let status = FolderConversionStatus::NeedsReencode {
-            previous_output_dir: Some(PathBuf::from("/tmp/test")),
-            reason: ReencodeReason::BitrateChanged { old: 320, new: 192 },
-        };
-        assert!(status.needs_reencode());
-        assert!(!status.is_ready());
+        assert!(matches!(status, FolderConversionStatus::Converted { .. }));
     }
 
     #[test]

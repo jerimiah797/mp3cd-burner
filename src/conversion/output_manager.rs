@@ -76,28 +76,13 @@ impl OutputManager {
         Ok(())
     }
 
-    /// Create an output manager for an existing session (e.g., when loading a profile)
-    pub fn from_session(session_id: String) -> Result<Self, String> {
-        let base_dir = std::env::temp_dir().join("mp3cd_output");
-        let session_dir = base_dir.join(&session_id);
-
-        if !session_dir.exists() {
-            return Err(format!("Session directory does not exist: {:?}", session_dir));
-        }
-
-        Ok(Self {
-            session_id,
-            base_dir,
-            session_dir,
-        })
-    }
-
     /// Get the session ID
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
-    /// Get the session directory path
+    /// Get the session directory path (used in tests)
+    #[allow(dead_code)]
     pub fn session_dir(&self) -> &Path {
         &self.session_dir
     }
@@ -116,7 +101,8 @@ impl OutputManager {
         Ok(folder_dir)
     }
 
-    /// Check if a folder's output directory exists
+    /// Check if a folder's output directory exists (used in tests)
+    #[allow(dead_code)]
     pub fn folder_output_exists(&self, folder_id: &FolderId) -> bool {
         self.session_dir.join(folder_id.as_str()).exists()
     }
@@ -210,16 +196,8 @@ impl OutputManager {
         Ok(staging_dir)
     }
 
-    /// Update ISO staging for reordered folders
-    ///
-    /// This recreates the staging directory with new numbering.
-    /// Since we use symlinks, this is very fast (no file copying).
-    pub fn update_iso_staging(&self, folders: &[MusicFolder]) -> Result<PathBuf, String> {
-        // Just recreate staging - symlink creation is cheap
-        self.create_iso_staging(folders)
-    }
-
-    /// Get the ISO staging directory path
+    /// Get the ISO staging directory path (used in tests)
+    #[allow(dead_code)]
     pub fn staging_dir(&self) -> PathBuf {
         self.session_dir.join("_iso_staging")
     }
