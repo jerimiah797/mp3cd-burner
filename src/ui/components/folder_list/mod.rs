@@ -8,14 +8,14 @@
 use gpui::{div, prelude::*, rgb, AnyWindowHandle, AsyncApp, Context, ExternalPaths, FocusHandle, IntoElement, PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, Timer, WeakEntity, Window};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 use crate::actions::{NewProfile, OpenProfile, SaveProfile};
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use super::status_bar::{
-    get_stage_color, is_stage_cancelable, render_import_progress, render_iso_too_large,
-    render_stats_panel, ProgressDisplay, StatusBarState,
+    is_stage_cancelable, render_burn_button_base, render_convert_burn_button_base,
+    render_erase_burn_button_base, render_import_progress, render_iso_too_large,
+    render_progress_box, render_stats_panel, StatusBarState,
 };
 use crate::burning::{
     coordinate_burn, create_iso, BurnConfig,
@@ -370,24 +370,18 @@ impl FolderList {
     /// This should be called periodically to auto-generate ISO when all folders are encoded.
     /// Returns true if ISO generation was triggered.
     fn maybe_generate_iso(&mut self, cx: &mut Context<Self>) -> bool {
-        // Don't generate if we already have a valid ISO
-        if self.can_burn_another() {
-            return false;
-        }
+        use crate::burning::IsoGenerationCheck;
 
-        // Don't generate if we already attempted (prevents infinite retry on failure)
-        // This flag is reset when folders change
-        if self.iso_generation_attempted {
-            return false;
-        }
+        // Check all conditions for ISO generation
+        let check = IsoGenerationCheck {
+            has_valid_iso: self.can_burn_another(),
+            already_attempted: self.iso_generation_attempted,
+            has_folders: !self.folders.is_empty(),
+            all_converted: self.all_folders_converted(),
+            is_busy: self.conversion_state.is_converting(),
+        };
 
-        // Don't generate if no folders or not all converted
-        if self.folders.is_empty() || !self.all_folders_converted() {
-            return false;
-        }
-
-        // Don't generate if already converting/burning
-        if self.conversion_state.is_converting() {
+        if !check.should_generate() {
             return false;
         }
 
@@ -402,50 +396,16 @@ impl FolderList {
             None => return false,
         };
 
-        // Build staging directory with numbered symlinks
-        let folders_for_staging: Vec<_> = self.folders.iter().cloned().collect();
-
-        // Spawn background thread to create ISO
-        let folders = folders_for_staging.clone();
-        let state = self.conversion_state.clone();
-
-        // Mark as converting (for ISO stage)
-        state.reset(0);
-        state.set_stage(BurnStage::CreatingIso);
-
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-            rt.block_on(async {
-                // Create staging directory with symlinks
-                match output_manager.create_iso_staging(&folders) {
-                    Ok(staging_dir) => {
-                        println!("ISO staging directory: {:?}", staging_dir);
-
-                        // Create ISO from staging directory
-                        let volume_label = "MP3CD".to_string();
-                        match crate::burning::create_iso(&staging_dir, &volume_label) {
-                            Ok(result) => {
-                                println!("ISO created successfully: {:?}", result.iso_path);
-                                *state.iso_path.lock().unwrap() = Some(result.iso_path);
-                                state.set_stage(BurnStage::Complete);
-                            }
-                            Err(e) => {
-                                eprintln!("ISO creation failed: {}", e);
-                                state.set_stage(BurnStage::Complete);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to create ISO staging: {}", e);
-                        state.set_stage(BurnStage::Complete);
-                    }
-                }
-                state.finish();
-            });
-        });
+        // Spawn ISO generation in background
+        let folders: Vec<_> = self.folders.iter().cloned().collect();
+        crate::burning::spawn_iso_generation(
+            output_manager,
+            folders.clone(),
+            self.conversion_state.clone(),
+        );
 
         // Start polling for ISO creation progress
-        Self::start_iso_creation_polling(self.conversion_state.clone(), folders_for_staging, cx);
+        Self::start_iso_creation_polling(self.conversion_state.clone(), folders, cx);
 
         cx.notify();
         true
@@ -669,74 +629,23 @@ impl FolderList {
     /// This captures the current folder list and conversion state,
     /// allowing the profile to be saved and later restored.
     pub fn create_profile(&self, profile_name: String) -> crate::profiles::BurnProfile {
-        use crate::profiles::{BurnProfile, BurnSettings, SavedFolderState};
-        use std::collections::HashMap;
-
-        let settings = BurnSettings {
-            target_bitrate: "auto".to_string(),
-            no_lossy_conversions: false,
-            embed_album_art: true,
-        };
-
-        let folder_paths: Vec<String> = self.folders
-            .iter()
-            .map(|f| f.path.to_string_lossy().to_string())
-            .collect();
-
-        let mut profile = BurnProfile::new(profile_name, folder_paths, settings);
-
-        // Add conversion state if we have it
-        if let Some(ref output_manager) = self.output_manager {
-            let session_id = output_manager.session_id().to_string();
-
-            // Build folder states map
-            let mut folder_states = HashMap::new();
-            for folder in &self.folders {
-                if let FolderConversionStatus::Converted { output_dir, lossless_bitrate, output_size, .. } = &folder.conversion_status {
-                    // Get source folder mtime
-                    let source_mtime = std::fs::metadata(&folder.path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-
-                    let saved_state = SavedFolderState::new(
-                        folder.id.0.clone(),
-                        output_dir.to_string_lossy().to_string(),
-                        *lossless_bitrate,
-                        *output_size,
-                        source_mtime,
-                        folder.file_count as usize,
-                    );
-                    folder_states.insert(folder.path.to_string_lossy().to_string(), saved_state);
-                }
-            }
-
-            // Get ISO info if available
-            let (iso_path, iso_hash) = match &self.iso_state {
-                Some(iso) => (
-                    Some(iso.path.to_string_lossy().to_string()),
-                    Some(iso.folder_hash.clone()),
-                ),
-                None => (None, None),
-            };
-
-            if !folder_states.is_empty() {
-                profile.set_conversion_state(session_id, folder_states, iso_path, iso_hash);
-            }
-        }
-
-        profile
+        crate::profiles::create_profile(
+            profile_name,
+            &self.folders,
+            self.output_manager.as_ref(),
+            self.iso_state.as_ref(),
+        )
     }
 
     /// Save the current state as a profile to the specified path
     pub fn save_profile(&self, path: &std::path::Path, profile_name: String) -> Result<(), String> {
-        let profile = self.create_profile(profile_name);
-        crate::profiles::storage::save_profile(&profile, path)?;
-        crate::profiles::storage::add_to_recent_profiles(&path.to_string_lossy())?;
-        println!("Profile saved to: {}", path.display());
-        Ok(())
+        crate::profiles::save_profile_to_path(
+            path,
+            profile_name,
+            &self.folders,
+            self.output_manager.as_ref(),
+            self.iso_state.as_ref(),
+        )
     }
 
     /// Load a profile and restore its state
@@ -747,15 +656,7 @@ impl FolderList {
     /// 3. Restore folders with valid conversion state
     /// 4. Queue folders needing re-encoding to the background encoder
     pub fn load_profile(&mut self, path: &std::path::Path, cx: &mut Context<Self>) -> Result<(), String> {
-        use crate::profiles::storage::{load_profile, validate_conversion_state, add_to_recent_profiles};
-
-        let profile = load_profile(path)?;
-        let validation = validate_conversion_state(&profile);
-
-        println!("Loading profile: {}", profile.profile_name);
-        println!("  Valid folders: {:?}", validation.valid_folders);
-        println!("  Invalid folders: {:?}", validation.invalid_folders);
-        println!("  ISO valid: {}", validation.iso_valid);
+        let loaded = crate::profiles::load_profile_from_path(path)?;
 
         // Clear current state
         self.folders.clear();
@@ -763,37 +664,11 @@ impl FolderList {
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
 
-        // Track folders that need encoding (don't queue yet - need to calculate bitrate first)
-        let mut folders_needing_encoding: Vec<MusicFolder> = Vec::new();
-
-        // Load folders
-        for folder_path_str in &profile.folders {
-            let folder_path = PathBuf::from(folder_path_str);
-            if let Ok(mut folder) = scan_music_folder(&folder_path) {
-                // Check if this folder has valid saved state
-                if validation.valid_folders.contains(folder_path_str) {
-                    // Restore conversion status from saved state
-                    if let Some(ref folder_states) = profile.folder_states {
-                        if let Some(saved) = folder_states.get(folder_path_str) {
-                            folder.conversion_status = FolderConversionStatus::Converted {
-                                output_dir: PathBuf::from(&saved.output_dir),
-                                lossless_bitrate: saved.lossless_bitrate,
-                                output_size: saved.output_size,
-                                completed_at: 0, // Not stored in v1.1
-                            };
-                        }
-                    }
-                } else {
-                    // Needs encoding - track it for later
-                    folders_needing_encoding.push(folder.clone());
-                }
-
-                self.folders.push(folder);
-            }
-        }
+        // Apply loaded folders
+        self.folders = loaded.folders;
 
         // Now that all folders are loaded, calculate the correct bitrate BEFORE queueing
-        if !folders_needing_encoding.is_empty() {
+        if !loaded.folders_needing_encoding.is_empty() {
             let target_bitrate = self.calculated_bitrate();
             println!("Profile loaded - calculated bitrate: {} kbps", target_bitrate);
 
@@ -803,7 +678,7 @@ impl FolderList {
             }
 
             // Now queue all folders that need encoding (with correct bitrate)
-            for folder in folders_needing_encoding {
+            for folder in loaded.folders_needing_encoding {
                 self.queue_folder_for_encoding(&folder);
             }
 
@@ -813,17 +688,10 @@ impl FolderList {
         }
 
         // Restore ISO state if valid
-        if validation.iso_valid {
-            if let Some(ref iso_path_str) = profile.iso_path {
-                if let Ok(iso_state) = IsoState::new(PathBuf::from(iso_path_str), &self.folders) {
-                    self.iso_state = Some(iso_state);
-                    println!("Restored ISO state from profile");
-                }
-            }
+        if let Some(iso_state) = loaded.iso_state {
+            self.iso_state = Some(iso_state);
+            println!("Restored ISO state from profile");
         }
-
-        // Update recent profiles
-        let _ = add_to_recent_profiles(&path.to_string_lossy());
 
         cx.notify();
         Ok(())
@@ -1228,8 +1096,6 @@ impl FolderList {
         success_hover: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let progress = ProgressDisplay::from_state(state);
-        let stage_color = get_stage_color(state, theme);
         let is_cancelable = is_stage_cancelable(state);
 
         div()
@@ -1240,89 +1106,24 @@ impl FolderList {
             .items_center()
             // Progress display (hide when waiting for user to approve erase)
             .when(state.burn_stage != BurnStage::ErasableDiscDetected, |el| {
-                el.child(
-                    div()
-                        .id(SharedString::from("progress-display"))
-                        .w(gpui::px(150.0))
-                        .h(gpui::px(70.0))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(stage_color)
-                        .overflow_hidden()
-                        .relative()
-                        .when(is_cancelable, |el| {
-                            el.cursor_pointer()
-                                .on_click(cx.listener(|this, _event, _window, _cx| {
-                                    this.conversion_state.request_cancel();
-                                }))
-                        })
-                        // Background progress fill
-                        .child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .h_full()
-                                .w(gpui::relative(progress.fraction))
-                                .bg(stage_color),
-                        )
-                        // Text overlay
-                        .child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .justify_center()
-                                .relative()
-                                .when(!progress.text.is_empty(), |el| {
-                                    el.child(
-                                        div()
-                                            .text_lg()
-                                            .text_color(gpui::white())
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .child(progress.text.clone()),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_lg()
-                                        .text_color(gpui::white())
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(
-                                            if state.is_cancelled && state.burn_stage != BurnStage::Cancelled {
-                                                "Cancelling..."
-                                            } else {
-                                                progress.stage_text
-                                            },
-                                        ),
-                                ),
-                        ),
-                )
+                let mut progress_box = render_progress_box(state, theme);
+                if is_cancelable {
+                    progress_box = progress_box
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _event, _window, _cx| {
+                            this.conversion_state.request_cancel();
+                        }));
+                }
+                el.child(progress_box)
             })
             // Erase & Burn button (only show when erasable disc detected)
             .when(state.burn_stage == BurnStage::ErasableDiscDetected, |el| {
                 el.child(
-                    div()
-                        .id(SharedString::from("erase-burn-btn"))
-                        .w(gpui::px(150.0))
-                        .h(gpui::px(70.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(success_color)
-                        .text_color(gpui::white())
-                        .text_lg()
-                        .rounded_md()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_center()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(success_hover))
+                    render_erase_burn_button_base(success_color, success_hover)
                         .on_click(cx.listener(|this, _event, _window, _cx| {
                             println!("Erase & Burn clicked");
                             this.conversion_state.erase_approved.store(true, Ordering::SeqCst);
-                        }))
-                        .child("Erase\n& Burn"),
+                        })),
                 )
             })
     }
@@ -1335,29 +1136,11 @@ impl FolderList {
         success_hover: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let button_text = if iso_has_been_burned { "Burn\nAnother" } else { "Burn" };
-        let button_id = if iso_has_been_burned { "burn-another-btn" } else { "burn-btn" };
-
-        div()
-            .id(SharedString::from(button_id))
-            .w(gpui::px(150.0))
-            .h(gpui::px(70.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(success_color)
-            .text_color(gpui::white())
-            .text_lg()
-            .rounded_md()
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_center()
-            .cursor_pointer()
-            .hover(|s| s.bg(success_hover))
+        render_burn_button_base(iso_has_been_burned, success_color, success_hover)
             .on_click(cx.listener(move |this, _event, window, cx| {
                 println!("Burn clicked!");
                 this.burn_existing_iso(window, cx);
             }))
-            .child(button_text)
     }
 
     /// Render Convert & Burn button
@@ -1369,29 +1152,13 @@ impl FolderList {
         text_muted: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        div()
-            .id(SharedString::from("convert-burn-btn"))
-            .w(gpui::px(150.0))
-            .h(gpui::px(70.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(if has_folders { success_color } else { text_muted })
-            .text_color(gpui::white())
-            .text_lg()
-            .rounded_md()
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_center()
-            .when(has_folders, |el| {
-                el.cursor_pointer().hover(|s| s.bg(success_hover))
-            })
+        render_convert_burn_button_base(has_folders, success_color, success_hover, text_muted)
             .on_click(cx.listener(move |this, _event, window, cx| {
                 if has_folders {
                     println!("Convert & Burn clicked!");
                     this.run_conversion(window, cx);
                 }
             }))
-            .child("Convert\n& Burn")
     }
 
     /// Cancel any ongoing conversion
@@ -1774,234 +1541,4 @@ impl FolderList {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    /// Helper to create a test MusicFolder
-    fn test_folder(path: &str) -> MusicFolder {
-        use crate::core::{FolderConversionStatus, FolderId};
-        MusicFolder {
-            id: FolderId::from_path(std::path::Path::new(path)),
-            path: PathBuf::from(path),
-            file_count: 10,
-            total_size: 50_000_000,
-            total_duration: 2400.0, // 40 minutes
-            album_art: None,
-            audio_files: Vec::new(),
-            conversion_status: FolderConversionStatus::default(),
-        }
-    }
-
-    #[test]
-    fn test_folder_list_new() {
-        let list = FolderList::new_for_test();
-        assert!(list.is_empty());
-        assert_eq!(list.len(), 0);
-    }
-
-    #[test]
-    fn test_add_folder() {
-        let mut list = FolderList::new_for_test();
-        list.folders.push(test_folder("/test/folder1"));
-        list.folders.push(test_folder("/test/folder2"));
-
-        assert_eq!(list.len(), 2);
-    }
-
-    #[test]
-    fn test_remove_folder() {
-        let mut list = FolderList::new_for_test();
-        list.folders.push(test_folder("/test/folder1"));
-        list.folders.push(test_folder("/test/folder2"));
-
-        list.remove_folder(0);
-
-        assert_eq!(list.len(), 1);
-        assert_eq!(list.folders[0].path, PathBuf::from("/test/folder2"));
-    }
-
-    #[test]
-    fn test_move_folder_forward() {
-        let mut list = FolderList::new_for_test();
-        list.folders.push(test_folder("/test/a"));
-        list.folders.push(test_folder("/test/b"));
-        list.folders.push(test_folder("/test/c"));
-
-        // Move "a" to position 2 (after "b")
-        list.move_folder(0, 2);
-
-        assert_eq!(list.folders[0].path, PathBuf::from("/test/b"));
-        assert_eq!(list.folders[1].path, PathBuf::from("/test/a"));
-        assert_eq!(list.folders[2].path, PathBuf::from("/test/c"));
-    }
-
-    #[test]
-    fn test_move_folder_backward() {
-        let mut list = FolderList::new_for_test();
-        list.folders.push(test_folder("/test/a"));
-        list.folders.push(test_folder("/test/b"));
-        list.folders.push(test_folder("/test/c"));
-
-        // Move "c" to position 0 (before "a")
-        list.move_folder(2, 0);
-
-        assert_eq!(list.folders[0].path, PathBuf::from("/test/c"));
-        assert_eq!(list.folders[1].path, PathBuf::from("/test/a"));
-        assert_eq!(list.folders[2].path, PathBuf::from("/test/b"));
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut list = FolderList::new_for_test();
-        list.folders.push(test_folder("/test/folder1"));
-        list.folders.push(test_folder("/test/folder2"));
-
-        list.clear();
-
-        assert!(list.is_empty());
-    }
-
-    #[test]
-    fn test_total_files() {
-        let mut list = FolderList::new_for_test();
-        list.folders.push(test_folder("/test/folder1")); // 10 files
-        list.folders.push(test_folder("/test/folder2")); // 10 files
-
-        assert_eq!(list.total_files(), 20);
-    }
-
-    #[test]
-    fn test_total_size() {
-        let mut list = FolderList::new_for_test();
-        list.folders.push(test_folder("/test/folder1")); // 50MB
-        list.folders.push(test_folder("/test/folder2")); // 50MB
-
-        assert_eq!(list.total_size(), 100_000_000);
-    }
-
-    // ConversionState tests
-
-    #[test]
-    fn test_conversion_state_new() {
-        let state = ConversionState::new();
-
-        assert!(!state.is_converting());
-        let (completed, failed, total) = state.progress();
-        assert_eq!(completed, 0);
-        assert_eq!(failed, 0);
-        assert_eq!(total, 0);
-    }
-
-    #[test]
-    fn test_conversion_state_reset() {
-        let state = ConversionState::new();
-
-        state.reset(24);
-
-        assert!(state.is_converting());
-        let (completed, failed, total) = state.progress();
-        assert_eq!(completed, 0);
-        assert_eq!(failed, 0);
-        assert_eq!(total, 24);
-    }
-
-    #[test]
-    fn test_conversion_state_finish() {
-        let state = ConversionState::new();
-        state.reset(10);
-        assert!(state.is_converting());
-
-        state.finish();
-
-        assert!(!state.is_converting());
-    }
-
-    #[test]
-    fn test_conversion_state_progress_updates() {
-        let state = ConversionState::new();
-        state.reset(5);
-
-        // Simulate completing some files
-        state.completed.fetch_add(1, Ordering::SeqCst);
-        state.completed.fetch_add(1, Ordering::SeqCst);
-        state.failed.fetch_add(1, Ordering::SeqCst);
-
-        let (completed, failed, total) = state.progress();
-        assert_eq!(completed, 2);
-        assert_eq!(failed, 1);
-        assert_eq!(total, 5);
-    }
-
-    #[test]
-    fn test_conversion_state_clone_shares_atomics() {
-        let state1 = ConversionState::new();
-        state1.reset(10);
-
-        let state2 = state1.clone();
-
-        // Update via state1
-        state1.completed.fetch_add(5, Ordering::SeqCst);
-
-        // Should be visible via state2 (shared Arc)
-        let (completed, _, _) = state2.progress();
-        assert_eq!(completed, 5);
-    }
-
-    #[test]
-    fn test_conversion_state_thread_safety() {
-        use std::thread;
-
-        let state = ConversionState::new();
-        state.reset(100);
-
-        let mut handles = vec![];
-
-        // Spawn 10 threads, each incrementing completed 10 times
-        for _ in 0..10 {
-            let state_clone = state.clone();
-            handles.push(thread::spawn(move || {
-                for _ in 0..10 {
-                    state_clone.completed.fetch_add(1, Ordering::SeqCst);
-                }
-            }));
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let (completed, _, _) = state.progress();
-        assert_eq!(completed, 100);
-    }
-
-    #[test]
-    fn test_conversion_state_cancellation() {
-        let state = ConversionState::new();
-        state.reset(10);
-
-        // Initially not cancelled
-        assert!(!state.is_cancelled());
-
-        // Request cancel
-        state.request_cancel();
-
-        // Should now be cancelled
-        assert!(state.is_cancelled());
-        // But should still be converting (in-flight tasks finish)
-        assert!(state.is_converting());
-    }
-
-    #[test]
-    fn test_conversion_state_reset_clears_cancel() {
-        let state = ConversionState::new();
-        state.reset(10);
-        state.request_cancel();
-        assert!(state.is_cancelled());
-
-        // Reset should clear the cancel flag
-        state.reset(5);
-        assert!(!state.is_cancelled());
-        assert!(state.is_converting());
-    }
-}
+mod tests;

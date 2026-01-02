@@ -1,0 +1,241 @@
+//! Profile manager - handles profile creation, saving, and loading
+//!
+//! This module extracts profile management logic from the folder list component.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use super::storage::{add_to_recent_profiles, load_profile, save_profile, validate_conversion_state};
+use super::types::{BurnProfile, BurnSettings, SavedFolderState};
+use crate::burning::IsoState;
+use crate::conversion::OutputManager;
+use crate::core::{FolderConversionStatus, MusicFolder};
+
+/// Create a BurnProfile from the current folder list state
+///
+/// This captures the current folder list and conversion state,
+/// allowing the profile to be saved and later restored.
+pub fn create_profile(
+    profile_name: String,
+    folders: &[MusicFolder],
+    output_manager: Option<&OutputManager>,
+    iso_state: Option<&IsoState>,
+) -> BurnProfile {
+    let settings = BurnSettings {
+        target_bitrate: "auto".to_string(),
+        no_lossy_conversions: false,
+        embed_album_art: true,
+    };
+
+    let folder_paths: Vec<String> = folders
+        .iter()
+        .map(|f| f.path.to_string_lossy().to_string())
+        .collect();
+
+    let mut profile = BurnProfile::new(profile_name, folder_paths, settings);
+
+    // Add conversion state if we have it
+    if let Some(output_manager) = output_manager {
+        let session_id = output_manager.session_id().to_string();
+
+        // Build folder states map
+        let mut folder_states = HashMap::new();
+        for folder in folders {
+            if let FolderConversionStatus::Converted {
+                output_dir,
+                lossless_bitrate,
+                output_size,
+                ..
+            } = &folder.conversion_status
+            {
+                // Get source folder mtime
+                let source_mtime = std::fs::metadata(&folder.path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                let saved_state = SavedFolderState::new(
+                    folder.id.0.clone(),
+                    output_dir.to_string_lossy().to_string(),
+                    *lossless_bitrate,
+                    *output_size,
+                    source_mtime,
+                    folder.file_count as usize,
+                );
+                folder_states.insert(folder.path.to_string_lossy().to_string(), saved_state);
+            }
+        }
+
+        // Get ISO info if available
+        let (iso_path, iso_hash) = match iso_state {
+            Some(iso) => (
+                Some(iso.path.to_string_lossy().to_string()),
+                Some(iso.folder_hash.clone()),
+            ),
+            None => (None, None),
+        };
+
+        if !folder_states.is_empty() {
+            profile.set_conversion_state(session_id, folder_states, iso_path, iso_hash);
+        }
+    }
+
+    profile
+}
+
+/// Save a profile to the specified path
+///
+/// Returns Ok(()) on success, or an error message on failure.
+pub fn save_profile_to_path(
+    path: &Path,
+    profile_name: String,
+    folders: &[MusicFolder],
+    output_manager: Option<&OutputManager>,
+    iso_state: Option<&IsoState>,
+) -> Result<(), String> {
+    let profile = create_profile(profile_name, folders, output_manager, iso_state);
+    save_profile(&profile, path)?;
+    add_to_recent_profiles(&path.to_string_lossy())?;
+    println!("Profile saved to: {}", path.display());
+    Ok(())
+}
+
+/// Result of loading a profile - contains the data needed to restore state
+pub struct LoadedProfile {
+    /// The loaded profile
+    pub profile: BurnProfile,
+    /// Folders that were successfully scanned
+    pub folders: Vec<MusicFolder>,
+    /// Folders that need encoding (valid state not found)
+    pub folders_needing_encoding: Vec<MusicFolder>,
+    /// ISO state if valid
+    pub iso_state: Option<IsoState>,
+}
+
+/// Load a profile from disk and validate its state
+///
+/// This will:
+/// 1. Load the profile from disk
+/// 2. Validate the saved conversion state
+/// 3. Scan folders and restore conversion status where valid
+/// 4. Return which folders need re-encoding
+pub fn load_profile_from_path(path: &Path) -> Result<LoadedProfile, String> {
+    use crate::core::scan_music_folder;
+
+    let profile = load_profile(path)?;
+    let validation = validate_conversion_state(&profile);
+
+    println!("Loading profile: {}", profile.profile_name);
+    println!("  Valid folders: {:?}", validation.valid_folders);
+    println!("  Invalid folders: {:?}", validation.invalid_folders);
+    println!("  ISO valid: {}", validation.iso_valid);
+
+    let mut folders = Vec::new();
+    let mut folders_needing_encoding = Vec::new();
+
+    // Load folders
+    for folder_path_str in &profile.folders {
+        let folder_path = PathBuf::from(folder_path_str);
+        if let Ok(mut folder) = scan_music_folder(&folder_path) {
+            // Check if this folder has valid saved state
+            if validation.valid_folders.contains(folder_path_str) {
+                // Restore conversion status from saved state
+                if let Some(ref folder_states) = profile.folder_states {
+                    if let Some(saved) = folder_states.get(folder_path_str) {
+                        folder.conversion_status = FolderConversionStatus::Converted {
+                            output_dir: PathBuf::from(&saved.output_dir),
+                            lossless_bitrate: saved.lossless_bitrate,
+                            output_size: saved.output_size,
+                            completed_at: 0, // Not stored in v1.1
+                        };
+                    }
+                }
+            } else {
+                // Needs encoding - track it for later
+                folders_needing_encoding.push(folder.clone());
+            }
+
+            folders.push(folder);
+        }
+    }
+
+    // Restore ISO state if valid
+    let iso_state = if validation.iso_valid {
+        if let Some(ref iso_path_str) = profile.iso_path {
+            IsoState::new(PathBuf::from(iso_path_str), &folders).ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Update recent profiles
+    let _ = add_to_recent_profiles(&path.to_string_lossy());
+
+    Ok(LoadedProfile {
+        profile,
+        folders,
+        folders_needing_encoding,
+        iso_state,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{FolderConversionStatus, FolderId};
+    use tempfile::TempDir;
+
+    /// Helper to create a test MusicFolder
+    fn test_folder(path: &str) -> MusicFolder {
+        MusicFolder {
+            id: FolderId::from_path(Path::new(path)),
+            path: PathBuf::from(path),
+            file_count: 10,
+            total_size: 50_000_000,
+            total_duration: 2400.0,
+            album_art: None,
+            audio_files: Vec::new(),
+            conversion_status: FolderConversionStatus::default(),
+        }
+    }
+
+    #[test]
+    fn test_create_profile_empty_folders() {
+        let profile = create_profile("Test".to_string(), &[], None, None);
+        assert_eq!(profile.profile_name, "Test");
+        assert!(profile.folders.is_empty());
+    }
+
+    #[test]
+    fn test_create_profile_with_folders() {
+        let folders = vec![test_folder("/test/album")];
+
+        let profile = create_profile("My Album".to_string(), &folders, None, None);
+        assert_eq!(profile.profile_name, "My Album");
+        assert_eq!(profile.folders.len(), 1);
+        assert_eq!(profile.folders[0], "/test/album");
+    }
+
+    #[test]
+    fn test_save_and_load_profile() {
+        let temp_dir = TempDir::new().unwrap();
+        let profile_path = temp_dir.path().join("test.burn");
+
+        let folders = vec![test_folder("/test/album")];
+
+        // Save
+        let result = save_profile_to_path(
+            &profile_path,
+            "Test Profile".to_string(),
+            &folders,
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+        assert!(profile_path.exists());
+    }
+}

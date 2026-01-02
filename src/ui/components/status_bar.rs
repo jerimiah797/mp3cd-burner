@@ -351,3 +351,153 @@ pub fn render_iso_too_large(iso_size_mb: f64, theme: &Theme) -> impl IntoElement
         .text_center()
         .child(size_text)
 }
+
+/// Render the progress box visual structure (without click handlers)
+///
+/// Returns a Stateful<Div> that can be wrapped with click handlers by the caller.
+/// The progress box shows:
+/// - Progress bar fill based on current stage
+/// - Percentage or count text
+/// - Stage text (Converting, Burning, etc.)
+pub fn render_progress_box(state: &StatusBarState, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    let progress = ProgressDisplay::from_state(state);
+    let stage_color = get_stage_color(state, theme);
+
+    div()
+        .id(SharedString::from("progress-display"))
+        .w(gpui::px(150.0))
+        .h(gpui::px(70.0))
+        .rounded_md()
+        .border_1()
+        .border_color(stage_color)
+        .overflow_hidden()
+        .relative()
+        // Background progress fill
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .h_full()
+                .w(gpui::relative(progress.fraction))
+                .bg(stage_color),
+        )
+        // Text overlay
+        .child(
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .relative()
+                .when(!progress.text.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .text_lg()
+                            .text_color(gpui::white())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(progress.text.clone()),
+                    )
+                })
+                .child(
+                    div()
+                        .text_lg()
+                        .text_color(gpui::white())
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(
+                            if state.is_cancelled && state.burn_stage != BurnStage::Cancelled {
+                                "Cancelling..."
+                            } else {
+                                progress.stage_text
+                            },
+                        ),
+                ),
+        )
+}
+
+/// Render the Erase & Burn button visual structure (without click handler)
+///
+/// Returns a Stateful<Div> that can be wrapped with a click handler by the caller.
+pub fn render_erase_burn_button_base(
+    success_color: gpui::Hsla,
+    success_hover: gpui::Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from("erase-burn-btn"))
+        .w(gpui::px(150.0))
+        .h(gpui::px(70.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(success_color)
+        .text_color(gpui::white())
+        .text_lg()
+        .rounded_md()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_center()
+        .cursor_pointer()
+        .hover(move |s| s.bg(success_hover))
+        .child("Erase\n& Burn")
+}
+
+/// Render the Burn/Burn Another button visual structure (without click handler)
+pub fn render_burn_button_base(
+    iso_has_been_burned: bool,
+    success_color: gpui::Hsla,
+    success_hover: gpui::Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    let button_text = if iso_has_been_burned {
+        "Burn\nAnother"
+    } else {
+        "Burn"
+    };
+    let button_id = if iso_has_been_burned {
+        "burn-another-btn"
+    } else {
+        "burn-btn"
+    };
+
+    div()
+        .id(SharedString::from(button_id))
+        .w(gpui::px(150.0))
+        .h(gpui::px(70.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(success_color)
+        .text_color(gpui::white())
+        .text_lg()
+        .rounded_md()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_center()
+        .cursor_pointer()
+        .hover(move |s| s.bg(success_hover))
+        .child(button_text)
+}
+
+/// Render the Convert & Burn button visual structure (without click handler)
+pub fn render_convert_burn_button_base(
+    has_folders: bool,
+    success_color: gpui::Hsla,
+    success_hover: gpui::Hsla,
+    text_muted: gpui::Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from("convert-burn-btn"))
+        .w(gpui::px(150.0))
+        .h(gpui::px(70.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(if has_folders { success_color } else { text_muted })
+        .text_color(gpui::white())
+        .text_lg()
+        .rounded_md()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_center()
+        .when(has_folders, move |el| {
+            el.cursor_pointer().hover(move |s| s.bg(success_hover))
+        })
+        .child("Convert\n& Burn")
+}

@@ -137,7 +137,14 @@ fn main() {
         )
         .unwrap();
 
-        // Suppress unused warning - window_handle is needed for the window to exist
+        // Quit the app when the main window is closed
+        // This is appropriate for a single-window utility app
+        cx.on_window_closed(|cx| {
+            cx.quit();
+        })
+        .detach();
+
+        // Suppress unused warning - window_handle keeps the window alive
         let _ = window_handle;
 
         cx.activate(true);
