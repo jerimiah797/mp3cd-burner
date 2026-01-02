@@ -253,3 +253,127 @@ symphonia = { version = "0.5", features = ["all"] }
 3. **UI not updating:** Make sure to call `cx.notify()` or `async_cx.refresh()`.
 
 4. **Type mismatches in closures:** Check if closure expects `&mut AsyncApp` vs owned `AsyncApp`.
+
+---
+
+## Fixed Width vs Padding
+
+**The Problem:** Using `.px()` (horizontal padding) makes element width variable based on content. Different button labels result in different button widths.
+
+**The Solution:** Use `.w()` for fixed width when you want consistent sizing:
+
+```rust
+// BAD: Width varies with content
+div().px(gpui::px(55.0))  // "Convert" button will be different width than "Erase" button
+
+// GOOD: Fixed width regardless of content
+div().w(gpui::px(150.0))  // All buttons same width
+```
+
+---
+
+## Window Minimum Size
+
+Prevent the window from being resized too small:
+
+```rust
+cx.open_window(
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: Some(size(px(500.), px(300.))),  // Minimum dimensions
+        ..Default::default()
+    },
+    |_window, cx| cx.new(|cx| MyView::new(cx)),
+)
+```
+
+---
+
+## CD Burning with hdiutil
+
+**Erase + Burn in One Operation:**
+
+Use `-erase` flag to erase a CD-RW and burn in a single operation (no eject/reinsert):
+
+```rust
+let mut args = vec!["burn", "-noverifyburn", "-puppetstrings"];
+if erase_first {
+    args.push("-erase");  // Erases CD-RW then burns
+}
+args.push(iso_path.to_str().unwrap());
+
+Command::new("hdiutil").args(&args).spawn()
+```
+
+**Detecting CD Status with drutil:**
+
+```rust
+pub fn check_cd_status() -> Result<CdStatus, String> {
+    let output = Command::new("drutil").args(["status"]).output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if stdout.contains("No Media Inserted") {
+        Ok(CdStatus::NoDisc)
+    } else if stdout.contains("Overwritable: Yes") {
+        // CD-RW - check if blank or has data
+        if stdout.contains("Blank:                 Yes") {
+            Ok(CdStatus::Blank)
+        } else {
+            Ok(CdStatus::ErasableWithData)
+        }
+    } else if stdout.contains("Blank:                 Yes") {
+        Ok(CdStatus::Blank)
+    } else {
+        Ok(CdStatus::NonErasable)
+    }
+}
+```
+
+**Progress Phase Detection:**
+
+hdiutil with `-puppetstrings` outputs progress as `PERCENT:XX`. When erasing+burning:
+- Progress goes 0→100 for erase
+- Then resets and goes 0→100 for burn
+- Sends -1 values during internal operations (closing session, verifying)
+
+Detect phase transitions:
+
+```rust
+let progress_callback = Box::new(move |progress: i32| {
+    let prev = last_progress.load(Ordering::SeqCst);
+
+    // -1 after ≥95% means "Finishing" stage
+    if progress < 0 && prev >= 95 {
+        state.set_stage(BurnStage::Finishing);
+        return;
+    }
+
+    // High→low transition means erase finished, burn starting
+    if prev > 50 && progress < 20 {
+        state.set_stage(BurnStage::Burning);
+    }
+
+    last_progress.store(progress, Ordering::SeqCst);
+    state.set_burn_progress(progress);
+});
+```
+
+---
+
+## Hidden UI Features
+
+For a cleaner UI, make elements clickable without explicit buttons:
+
+```rust
+// Progress display doubles as cancel button (hidden feature)
+div()
+    .id(SharedString::from("progress-display"))
+    .when(is_cancelable, |el| {
+        el.cursor_pointer()  // Subtle hint
+            .on_click(cx.listener(|this, _event, _window, _cx| {
+                this.conversion_state.request_cancel();
+            }))
+    })
+```
+
+The cursor change to pointer provides a subtle hint without adding visual clutter.

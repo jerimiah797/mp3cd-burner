@@ -741,7 +741,7 @@ impl FolderList {
 
                     div()
                         .id(SharedString::from("import-progress"))
-                        .w(gpui::px(140.0))
+                        .w(gpui::px(150.0))
                         .h(gpui::px(70.0))
                         .rounded_md()
                         .border_1()
@@ -771,13 +771,14 @@ impl FolderList {
                                     div()
                                         .text_lg()
                                         .text_color(gpui::white())
-                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .child(format!("{}/{}", import_completed, import_total))
                                 )
                                 .child(
                                     div()
-                                        .text_sm()
+                                        .text_lg()
                                         .text_color(gpui::white())
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .child("Importing...")
                                 )
                         )
@@ -858,16 +859,29 @@ impl FolderList {
                         .gap_2()
                         .items_center()
                         // Progress display (hide when waiting for user to approve erase)
+                        // Clicking the progress display cancels the operation (hidden feature)
                         .when(stage != BurnStage::ErasableDiscDetected, |el| {
+                            // Determine if this stage is cancelable
+                            let is_cancelable = stage != BurnStage::Complete
+                                && stage != BurnStage::Cancelled
+                                && !is_cancelled;
+
                             el.child(
                                 div()
-                                    .w(gpui::px(140.0))
-                                    .h(gpui::px(50.0))
+                                    .id(SharedString::from("progress-display"))
+                                    .w(gpui::px(150.0))
+                                    .h(gpui::px(70.0))
                                     .rounded_md()
                                     .border_1()
                                     .border_color(stage_color)
                                     .overflow_hidden()
                                     .relative()
+                                    .when(is_cancelable, |el| {
+                                        el.cursor_pointer()
+                                            .on_click(cx.listener(|this, _event, _window, _cx| {
+                                                this.conversion_state.request_cancel();
+                                            }))
+                                    })
                                     // Background progress fill
                                     .child(
                                         div()
@@ -892,14 +906,15 @@ impl FolderList {
                                                     div()
                                                         .text_lg()
                                                         .text_color(gpui::white())
-                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
                                                         .child(progress_text.clone())
                                                 )
                                             })
                                             .child(
                                                 div()
-                                                    .text_sm()
+                                                    .text_lg()
                                                     .text_color(gpui::white())
+                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
                                                     .child(if is_cancelled && stage != BurnStage::Cancelled {
                                                         "Cancelling..."
                                                     } else {
@@ -914,53 +929,32 @@ impl FolderList {
                             el.child(
                                 div()
                                     .id(SharedString::from("erase-burn-btn"))
-                                    .px_4()
-                                    .py_1()
+                                    .w(gpui::px(150.0))
+                                    .h(gpui::px(70.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .bg(success_color)
                                     .text_color(gpui::white())
-                                    .text_sm()
+                                    .text_lg()
                                     .rounded_md()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_center()
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(gpui::rgb(0x16a34a))) // darker green on hover
+                                    .hover(|s| s.bg(success_hover))
                                     .on_click(cx.listener(|this, _event, _window, _cx| {
                                         println!("Erase & Burn clicked");
                                         this.conversion_state.erase_approved.store(true, Ordering::SeqCst);
                                     }))
-                                    .child("Erase & Burn")
-                            )
-                        })
-                        // Cancel button (only show during active stages)
-                        .when(stage != BurnStage::Complete && stage != BurnStage::Cancelled, |el| {
-                            el.child(
-                                div()
-                                    .id(SharedString::from("cancel-btn"))
-                                    .px_4()
-                                    .py_1()
-                                    .bg(if is_cancelled { text_muted } else { cancel_color })
-                                    .text_color(gpui::white())
-                                    .text_sm()
-                                    .rounded_md()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_center()
-                                    .when(!is_cancelled, |el| {
-                                        el.cursor_pointer()
-                                            .hover(|s| s.bg(gpui::rgb(0xdc2626))) // darker red on hover
-                                            .on_click(cx.listener(|this, _event, _window, _cx| {
-                                                println!("Cancel button clicked");
-                                                this.conversion_state.request_cancel();
-                                            }))
-                                    })
-                                    .child(if is_cancelled { "Cancelling" } else { "Cancel" })
+                                    .child("Erase\n& Burn")
                             )
                         })
                 } else {
                     // Normal Convert & Burn button
                     div()
                         .id(SharedString::from("convert-burn-btn"))
-                        .px(gpui::px(55.0))  // ~70% wider than original
-                        .h(gpui::px(70.0))   // Match status text block height
+                        .w(gpui::px(150.0))
+                        .h(gpui::px(70.0))
                         .flex()
                         .items_center()
                         .justify_center()
