@@ -259,6 +259,10 @@ pub struct FolderList {
     iso_generation_attempted: bool,
     /// Whether the current ISO has been burned at least once (for "Burn Another" vs "Burn")
     iso_has_been_burned: bool,
+    /// Timestamp of last folder list change (for debounced bitrate recalculation)
+    last_folder_change: Option<std::time::Instant>,
+    /// Last calculated bitrate (to detect changes that require re-encoding)
+    last_calculated_bitrate: Option<u32>,
 }
 
 impl FolderList {
@@ -277,6 +281,8 @@ impl FolderList {
             iso_state: None,
             iso_generation_attempted: false,
             iso_has_been_burned: false,
+            last_folder_change: None,
+            last_calculated_bitrate: None,
         }
     }
 
@@ -297,6 +303,8 @@ impl FolderList {
             iso_state: None,
             iso_generation_attempted: false,
             iso_has_been_burned: false,
+            last_folder_change: None,
+            last_calculated_bitrate: None,
         }
     }
 
@@ -384,12 +392,12 @@ impl FolderList {
             let guard = state.lock().unwrap();
 
             // Check if completed
-            if let Some(status) = guard.completed.get(folder_id) {
+            if let Some((status, _folder)) = guard.completed.get(folder_id) {
                 return status.clone();
             }
 
             // Check if active
-            if let Some((active_id, _)) = &guard.active {
+            if let Some((active_id, _, _)) = &guard.active {
                 if active_id == folder_id {
                     return FolderConversionStatus::Converting {
                         files_completed: 0,
@@ -539,6 +547,9 @@ impl FolderList {
                 EncoderEvent::BitrateRecalculated { new_bitrate, reencode_needed } => {
                     println!("Bitrate recalculated to {} kbps, {} folders need re-encoding",
                         new_bitrate, reencode_needed.len());
+                    // Invalidate ISO state - output files are being regenerated
+                    self.iso_state = None;
+                    self.iso_generation_attempted = false;
                 }
             }
         }
@@ -776,6 +787,8 @@ impl FolderList {
                 self.iso_state = None;
                 self.iso_generation_attempted = false;
                 self.iso_has_been_burned = false;
+                // Record change time for debounced bitrate recalculation
+                self.last_folder_change = Some(std::time::Instant::now());
             }
         }
     }
@@ -790,6 +803,8 @@ impl FolderList {
             self.iso_state = None;
             self.iso_generation_attempted = false;
             self.iso_has_been_burned = false;
+            // Record change time for debounced bitrate recalculation
+            self.last_folder_change = Some(std::time::Instant::now());
         }
     }
 
@@ -1100,6 +1115,62 @@ impl FolderList {
         self.calculated_bitrate_estimate()
             .map(|e| e.target_bitrate)
             .unwrap_or(320)
+    }
+
+    /// Check if debounce period has passed and trigger bitrate recalculation
+    ///
+    /// This is called from the encoder polling loop. When folder list changes:
+    /// 1. Wait 500ms (debounce) to let rapid additions settle
+    /// 2. Calculate new target bitrate
+    /// 3. If bitrate changed, send recalculate command to encoder
+    fn check_debounced_bitrate_recalculation(&mut self) {
+        const DEBOUNCE_MS: u64 = 500;
+
+        // Check if we have a pending change that's old enough
+        let should_recalculate = match self.last_folder_change {
+            Some(change_time) => {
+                change_time.elapsed() >= std::time::Duration::from_millis(DEBOUNCE_MS)
+            }
+            None => false,
+        };
+
+        if !should_recalculate {
+            return;
+        }
+
+        // Clear the pending change
+        self.last_folder_change = None;
+
+        // Skip if no folders
+        if self.folders.is_empty() {
+            self.last_calculated_bitrate = None;
+            return;
+        }
+
+        // Calculate new bitrate
+        let new_bitrate = self.calculated_bitrate();
+
+        // Check if bitrate changed
+        let bitrate_changed = match self.last_calculated_bitrate {
+            Some(old) => old != new_bitrate,
+            None => true, // First calculation
+        };
+
+        // Update stored bitrate
+        self.last_calculated_bitrate = Some(new_bitrate);
+
+        if !bitrate_changed {
+            return;
+        }
+
+        println!("Bitrate recalculated: {:?} -> {} kbps",
+            self.last_calculated_bitrate.map(|b| format!("{}", b)).unwrap_or_else(|| "None".to_string()),
+            new_bitrate);
+
+        // Send recalculation command to background encoder
+        if let Some(ref encoder) = self.background_encoder {
+            encoder.recalculate_bitrate(new_bitrate);
+        }
     }
 
     /// Render the empty state drop zone
@@ -2405,6 +2476,9 @@ impl FolderList {
                             // Poll any encoder events
                             let had_events = this.poll_encoder_events();
 
+                            // Check for debounced bitrate recalculation
+                            this.check_debounced_bitrate_recalculation();
+
                             // Check if we should auto-generate ISO
                             if this.maybe_generate_iso(cx) {
                                 // ISO generation was triggered
@@ -2458,6 +2532,8 @@ impl FolderList {
                             this.iso_state = None;
                             this.iso_generation_attempted = false;
                             this.iso_has_been_burned = false;
+                            // Record change time for debounced bitrate recalculation
+                            this.last_folder_change = Some(std::time::Instant::now());
                         });
                     }
 
@@ -2485,6 +2561,8 @@ impl FolderList {
                         this.iso_state = None;
                         this.iso_generation_attempted = false;
                         this.iso_has_been_burned = false;
+                        // Record change time for debounced bitrate recalculation
+                        this.last_folder_change = Some(std::time::Instant::now());
                     });
                 }
                 let _ = async_cx.refresh();

@@ -102,14 +102,16 @@ struct FolderTask {
 pub struct BackgroundEncoderState {
     /// Queue of folders waiting to be encoded
     pub queue: VecDeque<(FolderId, MusicFolder)>,
-    /// Currently active folder (if any)
-    pub active: Option<(FolderId, Arc<AtomicBool>)>,
-    /// Completed folders with their status
-    pub completed: HashMap<FolderId, FolderConversionStatus>,
+    /// Currently active folder: (id, cancel_token, has_lossless_files)
+    pub active: Option<(FolderId, Arc<AtomicBool>, bool)>,
+    /// Completed folders with their status and original folder data (for re-encoding)
+    pub completed: HashMap<FolderId, (FolderConversionStatus, MusicFolder)>,
     /// Current lossless bitrate target
     pub lossless_bitrate: u32,
     /// Whether the encoder is running
     pub is_running: bool,
+    /// Folder ID that was cancelled due to bitrate change (needs re-queuing)
+    pub pending_bitrate_requeue: Option<FolderId>,
 }
 
 impl BackgroundEncoderState {
@@ -120,6 +122,7 @@ impl BackgroundEncoderState {
             completed: HashMap::new(),
             lossless_bitrate: 320, // Default to max quality
             is_running: false,
+            pending_bitrate_requeue: None,
         }
     }
 
@@ -131,7 +134,7 @@ impl BackgroundEncoderState {
     /// Check if a folder is queued or active
     pub fn is_pending(&self, id: &FolderId) -> bool {
         self.queue.iter().any(|(fid, _)| fid == id)
-            || self.active.as_ref().map(|(fid, _)| fid == id).unwrap_or(false)
+            || self.active.as_ref().map(|(fid, _, _)| fid == id).unwrap_or(false)
     }
 
     /// Check if a folder is completed
@@ -288,7 +291,7 @@ async fn run_encoder_loop(
                     // Remove from queue if present
                     s.queue.retain(|(fid, _)| fid != &id);
                     // Cancel if active
-                    if let Some((active_id, cancel_token)) = &s.active {
+                    if let Some((active_id, cancel_token, _)) = &s.active {
                         if active_id == &id {
                             cancel_token.store(true, Ordering::SeqCst);
                         }
@@ -305,14 +308,39 @@ async fn run_encoder_loop(
                     println!("Folders reordered - ISO will be regenerated");
                 }
                 EncoderCommand::RecalculateBitrate { target_bitrate } => {
-                    let mut s = state.lock().unwrap();
-                    let old_bitrate = s.lossless_bitrate;
-                    s.lossless_bitrate = target_bitrate;
+                    // Collect re-encoding info with the lock held
+                    let (old_bitrate, reencode_needed, folders_to_requeue) = {
+                        let mut s = state.lock().unwrap();
+                        let old_bitrate = s.lossless_bitrate;
+                        s.lossless_bitrate = target_bitrate;
 
-                    if old_bitrate != target_bitrate {
-                        // Find folders that need re-encoding
+                        if old_bitrate == target_bitrate {
+                            continue; // Skip all the work below
+                        }
+
+                        println!(
+                            "Bitrate changed: {} -> {} kbps",
+                            old_bitrate, target_bitrate
+                        );
+
+                        // Cancel in-progress lossless encoding
+                        if let Some((active_id, cancel_token, has_lossless)) = &s.active {
+                            if *has_lossless {
+                                println!(
+                                    "Cancelling in-progress lossless encoding for {:?}",
+                                    active_id
+                                );
+                                cancel_token.store(true, Ordering::SeqCst);
+                                // Mark for re-queue when cancellation is detected
+                                s.pending_bitrate_requeue = Some(active_id.clone());
+                            }
+                        }
+
+                        // Find completed folders that need re-encoding
                         let mut reencode_needed = Vec::new();
-                        for (id, status) in &s.completed {
+                        let mut folders_to_requeue = Vec::new();
+
+                        for (id, (status, folder)) in &s.completed {
                             if let FolderConversionStatus::Converted {
                                 lossless_bitrate: Some(br),
                                 ..
@@ -320,26 +348,67 @@ async fn run_encoder_loop(
                             {
                                 if *br != target_bitrate {
                                     reencode_needed.push(id.clone());
+                                    folders_to_requeue.push((id.clone(), folder.clone()));
                                 }
                             }
                         }
 
-                        if !reencode_needed.is_empty() {
-                            let _ = event_tx.send(EncoderEvent::BitrateRecalculated {
-                                new_bitrate: target_bitrate,
-                                reencode_needed,
-                            });
+                        // Remove from completed - they'll be re-queued
+                        for id in &reencode_needed {
+                            s.completed.remove(id);
+                        }
+
+                        (old_bitrate, reencode_needed, folders_to_requeue)
+                    };
+
+                    // Delete old output directories (outside lock)
+                    for id in &reencode_needed {
+                        let _ = output_manager.delete_folder_output(id);
+                    }
+
+                    // Re-queue folders for re-encoding
+                    if !folders_to_requeue.is_empty() {
+                        let mut s = state.lock().unwrap();
+                        for (id, folder) in folders_to_requeue {
+                            println!("Re-queuing folder for re-encoding: {}", folder.path.display());
+                            s.queue.push_back((id, folder));
                         }
                     }
+
+                    // Notify UI about re-encoding
+                    if !reencode_needed.is_empty() {
+                        println!(
+                            "Folders queued for re-encoding: {}",
+                            reencode_needed.len()
+                        );
+                        let _ = event_tx.send(EncoderEvent::BitrateRecalculated {
+                            new_bitrate: target_bitrate,
+                            reencode_needed,
+                        });
+                    }
+
+                    let _ = old_bitrate; // suppress unused warning
                 }
             }
         }
 
         // Check if there's work to do
+        // Priority: process lossy-only folders first, then folders with lossless files
+        // This ensures bitrate is stable before encoding lossless files
         let next_folder = {
             let mut s = state.lock().unwrap();
             if s.active.is_none() {
-                s.queue.pop_front()
+                // Look for a lossy-only folder first (no lossless files)
+                let lossy_only_idx = s.queue.iter()
+                    .position(|(_, folder)| !folder.has_lossless_files());
+
+                if let Some(idx) = lossy_only_idx {
+                    // Found a lossy-only folder - remove it from queue
+                    s.queue.remove(idx)
+                } else {
+                    // No lossy-only folders, take from front (has lossless)
+                    s.queue.pop_front()
+                }
             } else {
                 None
             }
@@ -348,9 +417,12 @@ async fn run_encoder_loop(
         if let Some((id, folder)) = next_folder {
             // Start encoding this folder
             let cancel_token = Arc::new(AtomicBool::new(false));
+            let folder_has_lossless = folder.has_lossless_files();
+            // Clone folder for storing in completed map (needed for re-encoding later)
+            let folder_for_completed = folder.clone();
             {
                 let mut s = state.lock().unwrap();
-                s.active = Some((id.clone(), cancel_token.clone()));
+                s.active = Some((id.clone(), cancel_token.clone(), folder_has_lossless));
             }
 
             let files_total = folder.audio_files.len();
@@ -446,8 +518,23 @@ async fn run_encoder_loop(
                 s.active = None;
 
                 if was_cancelled || cancel_token.load(Ordering::SeqCst) {
-                    // Was cancelled - don't mark as completed
-                    let _ = event_tx.send(EncoderEvent::FolderCancelled(id.clone()));
+                    // Was cancelled - check if this was due to bitrate change
+                    let should_requeue = s.pending_bitrate_requeue.as_ref() == Some(&id);
+                    if should_requeue {
+                        s.pending_bitrate_requeue = None;
+                        // Re-queue for re-encoding at new bitrate
+                        println!(
+                            "Re-queuing cancelled lossless folder for re-encoding: {}",
+                            folder_for_completed.path.display()
+                        );
+                        s.queue.push_back((id.clone(), folder_for_completed.clone()));
+                        // Delete partial output
+                        drop(s); // Release lock before file operations
+                        let _ = output_manager.delete_folder_output(&id);
+                    } else {
+                        // Regular cancellation (folder removed by user)
+                        let _ = event_tx.send(EncoderEvent::FolderCancelled(id.clone()));
+                    }
                 } else if completed == files_total {
                     // Success!
                     let output_size = output_manager
@@ -464,7 +551,7 @@ async fn run_encoder_loop(
                             .as_secs(),
                     };
 
-                    s.completed.insert(id.clone(), status);
+                    s.completed.insert(id.clone(), (status, folder_for_completed));
 
                     let _ = event_tx.send(EncoderEvent::FolderCompleted {
                         id: id.clone(),
@@ -556,7 +643,7 @@ mod tests {
 
         // Set active
         let folder_id2 = FolderId("test2".to_string());
-        state.active = Some((folder_id2, Arc::new(AtomicBool::new(false))));
+        state.active = Some((folder_id2, Arc::new(AtomicBool::new(false)), false));
         assert_eq!(state.pending_count(), 2);
     }
 
@@ -594,7 +681,7 @@ mod tests {
         assert!(!state.is_pending(&id2));
 
         // Set active
-        state.active = Some((id2.clone(), Arc::new(AtomicBool::new(false))));
+        state.active = Some((id2.clone(), Arc::new(AtomicBool::new(false)), false));
         assert!(state.is_pending(&id2));
         assert!(!state.is_pending(&id3));
     }
@@ -608,12 +695,15 @@ mod tests {
 
         state.completed.insert(
             id.clone(),
-            FolderConversionStatus::Converted {
-                output_dir: PathBuf::from("/tmp/test"),
-                lossless_bitrate: Some(320),
-                output_size: 1000,
-                completed_at: 0,
-            },
+            (
+                FolderConversionStatus::Converted {
+                    output_dir: PathBuf::from("/tmp/test"),
+                    lossless_bitrate: Some(320),
+                    output_size: 1000,
+                    completed_at: 0,
+                },
+                create_test_folder("completed_folder"),
+            ),
         );
 
         assert!(state.is_completed(&id));

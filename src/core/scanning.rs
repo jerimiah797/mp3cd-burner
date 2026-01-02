@@ -27,6 +27,13 @@ pub struct MusicFolder {
     pub conversion_status: FolderConversionStatus,
 }
 
+impl MusicFolder {
+    /// Returns true if this folder contains any lossless audio files
+    pub fn has_lossless_files(&self) -> bool {
+        self.audio_files.iter().any(|f| !f.is_lossy)
+    }
+}
+
 /// Represents metadata about an audio file
 #[derive(Debug, Clone)]
 pub struct AudioFileInfo {
