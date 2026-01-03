@@ -19,4 +19,4 @@ pub use scanning::{
     find_album_folders, format_duration, format_size, scan_music_folder,
     AudioFileInfo, MusicFolder,
 };
-pub use state::{AppSettings, BurnStage, ConversionState, DisplaySettings, ImportState};
+pub use state::{AppSettings, BurnStage, ConversionState, DisplaySettings, ImportState, WindowState};

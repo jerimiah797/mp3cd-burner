@@ -98,13 +98,13 @@ src/
 - [x] Open Output Folder action
 - [x] Display Settings modal (View menu)
 - [ ] No Lossy Conversions toggle
-- [ ] Embed Album Art toggle
+- [x] Embed Album Art toggle
 
 ### Phase 8: Profile System ✅ DONE
 - [x] Save/Load profiles with file dialogs
 - [x] New profile clears folder list
 - [ ] Recent profiles in menu
-- [ ] Unsaved changes detection
+- [x] Unsaved changes detection (New Profile + Open Profile dialogs)
 
 ### Phase 9: Polish ✅ MOSTLY DONE
 - [x] Album art display in folder cards
@@ -114,6 +114,7 @@ src/
 - [x] Streamlined UI (hidden cancel, consistent button sizing)
 - [x] Album metadata display (album/artist/year from tags, not folder name)
 - [ ] Window state persistence
+- [ ] Settings persistence (simulate burn, embed album art)
 
 ## What Was Directly Copied
 
@@ -143,10 +144,11 @@ These modules had **no Tauri dependencies** and were copied as-is:
 
 ### Remaining Items (Nice to Have)
 9. **Recent profiles menu** - Show recently opened profiles in File menu
-10. **Unsaved changes detection** - Prompt to save before closing/new
+10. ~~**Unsaved changes detection**~~ ✅ DONE - Prompt to save before closing/new
 11. **No Lossy Conversions toggle** - Options menu toggle (prevent transcoding lossy files)
-12. **Embed Album Art toggle** - Options menu toggle (include art in output MP3s)
+12. ~~**Embed Album Art toggle**~~ ✅ DONE - Options menu toggle (include art in output MP3s)
 13. **Window state persistence** - Remember window position/size between launches
+14. **Settings persistence** - Remember simulate burn, embed album art between launches
 
 ## New Features (Beyond Original Tauri App)
 

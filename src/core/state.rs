@@ -18,17 +18,186 @@ use std::sync::{Arc, Mutex};
 use super::MusicFolder;
 
 /// Application-wide settings
-#[derive(Debug, Clone, Default)]
+///
+/// Persisted to ~/Library/Application Support/MP3 CD Burner/app_settings.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Whether to simulate burning (don't actually burn)
+    #[serde(default)]
     pub simulate_burn: bool,
     /// Whether to avoid lossy-to-lossy conversions
+    #[serde(default)]
     pub no_lossy_conversions: bool,
     /// Whether to embed album art in MP3s
+    #[serde(default)]
     pub embed_album_art: bool,
 }
 
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            simulate_burn: false,
+            no_lossy_conversions: false,
+            embed_album_art: false,
+        }
+    }
+}
+
 impl Global for AppSettings {}
+
+impl AppSettings {
+    const SETTINGS_FILE: &'static str = "app_settings.json";
+
+    /// Get the app data directory (~/Library/Application Support/MP3 CD Burner/)
+    fn get_app_data_dir() -> Result<PathBuf, String> {
+        let data_dir = dirs::data_dir()
+            .ok_or_else(|| "Could not determine data directory".to_string())?;
+
+        let app_dir = data_dir.join("MP3 CD Burner");
+
+        // Create directory if it doesn't exist
+        if !app_dir.exists() {
+            std::fs::create_dir_all(&app_dir)
+                .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+        }
+
+        Ok(app_dir)
+    }
+
+    /// Load app settings from disk, or return defaults if not found
+    pub fn load() -> Self {
+        match Self::try_load() {
+            Ok(settings) => {
+                println!("Loaded app settings from disk");
+                settings
+            }
+            Err(e) => {
+                println!("Using default app settings: {}", e);
+                Self::default()
+            }
+        }
+    }
+
+    fn try_load() -> Result<Self, String> {
+        let app_dir = Self::get_app_data_dir()?;
+        let settings_path = app_dir.join(Self::SETTINGS_FILE);
+
+        if !settings_path.exists() {
+            return Err("Settings file not found".to_string());
+        }
+
+        let contents = std::fs::read_to_string(&settings_path)
+            .map_err(|e| format!("Failed to read settings: {}", e))?;
+
+        serde_json::from_str(&contents)
+            .map_err(|e| format!("Failed to parse settings: {}", e))
+    }
+
+    /// Save app settings to disk
+    pub fn save(&self) -> Result<(), String> {
+        let app_dir = Self::get_app_data_dir()?;
+        let settings_path = app_dir.join(Self::SETTINGS_FILE);
+
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+
+        std::fs::write(&settings_path, json)
+            .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+        println!("Saved app settings to {:?}", settings_path);
+        Ok(())
+    }
+}
+
+/// Window state for position/size persistence
+///
+/// Persisted to ~/Library/Application Support/MP3 CD Burner/window_state.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowState {
+    /// Window X position
+    pub x: f64,
+    /// Window Y position
+    pub y: f64,
+    /// Window width
+    pub width: f64,
+    /// Window height
+    pub height: f64,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            x: 100.0,
+            y: 100.0,
+            width: 600.0,
+            height: 500.0,
+        }
+    }
+}
+
+impl WindowState {
+    const STATE_FILE: &'static str = "window_state.json";
+
+    /// Get the app data directory (~/Library/Application Support/MP3 CD Burner/)
+    fn get_app_data_dir() -> Result<PathBuf, String> {
+        let data_dir = dirs::data_dir()
+            .ok_or_else(|| "Could not determine data directory".to_string())?;
+
+        let app_dir = data_dir.join("MP3 CD Burner");
+
+        // Create directory if it doesn't exist
+        if !app_dir.exists() {
+            std::fs::create_dir_all(&app_dir)
+                .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+        }
+
+        Ok(app_dir)
+    }
+
+    /// Load window state from disk, or return defaults if not found
+    pub fn load() -> Self {
+        match Self::try_load() {
+            Ok(state) => {
+                println!("Loaded window state from disk: {}x{} at ({}, {})",
+                    state.width, state.height, state.x, state.y);
+                state
+            }
+            Err(e) => {
+                println!("Using default window state: {}", e);
+                Self::default()
+            }
+        }
+    }
+
+    fn try_load() -> Result<Self, String> {
+        let app_dir = Self::get_app_data_dir()?;
+        let state_path = app_dir.join(Self::STATE_FILE);
+
+        if !state_path.exists() {
+            return Err("State file not found".to_string());
+        }
+
+        let contents = std::fs::read_to_string(&state_path)
+            .map_err(|e| format!("Failed to read state: {}", e))?;
+
+        serde_json::from_str(&contents)
+            .map_err(|e| format!("Failed to parse state: {}", e))
+    }
+
+    /// Save window state to disk
+    pub fn save(&self) -> Result<(), String> {
+        let app_dir = Self::get_app_data_dir()?;
+        let state_path = app_dir.join(Self::STATE_FILE);
+
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize state: {}", e))?;
+
+        std::fs::write(&state_path, json)
+            .map_err(|e| format!("Failed to write state: {}", e))?;
+
+        Ok(())
+    }
+}
 
 /// Display settings for folder list items
 ///

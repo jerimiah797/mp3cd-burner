@@ -21,7 +21,7 @@ use crate::burning::{determine_iso_action, IsoAction, IsoState};
 use crate::conversion::{calculate_multipass_bitrate, BackgroundEncoderHandle, OutputManager};
 use crate::core::{
     find_album_folders, scan_music_folder,
-    AppSettings, BurnStage, ConversionState, DisplaySettings, FolderConversionStatus, FolderId, ImportState, MusicFolder,
+    AppSettings, BurnStage, ConversionState, DisplaySettings, FolderConversionStatus, FolderId, ImportState, MusicFolder, WindowState,
 };
 use crate::profiles::ProfileLoadSetup;
 use crate::ui::Theme;
@@ -40,6 +40,8 @@ pub struct FolderList {
     drop_target_index: Option<usize>,
     /// Whether we've subscribed to appearance changes
     appearance_subscription_set: bool,
+    /// Whether we've subscribed to bounds changes (for saving window state)
+    bounds_subscription_set: bool,
     /// Handle for scroll state
     scroll_handle: ScrollHandle,
     /// Conversion progress state
@@ -81,6 +83,7 @@ impl FolderList {
             folders: Vec::new(),
             drop_target_index: None,
             appearance_subscription_set: false,
+            bounds_subscription_set: false,
             scroll_handle: ScrollHandle::new(),
             conversion_state: ConversionState::new(),
             import_state: ImportState::new(),
@@ -107,6 +110,7 @@ impl FolderList {
             folders: Vec::new(),
             drop_target_index: None,
             appearance_subscription_set: false,
+            bounds_subscription_set: false,
             scroll_handle: ScrollHandle::new(),
             conversion_state: ConversionState::new(),
             import_state: ImportState::new(),
@@ -1140,6 +1144,24 @@ impl Render for FolderList {
             self.appearance_subscription_set = true;
             cx.observe_window_appearance(window, |_this, _window, cx| {
                 cx.notify();
+            })
+            .detach();
+        }
+
+        // Subscribe to bounds changes to save window state (once)
+        if !self.bounds_subscription_set {
+            self.bounds_subscription_set = true;
+            cx.observe_window_bounds(window, |_this, window, _cx| {
+                let bounds = window.bounds();
+                let state = WindowState {
+                    x: bounds.origin.x.into(),
+                    y: bounds.origin.y.into(),
+                    width: bounds.size.width.into(),
+                    height: bounds.size.height.into(),
+                };
+                if let Err(e) = state.save() {
+                    eprintln!("Failed to save window state: {}", e);
+                }
             })
             .detach();
         }

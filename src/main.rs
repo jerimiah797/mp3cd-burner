@@ -12,11 +12,11 @@ mod profiles;
 mod ui;
 
 use gpui::{
-    prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
+    prelude::*, point, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
     WindowBounds, WindowHandle, WindowOptions,
 };
 use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, ToggleEmbedAlbumArt, OpenDisplaySettings, NewProfile, OpenProfile, SaveProfile};
-use core::{AppSettings, DisplaySettings};
+use core::{AppSettings, DisplaySettings, WindowState};
 use ui::components::{AboutBox, DisplaySettingsModal, FolderList};
 
 /// Build the application menus with current settings state
@@ -69,10 +69,12 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        // Initialize global app settings
-        cx.set_global(AppSettings::default());
+        // Load app settings from disk (or use defaults)
+        cx.set_global(AppSettings::load());
         // Load display settings from disk (or use defaults)
         cx.set_global(DisplaySettings::load());
+        // Load window state from disk (for position/size)
+        let window_state = WindowState::load();
 
         // Register action handlers
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -98,6 +100,11 @@ fn main() {
             // Rebuild menus to show updated checkmark
             let menus = build_menus(settings);
             cx.set_menus(menus);
+
+            // Save settings to disk
+            if let Err(e) = cx.global::<AppSettings>().save() {
+                eprintln!("Failed to save settings: {}", e);
+            }
         });
         // Note: ToggleEmbedAlbumArt handler is registered after window creation
         // so it can access the window_handle to notify the encoder.
@@ -121,8 +128,11 @@ fn main() {
         let settings = cx.global::<AppSettings>();
         cx.set_menus(build_menus(settings));
 
-        // Open the main window
-        let bounds = Bounds::centered(None, size(px(500.), px(600.)), cx);
+        // Open the main window with saved position/size
+        let bounds = Bounds::new(
+            point(px(window_state.x as f32), px(window_state.y as f32)),
+            size(px(window_state.width as f32), px(window_state.height as f32)),
+        );
 
         // Use a shared cell to pass the encoder handle out of the window creation closure
         let encoder_handle_cell: std::sync::Arc<std::sync::Mutex<Option<conversion::BackgroundEncoderHandle>>> =
@@ -186,10 +196,15 @@ fn main() {
             } else {
                 println!("[main.rs] No encoder global available");
             }
+
+            // Save settings to disk
+            if let Err(e) = cx.global::<AppSettings>().save() {
+                eprintln!("Failed to save settings: {}", e);
+            }
         });
 
         // Quit the app when the main window is closed
-        // This is appropriate for a single-window utility app
+        // Window state is saved via observe_window_bounds in FolderList
         cx.on_window_closed(|cx| {
             cx.quit();
         })
