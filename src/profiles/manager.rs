@@ -18,6 +18,7 @@ use crate::core::{FolderConversionStatus, MusicFolder};
 #[derive(Debug, Clone)]
 pub struct ProfileLoadSetup {
     /// Profile name for display
+    #[allow(dead_code)]
     pub profile_name: String,
     /// Ordered list of folder paths to scan
     pub folder_paths: Vec<PathBuf>,

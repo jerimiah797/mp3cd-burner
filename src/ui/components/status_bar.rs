@@ -58,9 +58,9 @@ impl StatusBarState {
         }
     }
 
-    /// Get size in MB
+    /// Get size in MB (decimal, to match Finder and CD labels)
     pub fn size_mb(&self) -> f64 {
-        self.total_size as f64 / (1024.0 * 1024.0)
+        self.total_size as f64 / 1_000_000.0
     }
 }
 
@@ -116,7 +116,7 @@ pub fn render_stats_panel(state: &StatusBarState, theme: &Theme) -> impl IntoEle
                     div()
                         .flex()
                         .gap_1()
-                        .child("Size:")
+                        .child("Source:")
                         .child(
                             div()
                                 .text_color(text_color)

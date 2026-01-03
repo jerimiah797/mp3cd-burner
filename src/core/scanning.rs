@@ -109,14 +109,6 @@ impl MusicFolder {
             format!("{}-{}k", min, max)
         }
     }
-
-    /// Returns the final bitrate after conversion, if available
-    pub fn final_bitrate(&self) -> Option<u32> {
-        match &self.conversion_status {
-            FolderConversionStatus::Converted { lossless_bitrate, .. } => *lossless_bitrate,
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]

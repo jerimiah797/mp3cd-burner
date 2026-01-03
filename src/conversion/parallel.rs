@@ -1,10 +1,8 @@
 //! Parallel audio conversion using tokio
 //!
 //! Converts multiple audio files concurrently using a worker pool
-//! sized based on CPU cores. Supports both single-folder and multi-folder
-//! parallel processing.
+//! sized based on CPU cores.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -14,7 +12,6 @@ use tokio::sync::Semaphore;
 
 use super::ConversionResult;
 use crate::audio::EncodingStrategy;
-use crate::core::FolderId;
 
 /// Calculate the optimal number of parallel workers based on CPU cores
 fn calculate_worker_count() -> usize {
@@ -66,8 +63,6 @@ pub struct ConversionJob {
     pub input_path: PathBuf,
     pub output_path: PathBuf,
     pub strategy: EncodingStrategy,
-    /// Optional folder ID for multi-folder parallel processing
-    pub folder_id: Option<FolderId>,
     /// Optional album art path to embed during conversion
     pub album_art_path: Option<PathBuf>,
 }
@@ -390,200 +385,6 @@ where
     (progress.completed_count(), progress.failed_count(), was_cancelled)
 }
 
-/// Progress tracking for multi-folder conversion
-#[derive(Debug)]
-pub struct MultiFolderProgress {
-    /// Per-folder progress: (completed, total)
-    pub folder_progress: HashMap<FolderId, (AtomicUsize, usize)>,
-}
-
-impl MultiFolderProgress {
-    pub fn new(folder_totals: HashMap<FolderId, usize>) -> Self {
-        let folder_progress = folder_totals
-            .into_iter()
-            .map(|(id, total)| (id, (AtomicUsize::new(0), total)))
-            .collect();
-        Self { folder_progress }
-    }
-
-    pub fn increment_completed(&self, folder_id: &FolderId) -> Option<(usize, usize)> {
-        self.folder_progress.get(folder_id).map(|(completed, total)| {
-            let new_count = completed.fetch_add(1, Ordering::SeqCst) + 1;
-            (new_count, *total)
-        })
-    }
-
-    pub fn get_progress(&self, folder_id: &FolderId) -> Option<(usize, usize)> {
-        self.folder_progress.get(folder_id).map(|(completed, total)| {
-            (completed.load(Ordering::SeqCst), *total)
-        })
-    }
-
-    pub fn is_folder_complete(&self, folder_id: &FolderId) -> bool {
-        self.folder_progress
-            .get(folder_id)
-            .map(|(completed, total)| completed.load(Ordering::SeqCst) >= *total)
-            .unwrap_or(false)
-    }
-}
-
-/// Result of multi-folder conversion for a single folder
-#[derive(Debug, Clone)]
-pub struct FolderConversionResult {
-    pub completed: usize,
-    pub failed: usize,
-    pub was_cancelled: bool,
-}
-
-/// Convert files from multiple folders in parallel with per-folder callbacks
-///
-/// Jobs are processed using a shared thread pool. As each file completes,
-/// the appropriate per-folder callback is invoked. When all files for a folder
-/// are done, the folder completion callback is invoked.
-///
-/// Returns a map of folder_id -> (completed, failed, was_cancelled)
-pub async fn convert_files_multi_folder<FProgress, FComplete>(
-    ffmpeg_path: PathBuf,
-    jobs: Vec<ConversionJob>,
-    cancel_tokens: HashMap<FolderId, Arc<AtomicBool>>,
-    on_folder_progress: FProgress,
-    on_folder_complete: FComplete,
-) -> HashMap<FolderId, FolderConversionResult>
-where
-    FProgress: Fn(&FolderId, usize, usize) + Send + Sync + 'static,
-    FComplete: Fn(&FolderId, usize, usize) + Send + Sync + 'static,
-{
-    let worker_count = calculate_worker_count();
-    let semaphore = Arc::new(Semaphore::new(worker_count));
-
-    // Build per-folder totals
-    let mut folder_totals: HashMap<FolderId, usize> = HashMap::new();
-    let mut folder_failed: HashMap<FolderId, AtomicUsize> = HashMap::new();
-    for job in &jobs {
-        if let Some(ref folder_id) = job.folder_id {
-            *folder_totals.entry(folder_id.clone()).or_insert(0) += 1;
-            folder_failed.entry(folder_id.clone()).or_insert_with(|| AtomicUsize::new(0));
-        }
-    }
-
-    let progress = Arc::new(MultiFolderProgress::new(folder_totals.clone()));
-    let folder_failed = Arc::new(folder_failed);
-    let on_progress = Arc::new(on_folder_progress);
-    let on_complete = Arc::new(on_folder_complete);
-    let cancel_tokens = Arc::new(cancel_tokens);
-
-    println!(
-        "Starting multi-folder parallel conversion: {} files across {} folders with {} workers",
-        jobs.len(),
-        progress.folder_progress.len(),
-        worker_count
-    );
-
-    let mut futures = FuturesUnordered::new();
-    let mut cancelled_folders: HashMap<FolderId, bool> = HashMap::new();
-
-    for job in jobs {
-        let folder_id = match job.folder_id {
-            Some(ref id) => id.clone(),
-            None => continue, // Skip jobs without folder_id in multi-folder mode
-        };
-
-        // Check for cancellation before starting each new job
-        if let Some(token) = cancel_tokens.get(&folder_id) {
-            if token.load(Ordering::SeqCst) {
-                cancelled_folders.insert(folder_id.clone(), true);
-                continue;
-            }
-        }
-
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let ffmpeg = ffmpeg_path.clone();
-        let progress = progress.clone();
-        let folder_failed = folder_failed.clone();
-        let on_progress = on_progress.clone();
-        let on_complete = on_complete.clone();
-        let folder_id_for_task = folder_id.clone();
-
-        let handle = tokio::spawn(async move {
-            let input_name = job.input_path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-
-            let strategy_desc = match &job.strategy {
-                EncodingStrategy::Copy => "copy".to_string(),
-                EncodingStrategy::CopyWithoutArt => "copy (no art)".to_string(),
-                EncodingStrategy::ConvertAtSourceBitrate(br) => format!("transcode @{}k (source)", br),
-                EncodingStrategy::ConvertAtTargetBitrate(br) => format!("transcode @{}k (target)", br),
-            };
-            println!("Processing [{}]: {} [{}]", folder_id_for_task.0, input_name, strategy_desc);
-
-            let result = convert_file_async(
-                &ffmpeg,
-                &job.input_path,
-                &job.output_path,
-                &job.strategy,
-                job.album_art_path.as_deref(),
-            )
-            .await;
-
-            if !result.success {
-                if let Some(failed) = folder_failed.get(&folder_id_for_task) {
-                    failed.fetch_add(1, Ordering::SeqCst);
-                }
-                if let Some(ref error) = result.error {
-                    eprintln!("Failed [{}]: {} - {}", folder_id_for_task.0, input_name, error);
-                }
-            }
-
-            // Update progress and check if folder is complete
-            if let Some((completed, total)) = progress.increment_completed(&folder_id_for_task) {
-                println!(
-                    "Progress [{}]: {}/{} - {}",
-                    folder_id_for_task.0, completed, total, input_name
-                );
-                on_progress(&folder_id_for_task, completed, total);
-
-                // Check if this folder is now complete
-                if completed >= total {
-                    let failed_count = folder_failed
-                        .get(&folder_id_for_task)
-                        .map(|f| f.load(Ordering::SeqCst))
-                        .unwrap_or(0);
-                    on_complete(&folder_id_for_task, completed - failed_count, failed_count);
-                }
-            }
-
-            drop(permit);
-            (folder_id_for_task, result)
-        });
-
-        futures.push(handle);
-    }
-
-    // Wait for all in-flight tasks
-    while let Some(_result) = futures.next().await {
-        // Tasks already called callbacks when they finished
-    }
-
-    // Build results
-    let mut results = HashMap::new();
-    for (folder_id, total) in folder_totals {
-        let (completed, _) = progress.get_progress(&folder_id).unwrap_or((0, 0));
-        let failed = folder_failed
-            .get(&folder_id)
-            .map(|f| f.load(Ordering::SeqCst))
-            .unwrap_or(0);
-        let was_cancelled = cancelled_folders.get(&folder_id).copied().unwrap_or(false);
-        results.insert(folder_id, FolderConversionResult {
-            completed: completed.saturating_sub(failed),
-            failed,
-            was_cancelled,
-        });
-    }
-
-    results
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,7 +426,6 @@ mod tests {
             input_path: PathBuf::from("/input/song.flac"),
             output_path: PathBuf::from("/output/song.mp3"),
             strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-            folder_id: None,
             album_art_path: None,
         };
 
@@ -670,21 +470,18 @@ mod tests {
                 input_path: PathBuf::from("/fake/1.flac"),
                 output_path: PathBuf::from("/tmp/1.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-                folder_id: None,
                 album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/2.flac"),
                 output_path: PathBuf::from("/tmp/2.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-                folder_id: None,
                 album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/3.flac"),
                 output_path: PathBuf::from("/tmp/3.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-                folder_id: None,
                 album_art_path: None,
             },
         ];
@@ -722,14 +519,12 @@ mod tests {
                 input_path: PathBuf::from("/fake/a.flac"),
                 output_path: PathBuf::from("/tmp/a.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-                folder_id: None,
                 album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/b.flac"),
                 output_path: PathBuf::from("/tmp/b.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-                folder_id: None,
                 album_art_path: None,
             },
         ];
@@ -761,14 +556,12 @@ mod tests {
                 input_path: PathBuf::from("/fake/1.flac"),
                 output_path: PathBuf::from("/tmp/1.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-                folder_id: None,
                 album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/2.flac"),
                 output_path: PathBuf::from("/tmp/2.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
-                folder_id: None,
                 album_art_path: None,
             },
         ];

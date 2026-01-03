@@ -215,6 +215,7 @@ impl FolderList {
     }
 
     /// Update encoder's embed_album_art setting
+    #[allow(dead_code)]
     pub fn set_embed_album_art(&self, embed: bool) {
         if let Some(ref encoder) = self.background_encoder {
             println!("[FolderList] Sending embed_album_art={} to encoder", embed);
@@ -320,9 +321,9 @@ impl FolderList {
         }
     }
 
-    /// Get the ISO size in MB (for display)
+    /// Get the ISO size in MB (decimal, to match Finder and CD labels)
     pub fn iso_size_mb(&self) -> Option<f64> {
-        self.iso_state.as_ref().map(|iso| iso.size_bytes as f64 / (1024.0 * 1024.0))
+        self.iso_state.as_ref().map(|iso| iso.size_bytes as f64 / 1_000_000.0)
     }
 
     /// Get the list of encoded folder IDs (from background encoder state OR folder status)

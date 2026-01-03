@@ -682,7 +682,6 @@ async fn try_start_folders(
                 input_path: file.path.clone(),
                 output_path,
                 strategy,
-                folder_id: Some(id.clone()),
                 album_art_path,
             });
         }
