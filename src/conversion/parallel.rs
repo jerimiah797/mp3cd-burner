@@ -214,11 +214,15 @@ fn handle_ffmpeg_result(
 ///
 /// The `cancel_token` can be set to true to stop processing new files.
 /// Files that are already in progress will complete, but no new files will start.
+///
+/// The `pause_token` can be set to true to pause processing. Workers will wait
+/// between files until the token is set back to false.
 pub async fn convert_files_parallel_with_callback<F>(
     ffmpeg_path: PathBuf,
     jobs: Vec<ConversionJob>,
     progress: Arc<ConversionProgress>,
     cancel_token: Arc<AtomicBool>,
+    pause_token: Arc<AtomicBool>,
     on_file_complete: F,
 ) -> (usize, usize, bool)
 where
@@ -243,6 +247,20 @@ where
         if cancel_token.load(Ordering::SeqCst) {
             println!("Cancellation requested - skipping remaining files");
             was_cancelled = true;
+            break;
+        }
+
+        // Wait while paused (check every 100ms)
+        while pause_token.load(Ordering::SeqCst) {
+            // Also check for cancellation while paused
+            if cancel_token.load(Ordering::SeqCst) {
+                println!("Cancellation requested while paused");
+                was_cancelled = true;
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        if was_cancelled {
             break;
         }
 
@@ -556,11 +574,13 @@ mod tests {
         let callback_count = Arc::new(AtomicUsize::new(0));
         let callback_count_clone = callback_count.clone();
 
+        let pause_token = Arc::new(AtomicBool::new(false));
         let (completed, failed, cancelled) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
             progress,
             cancel_token,
+            pause_token,
             move || {
                 callback_count_clone.fetch_add(1, Ordering::SeqCst);
             },
@@ -599,6 +619,7 @@ mod tests {
         ];
         let progress = Arc::new(ConversionProgress::new(3));
         let cancel_token = Arc::new(AtomicBool::new(false));
+        let pause_token = Arc::new(AtomicBool::new(false));
         let callback_count = Arc::new(AtomicUsize::new(0));
         let callback_count_clone = callback_count.clone();
 
@@ -607,6 +628,7 @@ mod tests {
             jobs,
             progress.clone(),
             cancel_token,
+            pause_token,
             move || {
                 callback_count_clone.fetch_add(1, Ordering::SeqCst);
             },
@@ -640,12 +662,14 @@ mod tests {
         ];
         let progress = Arc::new(ConversionProgress::new(2));
         let cancel_token = Arc::new(AtomicBool::new(false));
+        let pause_token = Arc::new(AtomicBool::new(false));
 
         let (completed, failed, _cancelled) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
             progress.clone(),
             cancel_token,
+            pause_token,
             || {},
         )
         .await;
@@ -676,12 +700,14 @@ mod tests {
         let progress = Arc::new(ConversionProgress::new(2));
         // Pre-cancel before starting
         let cancel_token = Arc::new(AtomicBool::new(true));
+        let pause_token = Arc::new(AtomicBool::new(false));
 
         let (completed, failed, cancelled) = convert_files_parallel_with_callback(
             ffmpeg_path,
             jobs,
             progress.clone(),
             cancel_token,
+            pause_token,
             || {},
         )
         .await;

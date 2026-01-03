@@ -105,6 +105,8 @@ pub struct BackgroundEncoderState {
     pub pending_bitrate_requeue: Vec<FolderId>,
     /// Number of import batches in progress (don't start encoding while > 0)
     pub imports_pending: usize,
+    /// Global pause flag - workers check this between files and wait if true
+    pub paused: Arc<AtomicBool>,
 }
 
 impl BackgroundEncoderState {
@@ -118,6 +120,7 @@ impl BackgroundEncoderState {
             is_running: false,
             pending_bitrate_requeue: Vec::new(),
             imports_pending: 0,
+            paused: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -451,12 +454,20 @@ async fn handle_encoder_command(
         EncoderCommand::ImportStarted => {
             let mut s = state.lock().unwrap();
             s.imports_pending = s.imports_pending.saturating_add(1);
-            println!("Import started, pending: {}", s.imports_pending);
+            // Pause encoding while importing
+            s.paused.store(true, Ordering::SeqCst);
+            println!("Import started, pending: {} (encoding paused)", s.imports_pending);
         }
         EncoderCommand::ImportComplete => {
             let mut s = state.lock().unwrap();
             s.imports_pending = s.imports_pending.saturating_sub(1);
-            println!("Import complete, pending: {}", s.imports_pending);
+            // Resume encoding when all imports complete
+            if s.imports_pending == 0 {
+                s.paused.store(false, Ordering::SeqCst);
+                println!("Import complete, pending: 0 (encoding resumed)");
+            } else {
+                println!("Import complete, pending: {} (still paused)", s.imports_pending);
+            }
         }
     }
 }
@@ -663,6 +674,7 @@ async fn try_start_folders(
         let id_for_task = id.clone();
         let output_dir_for_task = output_dir.clone();
         let state_for_progress = state.clone();
+        let pause_token = state.lock().unwrap().paused.clone();
 
         // Spawn the conversion task
         tokio::spawn(async move {
@@ -677,6 +689,7 @@ async fn try_start_folders(
                 jobs,
                 progress.clone(),
                 cancel_token.clone(),
+                pause_token,
                 move || {
                     let completed = progress_for_callback.completed_count();
                     let total = progress_for_callback.total;
