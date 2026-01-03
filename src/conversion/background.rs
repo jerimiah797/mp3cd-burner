@@ -77,6 +77,8 @@ pub struct BackgroundEncoderState {
     pub queue: VecDeque<(FolderId, MusicFolder)>,
     /// Currently active folder: (id, cancel_token, has_lossless_files)
     pub active: Option<(FolderId, Arc<AtomicBool>, bool)>,
+    /// Progress of the active folder: (files_completed, files_total)
+    pub active_progress: Option<(usize, usize)>,
     /// Completed folders with their status and original folder data (for re-encoding)
     pub completed: HashMap<FolderId, (FolderConversionStatus, MusicFolder)>,
     /// Current lossless bitrate target
@@ -92,6 +94,7 @@ impl BackgroundEncoderState {
         Self {
             queue: VecDeque::new(),
             active: None,
+            active_progress: None,
             completed: HashMap::new(),
             lossless_bitrate: 320, // Default to max quality
             is_running: false,

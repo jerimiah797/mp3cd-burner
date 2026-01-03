@@ -213,9 +213,11 @@ impl FolderList {
             // Check if active
             if let Some((active_id, _, _)) = &guard.active {
                 if active_id == folder_id {
+                    // Get actual progress from state
+                    let (files_completed, files_total) = guard.active_progress.unwrap_or((0, 0));
                     return FolderConversionStatus::Converting {
-                        files_completed: 0,
-                        files_total: 0,
+                        files_completed,
+                        files_total,
                     };
                 }
             }
@@ -329,15 +331,33 @@ impl FolderList {
 
             match event {
                 EncoderEvent::FolderStarted { id, files_total } => {
+                    // Initialize progress for the new folder (0 completed out of total)
+                    if let Some(ref encoder) = self.background_encoder {
+                        let state = encoder.get_state();
+                        let mut guard = state.lock().unwrap();
+                        guard.active_progress = Some((0, files_total));
+                    }
                     println!("Encoding started: {:?} ({} files)", id, files_total);
                 }
                 EncoderEvent::FolderProgress { id, files_completed, files_total } => {
-                    // Could update per-folder progress UI here
+                    // Update progress in encoder state for UI rendering
+                    if let Some(ref encoder) = self.background_encoder {
+                        let state = encoder.get_state();
+                        let mut guard = state.lock().unwrap();
+                        guard.active_progress = Some((files_completed, files_total));
+                    }
                     println!("Encoding progress: {:?} {}/{}", id, files_completed, files_total);
                 }
                 EncoderEvent::FolderCompleted { id, output_dir, output_size, lossless_bitrate } => {
                     println!("Encoding complete: {:?} -> {:?} ({} bytes, bitrate: {:?})",
                         id, output_dir, output_size, lossless_bitrate);
+
+                    // Clear active progress in encoder state
+                    if let Some(ref encoder) = self.background_encoder {
+                        let state = encoder.get_state();
+                        let mut guard = state.lock().unwrap();
+                        guard.active_progress = None;
+                    }
 
                     // Update the folder's conversion status
                     if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
@@ -981,9 +1001,17 @@ impl FolderList {
         let mut list = div().w_full().flex().flex_col().gap_2();
 
         for (index, folder) in self.folders.iter().enumerate() {
+            // Get live conversion status from encoder state (for progress updates)
+            let live_status = self.get_folder_conversion_status(&folder.id);
+            let mut folder_with_live_status = folder.clone();
+            // Only update if actively converting (preserve Converted status from folder)
+            if matches!(live_status, FolderConversionStatus::Converting { .. }) {
+                folder_with_live_status.conversion_status = live_status;
+            }
+
             let props = FolderItemProps {
                 index,
-                folder: folder.clone(),
+                folder: folder_with_live_status,
                 is_drop_target: drop_target == Some(index),
                 theme: *theme,
                 show_file_count: display_settings.show_file_count,

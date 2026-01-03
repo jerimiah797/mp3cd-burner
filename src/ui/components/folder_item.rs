@@ -282,22 +282,49 @@ pub fn render_folder_item<V: 'static>(
     let border_color = theme.border;
     let accent = theme.accent;
     let danger = theme.danger;
+    let bg_queued = theme.bg_queued;
+    let bg_queued_hover = theme.bg_queued_hover;
+    let progress_line = theme.progress_line;
 
+    // Determine if folder is queued for transcoding (not yet converted)
+    let needs_transcoding = matches!(
+        folder.conversion_status,
+        FolderConversionStatus::NotConverted | FolderConversionStatus::Converting { .. }
+    );
+
+    // Calculate progress percentage for the progress line
+    let progress_percent = match &folder.conversion_status {
+        FolderConversionStatus::Converting { files_completed, files_total } => {
+            if *files_total > 0 {
+                Some((*files_completed as f32 / *files_total as f32) * 100.0)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    // Outer wrapper: flex column for content + progress bar
     div()
         .id(SharedString::from(format!("folder-{}", index)))
         .w_full()
         .h_16() // Taller to fit album art
         .flex_shrink_0() // Prevent shrinking when in scrollable container
         .flex()
-        .items_center()
-        .gap_3()
-        .px_3()
-        .bg(if is_drop_target { accent } else { bg_card })
+        .flex_col()
+        .bg(if is_drop_target {
+            accent
+        } else if needs_transcoding {
+            bg_queued
+        } else {
+            bg_card
+        })
         .border_1()
         .border_color(if is_drop_target { accent } else { border_color })
         .rounded_md()
+        .overflow_hidden() // Clip progress line to rounded corners
         .cursor_grab()
-        .hover(|s| s.bg(bg_hover))
+        .hover(|s| s.bg(if needs_transcoding { bg_queued_hover } else { bg_hover }))
         // Make this item draggable
         .on_drag(drag_info, |info: &DraggedFolder, position, _, cx| {
             cx.new(|_| info.clone().with_position(position))
@@ -310,63 +337,82 @@ pub fn render_folder_item<V: 'static>(
         .drag_over::<DraggedFolder>(|style, _, _, _| {
             style.bg(rgb(0x3d3d3d))
         })
-        // Album art or folder icon
-        .child(
-            div()
-                .size_12()
-                .rounded_sm()
-                .overflow_hidden()
-                .bg(rgb(0x404040))
-                .flex()
-                .items_center()
-                .justify_center()
-                .when_some(album_art_path, |el, path| {
-                    el.child(
-                        img(Path::new(&path))
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Cover)
-                    )
-                })
-                .when(folder.album_art.is_none(), |el| {
-                    el.child(div().text_xl().child("📁"))
-                })
-        )
-        // Folder name and metadata
+        // Content row
         .child(
             div()
                 .flex_1()
                 .flex()
-                .flex_col()
-                .overflow_hidden()
+                .items_center()
+                .gap_3()
+                .px_3()
+                // Album art or folder icon
                 .child(
                     div()
-                        .text_sm()
-                        .text_color(text_color)
+                        .size_12()
+                        .rounded_sm()
                         .overflow_hidden()
-                        .text_ellipsis()
-                        .child(folder_name),
+                        .bg(rgb(0x404040))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when_some(album_art_path, |el, path| {
+                            el.child(
+                                img(Path::new(&path))
+                                    .size_full()
+                                    .object_fit(gpui::ObjectFit::Cover)
+                            )
+                        })
+                        .when(folder.album_art.is_none(), |el| {
+                            el.child(div().text_xl().child("📁"))
+                        })
                 )
+                // Folder name and metadata
                 .child(
                     div()
-                        .text_xs()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(text_color)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(folder_name),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(text_muted)
+                                .child(file_info),
+                        ),
+                )
+                // Remove button
+                .child(
+                    div()
+                        .id(SharedString::from(format!("remove-{}", index)))
+                        .px_2()
+                        .py_1()
                         .text_color(text_muted)
-                        .child(file_info),
-                ),
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(danger))
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            on_remove(view, index);
+                        }))
+                        .child("✕"),
+                )
         )
-        // Remove button
-        .child(
-            div()
-                .id(SharedString::from(format!("remove-{}", index)))
-                .px_2()
-                .py_1()
-                .text_color(text_muted)
-                .cursor_pointer()
-                .hover(|s| s.text_color(danger))
-                .on_click(cx.listener(move |view, _event, _window, _cx| {
-                    on_remove(view, index);
-                }))
-                .child("✕"),
-        )
+        // Progress line at bottom (only during active conversion)
+        .when_some(progress_percent, |el, pct| {
+            el.child(
+                div()
+                    .w(gpui::relative(pct / 100.0))
+                    .h(px(3.))
+                    .flex_shrink_0()
+                    .bg(progress_line)
+            )
+        })
 }
 
 #[cfg(test)]
