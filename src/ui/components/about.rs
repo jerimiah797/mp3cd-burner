@@ -18,12 +18,12 @@ impl AboutBox {
 
     /// Open the About window
     pub fn open(cx: &mut gpui::App) -> WindowHandle<Self> {
-        let bounds = Bounds::centered(None, size(px(420.), px(180.)), cx);
+        let bounds = Bounds::centered(None, size(px(420.), px(210.)), cx);
 
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(420.), px(180.))),
+                window_min_size: Some(size(px(420.), px(210.))),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("About MP3 CD Burner".into()),
                     appears_transparent: false,
@@ -119,11 +119,18 @@ impl Render for AboutBox {
                             .child("Built with Rust and GPUI"),
                     )
                     .child(
+                        // FFmpeg acknowledgment
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child("Powered by FFmpeg (ffmpeg.org)"),
+                    )
+                    .child(
                         // Copyright
                         div()
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child("© 2025 Jerimiah Ham"),
+                            .child("© 2026 Jerimiah Ham"),
                     ),
             )
     }
