@@ -56,7 +56,7 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
             name: "Options".into(),
             items: vec![
                 MenuItem::action(simulate_burn_label, ToggleSimulateBurn),
-                MenuItem::action("No Lossy Conversions", About), // TODO: Implement toggle
+                // TODO: MenuItem::action("No Lossy Conversions", ToggleNoLossyConversions),
                 MenuItem::action(embed_album_art_label, ToggleEmbedAlbumArt),
                 MenuItem::separator(),
                 MenuItem::action("Display Settings...", OpenDisplaySettings),
@@ -203,15 +203,18 @@ fn main() {
             }
         });
 
-        // Quit the app when the main window is closed
+        // Quit the app when the main window is closed (not other windows like dialogs)
         // Window state is saved via observe_window_bounds in FolderList
-        cx.on_window_closed(|cx| {
-            cx.quit();
+        let main_window_id = window_handle.window_id();
+        cx.on_window_closed(move |cx| {
+            // Only quit if the main window was closed, not dialogs
+            // Check if main window still exists in the list of open windows
+            let main_window_open = cx.windows().iter().any(|w| w.window_id() == main_window_id);
+            if !main_window_open {
+                cx.quit();
+            }
         })
         .detach();
-
-        // Suppress unused warning - window_handle keeps the window alive
-        let _ = window_handle;
 
         cx.activate(true);
     });

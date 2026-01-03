@@ -137,7 +137,7 @@ pub fn render_stats_panel(state: &StatusBarState, theme: &Theme) -> impl IntoEle
                         ),
                 ),
         )
-        // Row 3: Bitrate and CD-RW indicator
+        // Row 3: Bitrate, ISO size, and CD-RW indicator
         .child(
             div()
                 .flex()
@@ -154,6 +154,22 @@ pub fn render_stats_panel(state: &StatusBarState, theme: &Theme) -> impl IntoEle
                                 .child(bitrate_display),
                         ),
                 )
+                // ISO size (only show when we have a valid ISO)
+                .when(state.iso_size_mb.is_some(), |el| {
+                    let iso_mb = state.iso_size_mb.unwrap_or(0.0);
+                    el.child(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .child("ISO:")
+                            .child(
+                                div()
+                                    .text_color(text_color)
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child(format!("{:.0} MB", iso_mb)),
+                            ),
+                    )
+                })
                 // CD-RW indicator (only show when erasable disc detected)
                 .when(
                     state.is_converting && state.burn_stage == BurnStage::ErasableDiscDetected,
