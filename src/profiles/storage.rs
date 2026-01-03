@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_save_and_load_profile() {
         let temp_dir = TempDir::new().unwrap();
-        let profile_path = temp_dir.path().join("test.burn");
+        let profile_path = temp_dir.path().join("test.mp3cd");
 
         let settings = BurnSettings {
             target_bitrate: "auto".to_string(),

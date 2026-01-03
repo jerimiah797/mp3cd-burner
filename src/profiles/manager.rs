@@ -27,6 +27,8 @@ pub struct ProfileLoadSetup {
     pub folder_states: HashMap<String, SavedFolderState>,
     /// ISO path if saved in profile
     pub iso_path: Option<PathBuf>,
+    /// Custom volume label if saved in profile
+    pub volume_label: Option<String>,
 }
 
 /// Prepare to load a profile (fast, does not scan folders)
@@ -61,6 +63,7 @@ pub fn prepare_profile_load(path: &Path) -> Result<ProfileLoadSetup, String> {
         validation,
         folder_states,
         iso_path,
+        volume_label: profile.volume_label,
     })
 }
 
@@ -73,6 +76,7 @@ pub fn create_profile(
     folders: &[MusicFolder],
     output_manager: Option<&OutputManager>,
     iso_state: Option<&IsoState>,
+    volume_label: Option<String>,
 ) -> BurnProfile {
     let settings = BurnSettings {
         target_bitrate: "auto".to_string(),
@@ -86,6 +90,7 @@ pub fn create_profile(
         .collect();
 
     let mut profile = BurnProfile::new(profile_name, folder_paths, settings);
+    profile.volume_label = volume_label;
 
     // Add conversion state if we have it
     if let Some(output_manager) = output_manager {
@@ -147,8 +152,9 @@ pub fn save_profile_to_path(
     folders: &[MusicFolder],
     output_manager: Option<&OutputManager>,
     iso_state: Option<&IsoState>,
+    volume_label: Option<String>,
 ) -> Result<(), String> {
-    let profile = create_profile(profile_name, folders, output_manager, iso_state);
+    let profile = create_profile(profile_name, folders, output_manager, iso_state, volume_label);
     save_profile(&profile, path)?;
     add_to_recent_profiles(&path.to_string_lossy())?;
     println!("Profile saved to: {}", path.display());
@@ -162,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_create_profile_empty_folders() {
-        let profile = create_profile("Test".to_string(), &[], None, None);
+        let profile = create_profile("Test".to_string(), &[], None, None, None);
         assert_eq!(profile.profile_name, "Test");
         assert!(profile.folders.is_empty());
     }
@@ -171,16 +177,30 @@ mod tests {
     fn test_create_profile_with_folders() {
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
-        let profile = create_profile("My Album".to_string(), &folders, None, None);
+        let profile = create_profile("My Album".to_string(), &folders, None, None, None);
         assert_eq!(profile.profile_name, "My Album");
         assert_eq!(profile.folders.len(), 1);
         assert_eq!(profile.folders[0], "/test/album");
     }
 
     #[test]
+    fn test_create_profile_with_volume_label() {
+        let folders = vec![MusicFolder::new_for_test("/test/album")];
+
+        let profile = create_profile(
+            "My Album".to_string(),
+            &folders,
+            None,
+            None,
+            Some("My CD".to_string()),
+        );
+        assert_eq!(profile.volume_label, Some("My CD".to_string()));
+    }
+
+    #[test]
     fn test_save_and_load_profile() {
         let temp_dir = TempDir::new().unwrap();
-        let profile_path = temp_dir.path().join("test.burn");
+        let profile_path = temp_dir.path().join("test.mp3cd");
 
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
@@ -191,6 +211,7 @@ mod tests {
             &folders,
             None,
             None,
+            Some("Test CD".to_string()),
         );
         assert!(result.is_ok());
         assert!(profile_path.exists());

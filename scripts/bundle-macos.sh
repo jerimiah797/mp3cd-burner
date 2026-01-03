@@ -80,6 +80,12 @@ else
     echo "Note: No AppIcon.icns found - app will use default icon"
 fi
 
+# Copy document icon if it exists
+if [ -f "${PROJECT_DIR}/macos/DocIcon.icns" ]; then
+    echo "Copying document icon..."
+    cp "${PROJECT_DIR}/macos/DocIcon.icns" "${BUNDLE_DIR}/Contents/Resources/"
+fi
+
 # Copy PNG icon for About dialog
 if [ -f "${PROJECT_DIR}/macos/icon_128.png" ]; then
     echo "Copying PNG icon..."

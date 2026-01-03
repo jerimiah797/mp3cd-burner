@@ -27,6 +27,7 @@ pub fn execute_full_burn(
     output_manager: OutputManager,
     folders: Vec<MusicFolder>,
     simulate_burn: bool,
+    volume_label: String,
 ) {
     // Wait for all folders to be converted
     loop {
@@ -74,7 +75,7 @@ pub fn execute_full_burn(
     };
 
     // Create ISO and burn
-    execute_iso_and_burn(state, staging_dir, simulate_burn);
+    execute_iso_and_burn(state, staging_dir, simulate_burn, volume_label);
 }
 
 /// Execute ISO creation and burn
@@ -82,11 +83,9 @@ pub fn execute_full_burn(
 /// This is a blocking function that:
 /// 1. Creates an ISO from the staging directory
 /// 2. Coordinates the burn process
-fn execute_iso_and_burn(state: ConversionState, staging_dir: PathBuf, simulate_burn: bool) {
+fn execute_iso_and_burn(state: ConversionState, staging_dir: PathBuf, simulate_burn: bool, volume_label: String) {
     state.set_stage(BurnStage::CreatingIso);
     println!("\n=== Creating ISO image ===");
-
-    let volume_label = "MP3CD".to_string();
 
     match create_iso(&staging_dir, &volume_label) {
         Ok(result) => {

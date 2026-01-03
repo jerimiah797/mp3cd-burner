@@ -9,7 +9,8 @@ use gpui::{div, prelude::*, rgb, AnyWindowHandle, AsyncApp, Context, ExternalPat
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use crate::actions::{NewProfile, OpenProfile, SaveProfile};
+use crate::actions::{NewProfile, OpenProfile, SaveProfile, SetVolumeLabel, take_pending_files};
+use super::VolumeLabelDialog;
 
 use super::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use super::status_bar::{
@@ -75,6 +76,25 @@ pub struct FolderList {
     pending_open_after_save: bool,
     /// Pending profile load setup (for async profile loading)
     pending_profile_load: Option<ProfileLoadSetup>,
+    /// CD volume label (for ISO creation)
+    volume_label: String,
+    /// Receiver for volume label updates from the dialog
+    pending_volume_label_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// Pending burn action to trigger after volume label dialog closes
+    pending_burn_action: Option<PendingBurnAction>,
+    /// Path to the currently saved profile (None if never saved)
+    current_profile_path: Option<PathBuf>,
+    /// Whether there are unsaved changes since last save/load
+    has_unsaved_changes: bool,
+}
+
+/// Action to take after volume label dialog closes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingBurnAction {
+    /// Burn existing ISO
+    BurnExisting,
+    /// Run conversion then burn
+    ConvertAndBurn,
 }
 
 impl FolderList {
@@ -100,6 +120,11 @@ impl FolderList {
             pending_new_after_save: false,
             pending_open_after_save: false,
             pending_profile_load: None,
+            volume_label: "Untitled MP3CD".to_string(),
+            pending_volume_label_rx: None,
+            pending_burn_action: None,
+            current_profile_path: None,
+            has_unsaved_changes: false,
         }
     }
 
@@ -127,6 +152,11 @@ impl FolderList {
             pending_new_after_save: false,
             pending_open_after_save: false,
             pending_profile_load: None,
+            volume_label: "Untitled MP3CD".to_string(),
+            pending_volume_label_rx: None,
+            pending_burn_action: None,
+            current_profile_path: None,
+            has_unsaved_changes: false,
         }
     }
 
@@ -413,6 +443,89 @@ impl FolderList {
         events_processed
     }
 
+    /// Poll for volume label updates from the dialog
+    ///
+    /// Returns true if a label was received (useful for knowing if UI needs refresh)
+    fn poll_volume_label(&mut self) -> bool {
+        if let Some(ref rx) = self.pending_volume_label_rx {
+            if let Ok(label) = rx.try_recv() {
+                println!("Volume label set to: {}", label);
+
+                // If the label changed, invalidate the ISO so it gets regenerated
+                if self.volume_label != label {
+                    if self.iso_state.is_some() {
+                        println!("Volume label changed - invalidating existing ISO");
+                        self.iso_state = None;
+                        self.iso_generation_attempted = false;
+                    }
+                }
+
+                self.volume_label = label;
+                // Clear the receiver since we got the label
+                self.pending_volume_label_rx = None;
+                // Note: pending_burn_action will be handled in check_pending_burn_action
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check for files opened via Finder and load them
+    ///
+    /// This should be called from the render loop. When a user double-clicks
+    /// a .mp3cd file in Finder, macOS opens our app with that file. The path
+    /// is stored in a static and we poll for it here.
+    fn poll_pending_open_files(&mut self, cx: &mut Context<Self>) {
+        let pending_paths = take_pending_files();
+        for path in pending_paths {
+            println!("Loading profile from Finder: {:?}", path);
+            // Don't prompt to save - just load the profile directly
+            // (this is the expected behavior when double-clicking a file)
+            if let Err(e) = self.load_profile(&path, cx) {
+                eprintln!("Failed to load profile: {}", e);
+            }
+        }
+    }
+
+    /// Check and execute any pending burn action
+    ///
+    /// This should be called from the render loop where we have window access.
+    /// Returns true if an action was triggered.
+    fn check_pending_burn_action(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // Only trigger if we've finished receiving the volume label
+        // (pending_volume_label_rx is None means dialog closed and we got the label)
+        if self.pending_volume_label_rx.is_some() {
+            return false;
+        }
+
+        // Check what action is pending (without taking it yet)
+        let action = match self.pending_burn_action {
+            Some(action) => action,
+            None => return false,
+        };
+
+        match action {
+            PendingBurnAction::BurnExisting => {
+                // Wait for ISO to be ready before triggering burn
+                if self.iso_state.is_none() {
+                    // ISO is still being regenerated, wait for next cycle
+                    return false;
+                }
+                // ISO is ready, take the action and burn
+                self.pending_burn_action = None;
+                println!("Triggering burn after volume label dialog");
+                self.burn_existing_iso(window, cx);
+            }
+            PendingBurnAction::ConvertAndBurn => {
+                // run_conversion handles waiting for ISO, so trigger immediately
+                self.pending_burn_action = None;
+                println!("Triggering convert & burn after volume label dialog");
+                self.run_conversion(window, cx);
+            }
+        }
+        true
+    }
+
     /// Check if ISO needs to be generated and do it if ready
     ///
     /// This should be called periodically to auto-generate ISO when all folders are encoded.
@@ -450,6 +563,7 @@ impl FolderList {
             output_manager,
             folders.clone(),
             self.conversion_state.clone(),
+            self.volume_label.clone(),
         );
 
         // Start polling for ISO creation progress
@@ -608,6 +722,8 @@ impl FolderList {
                 self.iso_state = None;
                 self.iso_generation_attempted = false;
                 self.iso_has_been_burned = false;
+                // Mark as having unsaved changes
+                self.has_unsaved_changes = true;
                 // Record change time for debounced bitrate recalculation
                 self.last_folder_change = Some(std::time::Instant::now());
             }
@@ -624,6 +740,8 @@ impl FolderList {
             self.iso_state = None;
             self.iso_generation_attempted = false;
             self.iso_has_been_burned = false;
+            // Mark as having unsaved changes
+            self.has_unsaved_changes = true;
             // Record change time for debounced bitrate recalculation
             self.last_folder_change = Some(std::time::Instant::now());
         }
@@ -641,6 +759,8 @@ impl FolderList {
             self.iso_state = None;
             self.iso_generation_attempted = false;
             self.iso_has_been_burned = false;
+            // Mark as having unsaved changes
+            self.has_unsaved_changes = true;
         }
     }
 
@@ -667,12 +787,20 @@ impl FolderList {
 
     /// Save the current state as a profile to the specified path
     pub fn save_profile(&self, path: &std::path::Path, profile_name: String) -> Result<(), String> {
+        // Save volume_label if it's not the default
+        let volume_label = if self.volume_label == super::DEFAULT_LABEL {
+            None
+        } else {
+            Some(self.volume_label.clone())
+        };
+
         crate::profiles::save_profile_to_path(
             path,
             profile_name,
             &self.folders,
             self.output_manager.as_ref(),
             self.iso_state.as_ref(),
+            volume_label,
         )
     }
 
@@ -705,6 +833,13 @@ impl FolderList {
         self.iso_state = None;
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
+
+        // Remember the profile path and mark as saved (no unsaved changes after load)
+        self.current_profile_path = Some(path.to_path_buf());
+        self.has_unsaved_changes = false;
+
+        // Restore volume label from profile (or default if not saved)
+        self.volume_label = setup.volume_label.clone().unwrap_or_else(|| super::DEFAULT_LABEL.to_string());
 
         // Clear the encoder state and delete converted files
         if let Some(encoder) = &self.background_encoder {
@@ -762,8 +897,8 @@ impl FolderList {
     ///
     /// If there are unsaved folders, shows a confirmation dialog first.
     pub fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // If no folders, just clear immediately
-        if self.folders.is_empty() {
+        // If no unsaved changes, just clear immediately
+        if !self.has_unsaved_changes {
             self.clear_for_new_profile(cx);
             return;
         }
@@ -823,6 +958,9 @@ impl FolderList {
         self.iso_has_been_burned = false;
         self.last_folder_change = None;
         self.last_calculated_bitrate = None;
+        self.volume_label = super::DEFAULT_LABEL.to_string();
+        self.current_profile_path = None;
+        self.has_unsaved_changes = false;
         // Clear the encoder state and delete converted files
         if let Some(encoder) = &self.background_encoder {
             encoder.clear_all();
@@ -831,12 +969,33 @@ impl FolderList {
         cx.notify();
     }
 
+    /// Show the volume label dialog
+    ///
+    /// Opens a modal dialog for editing the CD volume label.
+    /// If `pending_action` is provided, that action will be triggered after the dialog closes.
+    fn show_volume_label_dialog(&mut self, pending_action: Option<PendingBurnAction>, cx: &mut Context<Self>) {
+        let current_label = self.volume_label.clone();
+
+        // Store the pending action to trigger after dialog closes
+        self.pending_burn_action = pending_action;
+
+        // Create a channel for the dialog to send the label back
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_volume_label_rx = Some(rx);
+
+        let _dialog_handle = VolumeLabelDialog::open(cx, Some(current_label), move |label| {
+            // Send the label through the channel - this avoids RefCell borrow conflicts
+            // since we're not trying to update GPUI state directly in the callback
+            let _ = tx.send(label);
+        });
+    }
+
     /// Show file picker to open a profile (called from File > Open menu)
     ///
-    /// If there are unsaved folders, shows a confirmation dialog first.
+    /// If there are unsaved changes, shows a confirmation dialog first.
     pub fn open_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // If no folders, just show file picker immediately
-        if self.folders.is_empty() {
+        // If no unsaved changes, just show file picker immediately
+        if !self.has_unsaved_changes {
             self.show_open_file_picker(cx);
             return;
         }
@@ -921,29 +1080,56 @@ impl FolderList {
             return;
         }
 
-        // Generate a default filename from the first folder
-        let default_name = self.folders.first()
-            .and_then(|f| f.path.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Untitled".to_string());
+        // Use current profile path if we've saved before, otherwise generate from first folder
+        let (start_dir, default_filename) = if let Some(ref current_path) = self.current_profile_path {
+            // Use the directory and filename from the current profile
+            let dir = current_path.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| dirs::document_dir().unwrap_or_else(|| PathBuf::from(".")));
+            // Get just the file stem (name without any extension) and add .mp3cd
+            let stem = current_path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Untitled".to_string());
+            let filename = format!("{}.mp3cd", stem);
+            (dir, filename)
+        } else {
+            // Generate a default filename from the first folder
+            let default_name = self.folders.first()
+                .and_then(|f| f.path.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Untitled".to_string());
+            let dir = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
+            (dir, format!("{}.mp3cd", default_name))
+        };
 
-        let documents_dir = dirs::document_dir()
-            .unwrap_or_else(|| PathBuf::from("."));
+        // Extract profile name from filename (without .mp3cd extension)
+        let profile_name = default_filename
+            .strip_suffix(".mp3cd")
+            .unwrap_or(&default_filename)
+            .to_string();
 
-        let receiver = cx.prompt_for_new_path(&documents_dir, Some(&format!("{}.burn", default_name)));
-        let profile_name = default_name.clone();
+        let receiver = cx.prompt_for_new_path(&start_dir, Some(&default_filename));
         cx.spawn(|this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
             async move {
                 match receiver.await {
                     Ok(Ok(Some(path))) => {
+                        // Extract profile name from chosen path
+                        let chosen_name = path.file_stem()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| profile_name);
+
                         let _ = this_handle.update(&mut async_cx, |this, cx| {
-                            if let Err(e) = this.save_profile(&path, profile_name) {
+                            if let Err(e) = this.save_profile(&path, chosen_name) {
                                 eprintln!("Failed to save profile: {}", e);
                                 this.pending_new_after_save = false;
                                 this.pending_open_after_save = false;
                             } else {
                                 println!("Profile saved to: {:?}", path);
+                                // Remember the save path and mark as saved
+                                this.current_profile_path = Some(path);
+                                this.has_unsaved_changes = false;
+
                                 // If we were saving as part of New flow, now clear the folders
                                 if this.pending_new_after_save {
                                     this.pending_new_after_save = false;
@@ -1174,6 +1360,20 @@ impl Render for FolderList {
             }
         }
 
+        // Check for files opened via Finder (double-click on .mp3cd files)
+        self.poll_pending_open_files(cx);
+
+        // Check for pending burn action after volume label dialog closes
+        self.check_pending_burn_action(window, cx);
+
+        // Update window title to include volume label
+        let title = if self.volume_label == "Untitled MP3CD" || self.volume_label.is_empty() {
+            "MP3 CD Burner".to_string()
+        } else {
+            format!("MP3 CD Burner - {}", self.volume_label)
+        };
+        window.set_window_title(&title);
+
         // Get theme based on OS appearance
         let theme = Theme::from_appearance(window.appearance());
         let is_empty = self.folders.is_empty();
@@ -1207,6 +1407,9 @@ impl Render for FolderList {
         let on_save_profile = cx.listener(|this, _: &SaveProfile, window, cx| {
             this.save_profile_dialog(window, cx);
         });
+        let on_set_volume_label = cx.listener(|this, _: &SetVolumeLabel, _window, cx| {
+            this.show_volume_label_dialog(None, cx);
+        });
 
         // Build status bar after listeners
         let status_bar = self.render_status_bar(&theme, cx);
@@ -1227,6 +1430,7 @@ impl Render for FolderList {
             .on_action(on_new_profile)
             .on_action(on_open_profile)
             .on_action(on_save_profile)
+            .on_action(on_set_volume_label)
             // Handle external file drops on the entire window
             .on_drop(on_external_drop)
             // Style when dragging external files over window
@@ -1373,9 +1577,9 @@ impl FolderList {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         render_burn_button_base(iso_has_been_burned, success_color, success_hover)
-            .on_click(cx.listener(move |this, _event, window, cx| {
-                println!("Burn clicked!");
-                this.burn_existing_iso(window, cx);
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                println!("Burn clicked - showing volume label dialog");
+                this.show_volume_label_dialog(Some(PendingBurnAction::BurnExisting), cx);
             }))
     }
 
@@ -1389,10 +1593,10 @@ impl FolderList {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         render_convert_burn_button_base(has_folders, success_color, success_hover, text_muted)
-            .on_click(cx.listener(move |this, _event, window, cx| {
+            .on_click(cx.listener(move |this, _event, _window, cx| {
                 if has_folders {
-                    println!("Convert & Burn clicked!");
-                    this.run_conversion(window, cx);
+                    println!("Convert & Burn clicked - showing volume label dialog");
+                    this.show_volume_label_dialog(Some(PendingBurnAction::ConvertAndBurn), cx);
                 }
             }))
     }
@@ -1468,10 +1672,11 @@ impl FolderList {
         let state = self.conversion_state.clone();
         let simulate_burn = cx.global::<AppSettings>().simulate_burn;
         let folders: Vec<_> = self.folders.iter().cloned().collect();
+        let volume_label = self.volume_label.clone();
 
         // Spawn background thread to execute the full burn workflow
         std::thread::spawn(move || {
-            crate::burning::execute_full_burn(state, encoder_handle, output_manager, folders, simulate_burn);
+            crate::burning::execute_full_burn(state, encoder_handle, output_manager, folders, simulate_burn, volume_label);
         });
 
         // Start polling for progress updates
@@ -1618,6 +1823,9 @@ impl FolderList {
                             // Poll any encoder events
                             let had_events = this.poll_encoder_events();
 
+                            // Poll for volume label updates from the dialog
+                            let label_updated = this.poll_volume_label();
+
                             // Check for debounced bitrate recalculation
                             this.check_debounced_bitrate_recalculation();
 
@@ -1627,8 +1835,8 @@ impl FolderList {
                                 println!("Auto-ISO generation triggered");
                             }
 
-                            // Refresh UI if we had events
-                            if had_events {
+                            // Refresh UI if we had events or label was updated
+                            if had_events || label_updated {
                                 cx.notify();
                             }
 
@@ -1674,6 +1882,8 @@ impl FolderList {
                             this.iso_state = None;
                             this.iso_generation_attempted = false;
                             this.iso_has_been_burned = false;
+                            // Mark as having unsaved changes
+                            this.has_unsaved_changes = true;
                             // Record change time for debounced bitrate recalculation
                             this.last_folder_change = Some(std::time::Instant::now());
                         });
@@ -1703,6 +1913,8 @@ impl FolderList {
                         this.iso_state = None;
                         this.iso_generation_attempted = false;
                         this.iso_has_been_burned = false;
+                        // Mark as having unsaved changes
+                        this.has_unsaved_changes = true;
                         // Record change time for debounced bitrate recalculation
                         this.last_folder_change = Some(std::time::Instant::now());
                     });

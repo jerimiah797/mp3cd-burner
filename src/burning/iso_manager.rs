@@ -76,6 +76,7 @@ pub fn spawn_iso_generation(
     output_manager: OutputManager,
     folders: Vec<MusicFolder>,
     state: ConversionState,
+    volume_label: String,
 ) {
     // Reset state for ISO generation
     state.reset(0);
@@ -84,8 +85,6 @@ pub fn spawn_iso_generation(
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async {
-            let volume_label = "MP3CD".to_string();
-
             match generate_iso(&output_manager, &folders, &volume_label, &state) {
                 Ok(_result) => {
                     state.set_stage(BurnStage::Complete);

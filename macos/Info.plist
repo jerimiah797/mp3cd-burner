@@ -28,15 +28,40 @@
     <array>
         <dict>
             <key>CFBundleTypeName</key>
-            <string>Burn Profile</string>
+            <string>MP3CD Profile</string>
             <key>CFBundleTypeExtensions</key>
             <array>
-                <string>burn</string>
+                <string>mp3cd</string>
             </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>DocIcon</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
             <key>LSHandlerRank</key>
             <string>Owner</string>
+            <key>LSTypeIsPackage</key>
+            <false/>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.arctian.mp3cd-profile</string>
+            <key>UTTypeDescription</key>
+            <string>MP3CD Profile</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>mp3cd</string>
+                </array>
+            </dict>
         </dict>
     </array>
 </dict>

@@ -15,9 +15,29 @@ use gpui::{
     prelude::*, point, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
     WindowBounds, WindowHandle, WindowOptions,
 };
-use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, ToggleEmbedAlbumArt, OpenDisplaySettings, NewProfile, OpenProfile, SaveProfile};
+use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, ToggleEmbedAlbumArt, OpenDisplaySettings, SetVolumeLabel, NewProfile, OpenProfile, SaveProfile, push_pending_file};
 use core::{AppSettings, DisplaySettings, WindowState};
 use ui::components::{AboutBox, DisplaySettingsModal, FolderList};
+
+/// Decode percent-encoded URL path (e.g., %20 -> space)
+fn percent_decode_str(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hex: String = chars.by_ref().take(2).collect();
+            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                result.push(byte as char);
+            } else {
+                result.push('%');
+                result.push_str(&hex);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
 
 /// Build the application menus with current settings state
 fn build_menus(settings: &AppSettings) -> Vec<Menu> {
@@ -59,6 +79,7 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
                 // TODO: MenuItem::action("No Lossy Conversions", ToggleNoLossyConversions),
                 MenuItem::action(embed_album_art_label, ToggleEmbedAlbumArt),
                 MenuItem::separator(),
+                MenuItem::action("Set CD Volume Label...", SetVolumeLabel),
                 MenuItem::action("Display Settings...", OpenDisplaySettings),
                 MenuItem::separator(),
                 MenuItem::action("Open Output Folder", OpenOutputDir),
@@ -68,7 +89,25 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    let app = Application::new();
+
+    // Handle files opened via Finder (double-click on .mp3cd files)
+    app.on_open_urls(|urls| {
+        for url in urls {
+            // URLs are file:// URLs, convert to path
+            if let Some(path_str) = url.strip_prefix("file://") {
+                // URL decode the path (spaces become %20, etc.)
+                let decoded = percent_decode_str(path_str);
+                let path = std::path::PathBuf::from(&decoded);
+                if path.extension().map_or(false, |ext| ext == "mp3cd") {
+                    println!("File opened from Finder: {:?}", path);
+                    push_pending_file(path);
+                }
+            }
+        }
+    });
+
+    app.run(|cx: &mut App| {
         // Load app settings from disk (or use defaults)
         cx.set_global(AppSettings::load());
         // Load display settings from disk (or use defaults)
