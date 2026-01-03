@@ -169,11 +169,34 @@ pub fn render_folder_item<V: 'static>(
         show_final_bitrate,
     } = props;
 
-    let folder_name = folder
-        .path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
+    // Build display name from album metadata, falling back to folder name
+    let folder_name = {
+        let raw_folder_name = folder
+            .path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
+
+        // Try to build a nice display name from metadata
+        match (&folder.album_name, &folder.year, &folder.artist_name) {
+            // Album (Year) - Artist
+            (Some(album), Some(year), Some(artist)) => {
+                format!("{} ({}) - {}", album, year, artist)
+            }
+            // Album (Year)
+            (Some(album), Some(year), None) => {
+                format!("{} ({})", album, year)
+            }
+            // Album - Artist
+            (Some(album), None, Some(artist)) => {
+                format!("{} - {}", album, artist)
+            }
+            // Just Album
+            (Some(album), None, None) => album.clone(),
+            // Fall back to folder name
+            _ => raw_folder_name,
+        }
+    };
 
     // Format metadata for display based on display settings
     // Build up parts conditionally, then join them

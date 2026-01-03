@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::path::Path;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
+use symphonia::core::meta::{MetadataOptions, StandardTagKey};
 use symphonia::core::probe::Hint;
 
 /// Extract album art from an audio file
@@ -180,4 +180,84 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
     let is_lossy = matches!(codec.as_str(), "mp3" | "aac" | "ogg" | "opus" | "m4a");
 
     Ok((duration, bitrate, codec, is_lossy))
+}
+
+/// Album metadata extracted from audio files
+#[derive(Debug, Clone, Default)]
+pub struct AlbumMetadata {
+    pub album: Option<String>,
+    pub artist: Option<String>,
+    pub year: Option<String>,
+}
+
+/// Extract album metadata (album name, artist, year) from an audio file
+pub fn get_album_metadata(path: &Path) -> AlbumMetadata {
+    let mut metadata = AlbumMetadata::default();
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return metadata,
+    };
+
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension() {
+        hint.with_extension(&ext.to_string_lossy());
+    }
+
+    let format_opts = FormatOptions::default();
+    let metadata_opts = MetadataOptions::default();
+
+    let mut probed = match symphonia::default::get_probe()
+        .format(&hint, mss, &format_opts, &metadata_opts)
+    {
+        Ok(p) => p,
+        Err(_) => return metadata,
+    };
+
+    // Helper to extract tags from a metadata revision
+    let extract_tags = |metadata: &mut AlbumMetadata, tags: &[symphonia::core::meta::Tag]| {
+        for tag in tags {
+            match tag.std_key {
+                Some(StandardTagKey::Album) => {
+                    metadata.album = Some(tag.value.to_string());
+                }
+                Some(StandardTagKey::Artist) | Some(StandardTagKey::AlbumArtist) => {
+                    // Prefer AlbumArtist, but use Artist if we don't have one yet
+                    if metadata.artist.is_none() || matches!(tag.std_key, Some(StandardTagKey::AlbumArtist)) {
+                        metadata.artist = Some(tag.value.to_string());
+                    }
+                }
+                Some(StandardTagKey::Date) | Some(StandardTagKey::OriginalDate) => {
+                    // Extract just the year (first 4 chars) if it's a full date
+                    let value = tag.value.to_string();
+                    let year = if value.len() >= 4 {
+                        value[..4].to_string()
+                    } else {
+                        value
+                    };
+                    // Prefer OriginalDate for year
+                    if metadata.year.is_none() || matches!(tag.std_key, Some(StandardTagKey::OriginalDate)) {
+                        metadata.year = Some(year);
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // Check container metadata first
+    if let Some(metadata_rev) = probed.metadata.get() {
+        if let Some(current) = metadata_rev.current() {
+            extract_tags(&mut metadata, current.tags());
+        }
+    }
+
+    // Also check format metadata (some formats store tags here)
+    if let Some(current) = probed.format.metadata().current() {
+        extract_tags(&mut metadata, current.tags());
+    }
+
+    metadata
 }

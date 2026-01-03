@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::audio::{get_album_art, get_audio_metadata, is_audio_file};
+use crate::audio::{get_album_art, get_album_metadata, get_audio_metadata, is_audio_file};
 use crate::core::folder_state::{FolderConversionStatus, FolderId};
 
 /// Represents metadata about a music folder
@@ -21,6 +21,12 @@ pub struct MusicFolder {
     pub total_size: u64,
     pub total_duration: f64,
     pub album_art: Option<String>,
+    /// Album name from audio file metadata
+    pub album_name: Option<String>,
+    /// Artist name from audio file metadata
+    pub artist_name: Option<String>,
+    /// Release year from audio file metadata
+    pub year: Option<String>,
     /// Cached audio file info for bitrate calculation
     pub audio_files: Vec<AudioFileInfo>,
     /// Current conversion status for background encoding
@@ -129,6 +135,9 @@ impl MusicFolder {
             total_size: 50_000_000,
             total_duration: 2400.0, // 40 minutes
             album_art: None,
+            album_name: None,
+            artist_name: None,
+            year: None,
             audio_files: Vec::new(),
             conversion_status: FolderConversionStatus::default(),
         }
@@ -145,6 +154,9 @@ impl MusicFolder {
             total_size: 50_000_000,
             total_duration: 300.0,
             album_art: None,
+            album_name: None,
+            artist_name: None,
+            year: None,
             audio_files: Vec::new(),
             conversion_status: FolderConversionStatus::default(),
         }
@@ -178,8 +190,14 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
     let total_size: u64 = audio_files.iter().map(|f| f.size).sum();
     let total_duration: f64 = audio_files.iter().map(|f| f.duration).sum();
 
-    // Extract album art from the first audio file
-    let album_art = audio_files.first().and_then(|f| get_album_art(&f.path));
+    // Extract album art and metadata from the first audio file
+    let (album_art, album_name, artist_name, year) = if let Some(first_file) = audio_files.first() {
+        let art = get_album_art(&first_file.path);
+        let metadata = get_album_metadata(&first_file.path);
+        (art, metadata.album, metadata.artist, metadata.year)
+    } else {
+        (None, None, None, None)
+    };
 
     // Generate unique folder ID based on path and modification time
     let id = FolderId::from_path(path);
@@ -191,6 +209,9 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
         total_size,
         total_duration,
         album_art,
+        album_name,
+        artist_name,
+        year,
         audio_files,
         conversion_status: FolderConversionStatus::default(),
     })
