@@ -69,6 +69,8 @@ pub struct FolderList {
     needs_initial_focus: bool,
     /// Flag to clear folders after save completes (for New -> Save flow)
     pending_new_after_save: bool,
+    /// Flag to show open file picker after save completes (for Open -> Save flow)
+    pending_open_after_save: bool,
     /// Pending profile load setup (for async profile loading)
     pending_profile_load: Option<ProfileLoadSetup>,
 }
@@ -93,6 +95,7 @@ impl FolderList {
             last_calculated_bitrate: None,
             needs_initial_focus: true,
             pending_new_after_save: false,
+            pending_open_after_save: false,
             pending_profile_load: None,
         }
     }
@@ -118,6 +121,7 @@ impl FolderList {
             last_calculated_bitrate: None,
             needs_initial_focus: false,
             pending_new_after_save: false,
+            pending_open_after_save: false,
             pending_profile_load: None,
         }
     }
@@ -824,7 +828,64 @@ impl FolderList {
     }
 
     /// Show file picker to open a profile (called from File > Open menu)
-    pub fn open_profile(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    ///
+    /// If there are unsaved folders, shows a confirmation dialog first.
+    pub fn open_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // If no folders, just show file picker immediately
+        if self.folders.is_empty() {
+            self.show_open_file_picker(cx);
+            return;
+        }
+
+        // Show confirmation dialog
+        let receiver = window.prompt(
+            PromptLevel::Warning,
+            "Unsaved Changes",
+            Some("You have folders that haven't been saved to a Burn Profile. What would you like to do?"),
+            &["Save Burn Profile...", "Don't Save", "Cancel"],
+            cx,
+        );
+
+        let window_handle = window.window_handle();
+
+        cx.spawn(move |this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                if let Ok(choice) = receiver.await {
+                    match choice {
+                        0 => {
+                            // Save first, then open
+                            println!("User chose to save before opening - showing save dialog");
+                            let _ = async_cx.update_window(window_handle, |_, window, cx| {
+                                let _ = this_handle.update(cx, |this, cx| {
+                                    // Set flag to show open picker after save completes
+                                    this.pending_open_after_save = true;
+                                    this.save_profile_dialog(window, cx);
+                                });
+                            });
+                        }
+                        1 => {
+                            // Don't Save - open profile directly
+                            println!("User chose not to save - opening profile");
+                            let _ = async_cx.update(|cx| {
+                                let _ = this_handle.update(cx, |this, cx| {
+                                    this.show_open_file_picker(cx);
+                                });
+                            });
+                        }
+                        2 => {
+                            // Cancel - do nothing
+                            println!("User cancelled open profile");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }).detach();
+    }
+
+    /// Actually show the file picker to open a profile
+    fn show_open_file_picker(&mut self, cx: &mut Context<Self>) {
         let options = PathPromptOptions {
             files: true,
             directories: false,
@@ -876,6 +937,7 @@ impl FolderList {
                             if let Err(e) = this.save_profile(&path, profile_name) {
                                 eprintln!("Failed to save profile: {}", e);
                                 this.pending_new_after_save = false;
+                                this.pending_open_after_save = false;
                             } else {
                                 println!("Profile saved to: {:?}", path);
                                 // If we were saving as part of New flow, now clear the folders
@@ -883,13 +945,19 @@ impl FolderList {
                                     this.pending_new_after_save = false;
                                     this.clear_for_new_profile(cx);
                                 }
+                                // If we were saving as part of Open flow, now show file picker
+                                if this.pending_open_after_save {
+                                    this.pending_open_after_save = false;
+                                    this.show_open_file_picker(cx);
+                                }
                             }
                         });
                     }
                     _ => {
-                        // Cancelled or error - reset the flag
+                        // Cancelled or error - reset the flags
                         let _ = this_handle.update(&mut async_cx, |this, _cx| {
                             this.pending_new_after_save = false;
+                            this.pending_open_after_save = false;
                         });
                     }
                 }
