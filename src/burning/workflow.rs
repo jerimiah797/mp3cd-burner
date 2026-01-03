@@ -42,13 +42,13 @@ pub fn execute_full_burn(
         let guard = encoder_state.lock().unwrap();
         let completed_count = guard.completed.len();
         let queue_empty = guard.queue.is_empty();
-        let active_none = guard.active.is_none();
+        let active_empty = guard.active.is_empty();
         drop(guard);
 
         // Update progress
         state.completed.store(completed_count, Ordering::SeqCst);
 
-        if queue_empty && active_none {
+        if queue_empty && active_empty {
             println!("All folders converted ({} total)", completed_count);
             break;
         }

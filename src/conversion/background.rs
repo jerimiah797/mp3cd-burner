@@ -21,6 +21,18 @@ use super::verify_ffmpeg;
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::core::{FolderConversionStatus, FolderId, MusicFolder};
 
+/// Result of a folder conversion (sent back from spawned task)
+struct FolderConversionResult {
+    id: FolderId,
+    folder: MusicFolder,
+    output_dir: PathBuf,
+    files_total: usize,
+    completed: usize,
+    was_cancelled: bool,
+    has_lossless: bool,
+    lossless_bitrate: u32,
+}
+
 /// Commands that can be sent to the background encoder
 #[derive(Debug)]
 pub enum EncoderCommand {
@@ -34,6 +46,10 @@ pub enum EncoderCommand {
     RecalculateBitrate { target_bitrate: u32 },
     /// Clear all state (for New profile)
     ClearAll,
+    /// Import batch started - delay encoding until complete
+    ImportStarted,
+    /// Import batch completed - resume encoding
+    ImportComplete,
 }
 
 /// Events emitted by the background encoder
@@ -75,37 +91,39 @@ pub enum EncoderEvent {
 pub struct BackgroundEncoderState {
     /// Queue of folders waiting to be encoded
     pub queue: VecDeque<(FolderId, MusicFolder)>,
-    /// Currently active folder: (id, cancel_token, has_lossless_files)
-    pub active: Option<(FolderId, Arc<AtomicBool>, bool)>,
-    /// Progress of the active folder: (files_completed, files_total)
-    pub active_progress: Option<(usize, usize)>,
+    /// Currently active folders: folder_id -> (cancel_token, has_lossless_files)
+    pub active: HashMap<FolderId, (Arc<AtomicBool>, bool)>,
+    /// Progress of active folders: folder_id -> (files_completed, files_total)
+    pub active_progress: HashMap<FolderId, (usize, usize)>,
     /// Completed folders with their status and original folder data (for re-encoding)
     pub completed: HashMap<FolderId, (FolderConversionStatus, MusicFolder)>,
     /// Current lossless bitrate target
     pub lossless_bitrate: u32,
     /// Whether the encoder is running
     pub is_running: bool,
-    /// Folder ID that was cancelled due to bitrate change (needs re-queuing)
-    pub pending_bitrate_requeue: Option<FolderId>,
+    /// Folder IDs that were cancelled due to bitrate change (needs re-queuing)
+    pub pending_bitrate_requeue: Vec<FolderId>,
+    /// Number of import batches in progress (don't start encoding while > 0)
+    pub imports_pending: usize,
 }
 
 impl BackgroundEncoderState {
     pub fn new() -> Self {
         Self {
             queue: VecDeque::new(),
-            active: None,
-            active_progress: None,
+            active: HashMap::new(),
+            active_progress: HashMap::new(),
             completed: HashMap::new(),
             lossless_bitrate: 320, // Default to max quality
             is_running: false,
-            pending_bitrate_requeue: None,
+            pending_bitrate_requeue: Vec::new(),
+            imports_pending: 0,
         }
     }
 
     /// Check if a folder is queued or active
     pub fn is_pending(&self, id: &FolderId) -> bool {
-        self.queue.iter().any(|(fid, _)| fid == id)
-            || self.active.as_ref().map(|(fid, _, _)| fid == id).unwrap_or(false)
+        self.queue.iter().any(|(fid, _)| fid == id) || self.active.contains_key(id)
     }
 
     /// Check if a folder is completed
@@ -154,6 +172,16 @@ impl BackgroundEncoderHandle {
     /// Clear all state (for New profile)
     pub fn clear_all(&self) {
         let _ = self.command_tx.send(EncoderCommand::ClearAll);
+    }
+
+    /// Notify that an import batch has started (delays encoding)
+    pub fn import_started(&self) {
+        let _ = self.command_tx.send(EncoderCommand::ImportStarted);
+    }
+
+    /// Notify that an import batch has completed (resumes encoding)
+    pub fn import_complete(&self) {
+        let _ = self.command_tx.send(EncoderCommand::ImportComplete);
     }
 
     /// Get the current state (for reading status)
@@ -239,256 +267,427 @@ async fn run_encoder_loop(
     state.lock().unwrap().is_running = true;
     println!("Background encoder started");
 
+    // Channel for receiving completion results from spawned folder tasks
+    let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<FolderConversionResult>();
+
     loop {
-        // Process any pending commands first
-        while let Ok(cmd) = command_rx.try_recv() {
-            match cmd {
-                EncoderCommand::AddFolder(id, folder) => {
-                    let mut s = state.lock().unwrap();
-                    // Don't add if already queued/active/completed
-                    if !s.is_pending(&id) && !s.is_completed(&id) {
-                        println!("Queued folder for encoding: {}", folder.path.display());
-                        s.queue.push_back((id, folder));
-                    }
-                }
-                EncoderCommand::RemoveFolder(id) => {
-                    let mut s = state.lock().unwrap();
-                    // Remove from queue if present
-                    s.queue.retain(|(fid, _)| fid != &id);
-                    // Cancel if active
-                    if let Some((active_id, cancel_token, _)) = &s.active {
-                        if active_id == &id {
-                            cancel_token.store(true, Ordering::SeqCst);
-                        }
-                    }
-                    // Remove from completed
-                    s.completed.remove(&id);
-                    // Clean up output directory
-                    drop(s); // Release lock before file operations
-                    let _ = output_manager.delete_folder_output(&id);
-                    let _ = event_tx.send(EncoderEvent::FolderCancelled(id));
-                }
-                EncoderCommand::FoldersReordered => {
-                    // No action needed - ISO staging handles reordering
-                    println!("Folders reordered - ISO will be regenerated");
-                }
-                EncoderCommand::ClearAll => {
-                    println!("Clearing all encoder state for new profile");
-                    let mut s = state.lock().unwrap();
-                    // Cancel any active encoding
-                    if let Some((_, cancel_token, _)) = &s.active {
-                        cancel_token.store(true, Ordering::SeqCst);
-                    }
-                    // Clear all state
-                    s.queue.clear();
-                    s.active = None;
-                    s.completed.clear();
-                    s.pending_bitrate_requeue = None;
-                    drop(s);
-                    // Clean up the session directory (delete all converted files)
-                    if let Err(e) = output_manager.cleanup() {
-                        eprintln!("Failed to clean up session: {}", e);
-                    }
-                    println!("Encoder state cleared");
-                }
-                EncoderCommand::RecalculateBitrate { target_bitrate } => {
-                    // Collect re-encoding info with the lock held
-                    let (old_bitrate, reencode_needed, folders_to_requeue) = {
-                        let mut s = state.lock().unwrap();
-                        let old_bitrate = s.lossless_bitrate;
-                        s.lossless_bitrate = target_bitrate;
+        // Use select to handle both commands and folder completions
+        tokio::select! {
+            // Handle incoming commands
+            Some(cmd) = command_rx.recv() => {
+                handle_encoder_command(cmd, &state, &output_manager, &event_tx).await;
+            }
 
-                        if old_bitrate == target_bitrate {
-                            continue; // Skip all the work below
-                        }
+            // Handle folder completion results
+            Some(result) = completion_rx.recv() => {
+                handle_folder_completion(result, &state, &output_manager, &event_tx).await;
+            }
 
-                        println!(
-                            "Bitrate changed: {} -> {} kbps",
-                            old_bitrate, target_bitrate
-                        );
-
-                        // Cancel in-progress lossless encoding
-                        if let Some((active_id, cancel_token, has_lossless)) = &s.active {
-                            if *has_lossless {
-                                println!(
-                                    "Cancelling in-progress lossless encoding for {:?}",
-                                    active_id
-                                );
-                                cancel_token.store(true, Ordering::SeqCst);
-                                // Mark for re-queue when cancellation is detected
-                                s.pending_bitrate_requeue = Some(active_id.clone());
-                            }
-                        }
-
-                        // Find completed folders that need re-encoding
-                        let mut reencode_needed = Vec::new();
-                        let mut folders_to_requeue = Vec::new();
-
-                        for (id, (status, folder)) in &s.completed {
-                            if let FolderConversionStatus::Converted {
-                                lossless_bitrate: Some(br),
-                                ..
-                            } = status
-                            {
-                                if *br != target_bitrate {
-                                    reencode_needed.push(id.clone());
-                                    folders_to_requeue.push((id.clone(), folder.clone()));
-                                }
-                            }
-                        }
-
-                        // Remove from completed - they'll be re-queued
-                        for id in &reencode_needed {
-                            s.completed.remove(id);
-                        }
-
-                        (old_bitrate, reencode_needed, folders_to_requeue)
-                    };
-
-                    // Delete old output directories (outside lock)
-                    for id in &reencode_needed {
-                        let _ = output_manager.delete_folder_output(id);
-                    }
-
-                    // Re-queue folders for re-encoding
-                    if !folders_to_requeue.is_empty() {
-                        let mut s = state.lock().unwrap();
-                        for (id, folder) in folders_to_requeue {
-                            println!("Re-queuing folder for re-encoding: {}", folder.path.display());
-                            s.queue.push_back((id, folder));
-                        }
-                    }
-
-                    // Notify UI about re-encoding
-                    if !reencode_needed.is_empty() {
-                        println!(
-                            "Folders queued for re-encoding: {}",
-                            reencode_needed.len()
-                        );
-                        let _ = event_tx.send(EncoderEvent::BitrateRecalculated {
-                            new_bitrate: target_bitrate,
-                            reencode_needed,
-                        });
-                    }
-
-                    let _ = old_bitrate; // suppress unused warning
-                }
+            // If no messages, try to start new folder conversions
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
+                // Try to start new folders if we have capacity
+                try_start_folders(
+                    &state,
+                    &output_manager,
+                    &ffmpeg_path,
+                    &event_tx,
+                    &completion_tx,
+                ).await;
             }
         }
 
-        // Check if there's work to do
-        // Priority: process lossy-only folders first, then folders with lossless files
-        // This ensures bitrate is stable before encoding lossless files
-        let next_folder = {
+        // Also try to start folders after handling any message
+        try_start_folders(
+            &state,
+            &output_manager,
+            &ffmpeg_path,
+            &event_tx,
+            &completion_tx,
+        ).await;
+    }
+}
+
+/// Handle an encoder command
+async fn handle_encoder_command(
+    cmd: EncoderCommand,
+    state: &Arc<Mutex<BackgroundEncoderState>>,
+    output_manager: &OutputManager,
+    event_tx: &std_mpsc::Sender<EncoderEvent>,
+) {
+    match cmd {
+        EncoderCommand::AddFolder(id, folder) => {
             let mut s = state.lock().unwrap();
-            if s.active.is_none() {
-                // Look for a lossy-only folder first (no lossless files)
-                let lossy_only_idx = s.queue.iter()
-                    .position(|(_, folder)| !folder.has_lossless_files());
-
-                if let Some(idx) = lossy_only_idx {
-                    // Found a lossy-only folder - remove it from queue
-                    s.queue.remove(idx)
-                } else {
-                    // No lossy-only folders, take from front (has lossless)
-                    s.queue.pop_front()
-                }
-            } else {
-                None
+            // Don't add if already queued/active/completed
+            if !s.is_pending(&id) && !s.is_completed(&id) {
+                println!("Queued folder for encoding: {}", folder.path.display());
+                s.queue.push_back((id, folder));
             }
-        };
-
-        if let Some((id, folder)) = next_folder {
-            // Start encoding this folder
-            let cancel_token = Arc::new(AtomicBool::new(false));
-            let folder_has_lossless = folder.has_lossless_files();
-            // Clone folder for storing in completed map (needed for re-encoding later)
-            let folder_for_completed = folder.clone();
-            {
+        }
+        EncoderCommand::RemoveFolder(id) => {
+            let mut s = state.lock().unwrap();
+            // Remove from queue if present
+            s.queue.retain(|(fid, _)| fid != &id);
+            // Cancel if active
+            if let Some((cancel_token, _)) = s.active.get(&id) {
+                cancel_token.store(true, Ordering::SeqCst);
+            }
+            s.active.remove(&id);
+            s.active_progress.remove(&id);
+            // Remove from completed
+            s.completed.remove(&id);
+            // Clean up output directory
+            drop(s); // Release lock before file operations
+            let _ = output_manager.delete_folder_output(&id);
+            let _ = event_tx.send(EncoderEvent::FolderCancelled(id));
+        }
+        EncoderCommand::FoldersReordered => {
+            // No action needed - ISO staging handles reordering
+            println!("Folders reordered - ISO will be regenerated");
+        }
+        EncoderCommand::ClearAll => {
+            println!("Clearing all encoder state for new profile");
+            let mut s = state.lock().unwrap();
+            // Cancel any active encoding
+            for (cancel_token, _) in s.active.values() {
+                cancel_token.store(true, Ordering::SeqCst);
+            }
+            // Clear all state
+            s.queue.clear();
+            s.active.clear();
+            s.active_progress.clear();
+            s.completed.clear();
+            s.pending_bitrate_requeue.clear();
+            drop(s);
+            // Clean up the session directory (delete all converted files)
+            if let Err(e) = output_manager.cleanup() {
+                eprintln!("Failed to clean up session: {}", e);
+            }
+            println!("Encoder state cleared");
+        }
+        EncoderCommand::RecalculateBitrate { target_bitrate } => {
+            // Collect re-encoding info with the lock held
+            let (old_bitrate, reencode_needed, folders_to_requeue) = {
                 let mut s = state.lock().unwrap();
-                s.active = Some((id.clone(), cancel_token.clone(), folder_has_lossless));
-            }
+                let old_bitrate = s.lossless_bitrate;
+                s.lossless_bitrate = target_bitrate;
 
-            let files_total = folder.audio_files.len();
-            let _ = event_tx.send(EncoderEvent::FolderStarted {
-                id: id.clone(),
-                files_total,
-            });
-
-            // Get output directory for this folder
-            let output_dir = match output_manager.get_folder_output_dir(&id) {
-                Ok(dir) => dir,
-                Err(e) => {
-                    let _ = event_tx.send(EncoderEvent::FolderFailed {
-                        id: id.clone(),
-                        error: e,
-                    });
-                    state.lock().unwrap().active = None;
-                    continue;
+                if old_bitrate == target_bitrate {
+                    return; // Skip all the work below
                 }
-            };
 
-            // Get current lossless bitrate
-            let lossless_bitrate = state.lock().unwrap().lossless_bitrate;
-
-            // Build conversion jobs
-            let mut jobs = Vec::new();
-            let mut has_lossless = false;
-
-            for file in &folder.audio_files {
-                // Parameters: codec, source_bitrate, target_bitrate, is_lossy, no_lossy_mode, embed_album_art
-                // For CD burning, we don't embed album art (saves space)
-                let strategy = determine_encoding_strategy(
-                    &file.codec,
-                    file.bitrate,
-                    lossless_bitrate,
-                    file.is_lossy,
-                    false, // no_lossy_mode - allow lossy conversions
-                    false, // embed_album_art - strip for CD burning
+                println!(
+                    "Bitrate changed: {} -> {} kbps",
+                    old_bitrate, target_bitrate
                 );
 
-                if matches!(strategy, EncodingStrategy::ConvertAtTargetBitrate(_)) {
-                    has_lossless = true;
+                // Cancel in-progress lossless encoding for all active folders
+                let mut to_requeue = Vec::new();
+                for (active_id, (cancel_token, has_lossless)) in &s.active {
+                    if *has_lossless {
+                        println!(
+                            "Cancelling in-progress lossless encoding for {:?}",
+                            active_id
+                        );
+                        cancel_token.store(true, Ordering::SeqCst);
+                        // Mark for re-queue when cancellation is detected
+                        to_requeue.push(active_id.clone());
+                    }
+                }
+                s.pending_bitrate_requeue.extend(to_requeue);
+
+                // Find completed folders that need re-encoding
+                let mut reencode_needed = Vec::new();
+                let mut folders_to_requeue = Vec::new();
+
+                for (id, (status, folder)) in &s.completed {
+                    if let FolderConversionStatus::Converted {
+                        lossless_bitrate: Some(br),
+                        ..
+                    } = status
+                    {
+                        if *br != target_bitrate {
+                            reencode_needed.push(id.clone());
+                            folders_to_requeue.push((id.clone(), folder.clone()));
+                        }
+                    }
                 }
 
-                let output_name = file
-                    .path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown");
-                let output_path = output_dir.join(format!("{}.mp3", output_name));
+                // Remove from completed - they'll be re-queued
+                for id in &reencode_needed {
+                    s.completed.remove(id);
+                }
 
-                jobs.push(ConversionJob {
-                    input_path: file.path.clone(),
-                    output_path,
-                    strategy,
+                (old_bitrate, reencode_needed, folders_to_requeue)
+            };
+
+            // Delete old output directories (outside lock)
+            for id in &reencode_needed {
+                let _ = output_manager.delete_folder_output(id);
+            }
+
+            // Re-queue folders for re-encoding
+            if !folders_to_requeue.is_empty() {
+                let mut s = state.lock().unwrap();
+                for (id, folder) in folders_to_requeue {
+                    println!("Re-queuing folder for re-encoding: {}", folder.path.display());
+                    s.queue.push_back((id, folder));
+                }
+            }
+
+            // Notify UI about re-encoding
+            if !reencode_needed.is_empty() {
+                println!(
+                    "Folders queued for re-encoding: {}",
+                    reencode_needed.len()
+                );
+                let _ = event_tx.send(EncoderEvent::BitrateRecalculated {
+                    new_bitrate: target_bitrate,
+                    reencode_needed,
                 });
             }
 
-            // Sort jobs: Copy first, then lossy, then lossless
-            jobs.sort_by_key(|j| match &j.strategy {
-                EncodingStrategy::Copy => 0,
-                EncodingStrategy::CopyWithoutArt => 1,
-                EncodingStrategy::ConvertAtSourceBitrate(_) => 2,
-                EncodingStrategy::ConvertAtTargetBitrate(_) => 3,
-            });
+            let _ = old_bitrate; // suppress unused warning
+        }
+        EncoderCommand::ImportStarted => {
+            let mut s = state.lock().unwrap();
+            s.imports_pending = s.imports_pending.saturating_add(1);
+            println!("Import started, pending: {}", s.imports_pending);
+        }
+        EncoderCommand::ImportComplete => {
+            let mut s = state.lock().unwrap();
+            s.imports_pending = s.imports_pending.saturating_sub(1);
+            println!("Import complete, pending: {}", s.imports_pending);
+        }
+    }
+}
 
-            // Run conversion
+/// Handle a folder conversion completion
+async fn handle_folder_completion(
+    result: FolderConversionResult,
+    state: &Arc<Mutex<BackgroundEncoderState>>,
+    output_manager: &OutputManager,
+    event_tx: &std_mpsc::Sender<EncoderEvent>,
+) {
+    let FolderConversionResult {
+        id,
+        folder,
+        output_dir,
+        files_total,
+        completed,
+        was_cancelled,
+        has_lossless,
+        lossless_bitrate,
+    } = result;
+
+    let mut s = state.lock().unwrap();
+
+    // Check if cancel token was set (might have been cancelled after task started)
+    let token_cancelled = s.active.get(&id)
+        .map(|(token, _)| token.load(Ordering::SeqCst))
+        .unwrap_or(false);
+
+    s.active.remove(&id);
+    s.active_progress.remove(&id);
+
+    if was_cancelled || token_cancelled {
+        // Was cancelled - check if this was due to bitrate change
+        let should_requeue = s.pending_bitrate_requeue.contains(&id);
+        if should_requeue {
+            s.pending_bitrate_requeue.retain(|x| x != &id);
+            // Re-queue for re-encoding at new bitrate
+            println!(
+                "Re-queuing cancelled lossless folder for re-encoding: {}",
+                folder.path.display()
+            );
+            s.queue.push_back((id.clone(), folder));
+            // Delete partial output
+            drop(s); // Release lock before file operations
+            let _ = output_manager.delete_folder_output(&id);
+        } else {
+            // Regular cancellation (folder removed by user)
+            let _ = event_tx.send(EncoderEvent::FolderCancelled(id.clone()));
+        }
+    } else if completed == files_total {
+        // Success!
+        let output_size = output_manager
+            .get_folder_output_size(&id)
+            .unwrap_or(0);
+
+        let status = FolderConversionStatus::Converted {
+            output_dir: output_dir.clone(),
+            lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
+            output_size,
+            completed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        };
+
+        s.completed.insert(id.clone(), (status, folder));
+
+        let _ = event_tx.send(EncoderEvent::FolderCompleted {
+            id: id.clone(),
+            output_dir,
+            output_size,
+            lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
+        });
+    } else {
+        // Some files failed
+        let _ = event_tx.send(EncoderEvent::FolderFailed {
+            id: id.clone(),
+            error: format!(
+                "Only {} of {} files converted successfully",
+                completed, files_total
+            ),
+        });
+    }
+}
+
+/// Try to start new folder conversions if we have capacity
+async fn try_start_folders(
+    state: &Arc<Mutex<BackgroundEncoderState>>,
+    output_manager: &OutputManager,
+    ffmpeg_path: &PathBuf,
+    event_tx: &std_mpsc::Sender<EncoderEvent>,
+    completion_tx: &mpsc::UnboundedSender<FolderConversionResult>,
+) {
+    const MAX_CONCURRENT_FOLDERS: usize = 3;
+
+    // Keep starting folders until we hit capacity or run out of work
+    loop {
+        let next_folder = {
+            let mut s = state.lock().unwrap();
+
+            // Don't start encoding while imports are in progress
+            if s.imports_pending > 0 {
+                return;
+            }
+
+            if s.active.len() >= MAX_CONCURRENT_FOLDERS {
+                return; // At capacity
+            }
+
+            // Look for a lossy-only folder first (no lossless files)
+            let lossy_only_idx = s.queue.iter()
+                .position(|(_, folder)| !folder.has_lossless_files());
+
+            if let Some(idx) = lossy_only_idx {
+                // Found a lossy-only folder - remove it from queue
+                s.queue.remove(idx)
+            } else {
+                // No lossy-only folders, take from front (has lossless)
+                s.queue.pop_front()
+            }
+        };
+
+        let Some((id, folder)) = next_folder else {
+            return; // No work to do
+        };
+
+        // Start encoding this folder
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let folder_has_lossless = folder.has_lossless_files();
+        let folder_for_task = folder.clone();
+        {
+            let mut s = state.lock().unwrap();
+            s.active.insert(id.clone(), (cancel_token.clone(), folder_has_lossless));
+        }
+
+        let files_total = folder.audio_files.len();
+        let _ = event_tx.send(EncoderEvent::FolderStarted {
+            id: id.clone(),
+            files_total,
+        });
+
+        // Get output directory for this folder
+        let output_dir = match output_manager.get_folder_output_dir(&id) {
+            Ok(dir) => dir,
+            Err(e) => {
+                let _ = event_tx.send(EncoderEvent::FolderFailed {
+                    id: id.clone(),
+                    error: e,
+                });
+                state.lock().unwrap().active.remove(&id);
+                continue; // Try next folder
+            }
+        };
+
+        // Get current lossless bitrate
+        let lossless_bitrate = state.lock().unwrap().lossless_bitrate;
+
+        // Build conversion jobs
+        let mut jobs = Vec::new();
+        let mut has_lossless = false;
+
+        for file in &folder.audio_files {
+            let strategy = determine_encoding_strategy(
+                &file.codec,
+                file.bitrate,
+                lossless_bitrate,
+                file.is_lossy,
+                false, // no_lossy_mode
+                false, // embed_album_art
+            );
+
+            if matches!(strategy, EncodingStrategy::ConvertAtTargetBitrate(_)) {
+                has_lossless = true;
+            }
+
+            let output_name = file
+                .path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            let output_path = output_dir.join(format!("{}.mp3", output_name));
+
+            jobs.push(ConversionJob {
+                input_path: file.path.clone(),
+                output_path,
+                strategy,
+                folder_id: Some(id.clone()),
+            });
+        }
+
+        // Sort jobs: Copy first, then lossy, then lossless
+        jobs.sort_by_key(|j| match &j.strategy {
+            EncodingStrategy::Copy => 0,
+            EncodingStrategy::CopyWithoutArt => 1,
+            EncodingStrategy::ConvertAtSourceBitrate(_) => 2,
+            EncodingStrategy::ConvertAtTargetBitrate(_) => 3,
+        });
+
+        // Clone what we need for the spawned task
+        let ffmpeg_path = ffmpeg_path.clone();
+        let event_tx = event_tx.clone();
+        let completion_tx = completion_tx.clone();
+        let id_for_task = id.clone();
+        let output_dir_for_task = output_dir.clone();
+        let state_for_progress = state.clone();
+
+        // Spawn the conversion task
+        tokio::spawn(async move {
             let progress = Arc::new(ConversionProgress::new(jobs.len()));
-            let event_tx_clone = event_tx.clone();
-            let id_clone = id.clone();
-            let progress_clone = progress.clone();
+            let progress_for_callback = progress.clone();
+            let id_for_callback = id_for_task.clone();
+            let event_tx_for_callback = event_tx.clone();
+            let state_for_callback = state_for_progress.clone();
 
             let (completed, _failed, was_cancelled) = convert_files_parallel_with_callback(
-                ffmpeg_path.clone(),
+                ffmpeg_path,
                 jobs,
                 progress.clone(),
                 cancel_token.clone(),
                 move || {
-                    let completed = progress_clone.completed_count();
-                    let total = progress_clone.total;
-                    let _ = event_tx_clone.send(EncoderEvent::FolderProgress {
-                        id: id_clone.clone(),
+                    let completed = progress_for_callback.completed_count();
+                    let total = progress_for_callback.total;
+
+                    // Update state for UI
+                    if let Ok(mut s) = state_for_callback.lock() {
+                        s.active_progress.insert(id_for_callback.clone(), (completed, total));
+                    }
+
+                    let _ = event_tx_for_callback.send(EncoderEvent::FolderProgress {
+                        id: id_for_callback.clone(),
                         files_completed: completed,
                         files_total: total,
                     });
@@ -496,71 +695,20 @@ async fn run_encoder_loop(
             )
             .await;
 
-            // Update state
-            {
-                let mut s = state.lock().unwrap();
-                s.active = None;
+            // Send completion result back to main loop
+            let _ = completion_tx.send(FolderConversionResult {
+                id: id_for_task,
+                folder: folder_for_task,
+                output_dir: output_dir_for_task,
+                files_total,
+                completed,
+                was_cancelled: was_cancelled || cancel_token.load(Ordering::SeqCst),
+                has_lossless,
+                lossless_bitrate,
+            });
+        });
 
-                if was_cancelled || cancel_token.load(Ordering::SeqCst) {
-                    // Was cancelled - check if this was due to bitrate change
-                    let should_requeue = s.pending_bitrate_requeue.as_ref() == Some(&id);
-                    if should_requeue {
-                        s.pending_bitrate_requeue = None;
-                        // Re-queue for re-encoding at new bitrate
-                        println!(
-                            "Re-queuing cancelled lossless folder for re-encoding: {}",
-                            folder_for_completed.path.display()
-                        );
-                        s.queue.push_back((id.clone(), folder_for_completed.clone()));
-                        // Delete partial output
-                        drop(s); // Release lock before file operations
-                        let _ = output_manager.delete_folder_output(&id);
-                    } else {
-                        // Regular cancellation (folder removed by user)
-                        let _ = event_tx.send(EncoderEvent::FolderCancelled(id.clone()));
-                    }
-                } else if completed == files_total {
-                    // Success!
-                    let output_size = output_manager
-                        .get_folder_output_size(&id)
-                        .unwrap_or(0);
-
-                    let status = FolderConversionStatus::Converted {
-                        output_dir: output_dir.clone(),
-                        lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
-                        output_size,
-                        completed_at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    };
-
-                    s.completed.insert(id.clone(), (status, folder_for_completed));
-
-                    let _ = event_tx.send(EncoderEvent::FolderCompleted {
-                        id: id.clone(),
-                        output_dir,
-                        output_size,
-                        lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
-                    });
-                } else {
-                    // Some files failed
-                    let _ = event_tx.send(EncoderEvent::FolderFailed {
-                        id: id.clone(),
-                        error: format!(
-                            "Only {} of {} files converted successfully",
-                            completed, files_total
-                        ),
-                    });
-                }
-            }
-        } else {
-            // No work to do - wait a bit before checking again
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
-
-        // Also check for incoming commands during sleep
-        tokio::task::yield_now().await;
+        println!("Spawned encoding task for folder: {}", folder.path.display());
     }
 }
 
@@ -572,7 +720,7 @@ mod tests {
     fn test_background_encoder_state_new() {
         let state = BackgroundEncoderState::new();
         assert_eq!(state.queue.len(), 0);
-        assert!(state.active.is_none());
+        assert!(state.active.is_empty());
         assert_eq!(state.completed.len(), 0);
         assert_eq!(state.lossless_bitrate, 320);
         assert!(!state.is_running);
@@ -593,7 +741,7 @@ mod tests {
         assert!(!state.is_pending(&id2));
 
         // Set active
-        state.active = Some((id2.clone(), Arc::new(AtomicBool::new(false)), false));
+        state.active.insert(id2.clone(), (Arc::new(AtomicBool::new(false)), false));
         assert!(state.is_pending(&id2));
         assert!(!state.is_pending(&id3));
     }

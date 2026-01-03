@@ -210,16 +210,17 @@ impl FolderList {
                 return status.clone();
             }
 
-            // Check if active
-            if let Some((active_id, _, _)) = &guard.active {
-                if active_id == folder_id {
-                    // Get actual progress from state
-                    let (files_completed, files_total) = guard.active_progress.unwrap_or((0, 0));
-                    return FolderConversionStatus::Converting {
-                        files_completed,
-                        files_total,
-                    };
-                }
+            // Check if active (supports multiple active folders)
+            if guard.active.contains_key(folder_id) {
+                // Get actual progress from state
+                let (files_completed, files_total) = guard.active_progress
+                    .get(folder_id)
+                    .copied()
+                    .unwrap_or((0, 0));
+                return FolderConversionStatus::Converting {
+                    files_completed,
+                    files_total,
+                };
             }
 
             // Check if queued
@@ -335,7 +336,7 @@ impl FolderList {
                     if let Some(ref encoder) = self.background_encoder {
                         let state = encoder.get_state();
                         let mut guard = state.lock().unwrap();
-                        guard.active_progress = Some((0, files_total));
+                        guard.active_progress.insert(id.clone(), (0, files_total));
                     }
                     println!("Encoding started: {:?} ({} files)", id, files_total);
                 }
@@ -344,7 +345,7 @@ impl FolderList {
                     if let Some(ref encoder) = self.background_encoder {
                         let state = encoder.get_state();
                         let mut guard = state.lock().unwrap();
-                        guard.active_progress = Some((files_completed, files_total));
+                        guard.active_progress.insert(id.clone(), (files_completed, files_total));
                     }
                     println!("Encoding progress: {:?} {}/{}", id, files_completed, files_total);
                 }
@@ -352,11 +353,12 @@ impl FolderList {
                     println!("Encoding complete: {:?} -> {:?} ({} bytes, bitrate: {:?})",
                         id, output_dir, output_size, lossless_bitrate);
 
-                    // Clear active progress in encoder state
+                    // Clear active progress for this folder
                     if let Some(ref encoder) = self.background_encoder {
                         let state = encoder.get_state();
                         let mut guard = state.lock().unwrap();
-                        guard.active_progress = None;
+                        guard.active_progress.remove(&id);
+                        guard.active.remove(&id);
                     }
 
                     // Update the folder's conversion status
@@ -526,6 +528,11 @@ impl FolderList {
         // Reset import state (total will be updated after expansion)
         self.import_state.reset(new_paths.len());
 
+        // Notify encoder that import is starting (delays encoding until complete)
+        if let Some(ref encoder) = self.background_encoder {
+            encoder.import_started();
+        }
+
         // Clone state for background thread
         let state = self.import_state.clone();
 
@@ -689,6 +696,11 @@ impl FolderList {
 
         // Reset import state
         self.import_state.reset(folder_count);
+
+        // Notify encoder that import is starting (delays encoding until complete)
+        if let Some(ref encoder) = self.background_encoder {
+            encoder.import_started();
+        }
 
         // Clone state for background thread
         let state = self.import_state.clone();
@@ -1593,6 +1605,14 @@ impl FolderList {
                         this.last_folder_change = Some(std::time::Instant::now());
                     });
                 }
+
+                // Notify encoder that import is complete (resumes encoding)
+                let _ = this.update(&mut async_cx, |this, _cx| {
+                    if let Some(ref encoder) = this.background_encoder {
+                        encoder.import_complete();
+                    }
+                });
+
                 let _ = async_cx.refresh();
             }
         }).detach();
@@ -1716,6 +1736,11 @@ impl FolderList {
                             this.last_folder_change = Some(std::time::Instant::now());
                             this.last_calculated_bitrate = Some(target_bitrate);
                         }
+                    }
+
+                    // Notify encoder that import is complete (resumes encoding)
+                    if let Some(ref encoder) = this.background_encoder {
+                        encoder.import_complete();
                     }
                 });
 
