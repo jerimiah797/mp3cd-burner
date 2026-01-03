@@ -355,11 +355,16 @@ impl FolderList {
             let guard = state.lock().unwrap();
 
             self.folders.iter().all(|folder| {
+                // Check both encoder's completed map AND folder's own conversion status
+                // (folders loaded from bundles have Converted status but aren't in encoder)
                 guard.completed.contains_key(&folder.id)
+                    || matches!(folder.conversion_status, FolderConversionStatus::Converted { .. })
             })
         } else {
-            // In legacy mode, assume not converted until burn process runs
-            false
+            // In legacy mode, check folder status directly
+            self.folders.iter().all(|folder| {
+                matches!(folder.conversion_status, FolderConversionStatus::Converted { .. })
+            })
         }
     }
 
@@ -786,7 +791,10 @@ impl FolderList {
     }
 
     /// Save the current state as a profile to the specified path
-    pub fn save_profile(&self, path: &std::path::Path, profile_name: String) -> Result<(), String> {
+    ///
+    /// If `for_bundle` is true, saves as v2.0 bundle format including converted files.
+    /// If `for_bundle` is false, saves as legacy format (metadata only).
+    pub fn save_profile(&mut self, path: &std::path::Path, profile_name: String, for_bundle: bool) -> Result<(), String> {
         // Save volume_label if it's not the default
         let volume_label = if self.volume_label == super::DEFAULT_LABEL {
             None
@@ -794,6 +802,28 @@ impl FolderList {
             Some(self.volume_label.clone())
         };
 
+        // If saving as bundle and we have converted files in temp, copy them to bundle first
+        if for_bundle {
+            if let Some(output_manager) = &self.output_manager {
+                // Collect folder IDs that have been converted
+                let converted_folder_ids: Vec<crate::core::FolderId> = self.folders.iter()
+                    .filter_map(|f| {
+                        if matches!(f.conversion_status, crate::core::FolderConversionStatus::Converted { .. }) {
+                            Some(f.id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if !converted_folder_ids.is_empty() && !output_manager.is_bundle_mode() {
+                    // Copy converted files from temp to bundle
+                    output_manager.copy_to_bundle(path, &converted_folder_ids)?;
+                }
+            }
+        }
+
+        // Save the profile
         crate::profiles::save_profile_to_path(
             path,
             profile_name,
@@ -801,7 +831,22 @@ impl FolderList {
             self.output_manager.as_ref(),
             self.iso_state.as_ref(),
             volume_label,
-        )
+            for_bundle,
+        )?;
+
+        // If we saved as bundle, update output manager to use the bundle path for future encodes
+        if for_bundle {
+            if let Some(output_manager) = &mut self.output_manager {
+                output_manager.set_bundle_path(Some(path.to_path_buf()));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if any folders have been converted
+    fn has_converted_folders(&self) -> bool {
+        self.folders.iter().any(|f| matches!(f.conversion_status, crate::core::FolderConversionStatus::Converted { .. }))
     }
 
     /// Load a profile and restore its state
@@ -841,9 +886,25 @@ impl FolderList {
         // Restore volume label from profile (or default if not saved)
         self.volume_label = setup.volume_label.clone().unwrap_or_else(|| super::DEFAULT_LABEL.to_string());
 
+        // If loading a bundle, set up the output manager to use the bundle path
+        if let Some(ref bundle_path) = setup.bundle_path {
+            if let Some(output_manager) = &mut self.output_manager {
+                output_manager.set_bundle_path(Some(bundle_path.clone()));
+                println!("Set output manager bundle path to: {:?}", bundle_path);
+            }
+        } else {
+            // Legacy format - clear any bundle path
+            if let Some(output_manager) = &mut self.output_manager {
+                output_manager.set_bundle_path(None);
+            }
+        }
+
         // Clear the encoder state and delete converted files
-        if let Some(encoder) = &self.background_encoder {
-            encoder.clear_all();
+        // (Don't delete for bundle - we're using the bundle's converted files!)
+        if setup.bundle_path.is_none() {
+            if let Some(encoder) = &self.background_encoder {
+                encoder.clear_all();
+            }
         }
 
         // Store the setup for the polling callback
@@ -1074,12 +1135,70 @@ impl FolderList {
     }
 
     /// Show save dialog to save current profile (called from File > Save menu)
-    pub fn save_profile_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    ///
+    /// If there are converted folders, shows a dialog asking whether to include audio files.
+    /// Then shows the file picker and saves the profile.
+    pub fn save_profile_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.folders.is_empty() {
             println!("No folders to save");
             return;
         }
 
+        // Check if we have converted folders - if so, offer bundle option
+        if self.has_converted_folders() {
+            // Show dialog to choose save format
+            let receiver = window.prompt(
+                PromptLevel::Info,
+                "Save Options",
+                Some("Some folders have already been converted. Would you like to include the converted audio files in the profile?"),
+                &["Include Audio Files", "Metadata Only", "Cancel"],
+                cx,
+            );
+
+            let window_handle = window.window_handle();
+
+            cx.spawn(move |this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
+                let mut async_cx = cx.clone();
+                async move {
+                    if let Ok(choice) = receiver.await {
+                        match choice {
+                            0 => {
+                                // Include audio - save as bundle
+                                let _ = async_cx.update_window(window_handle, |_, window, cx| {
+                                    let _ = this_handle.update(cx, |this, cx| {
+                                        this.show_save_file_picker(window, cx, true);
+                                    });
+                                });
+                            }
+                            1 => {
+                                // Metadata only - save as legacy
+                                let _ = async_cx.update_window(window_handle, |_, window, cx| {
+                                    let _ = this_handle.update(cx, |this, cx| {
+                                        this.show_save_file_picker(window, cx, false);
+                                    });
+                                });
+                            }
+                            _ => {
+                                // Cancel - reset flags
+                                let _ = async_cx.update(|cx| {
+                                    let _ = this_handle.update(cx, |this, _cx| {
+                                        this.pending_new_after_save = false;
+                                        this.pending_open_after_save = false;
+                                    });
+                                });
+                            }
+                        }
+                    }
+                }
+            }).detach();
+        } else {
+            // No converted folders - just show file picker (save as metadata only)
+            self.show_save_file_picker(window, cx, false);
+        }
+    }
+
+    /// Internal method to show the save file picker
+    fn show_save_file_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>, for_bundle: bool) {
         // Use current profile path if we've saved before, otherwise generate from first folder
         let (start_dir, default_filename) = if let Some(ref current_path) = self.current_profile_path {
             // Use the directory and filename from the current profile
@@ -1109,7 +1228,7 @@ impl FolderList {
             .to_string();
 
         let receiver = cx.prompt_for_new_path(&start_dir, Some(&default_filename));
-        cx.spawn(|this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
+        cx.spawn(move |this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
             async move {
                 match receiver.await {
@@ -1120,12 +1239,12 @@ impl FolderList {
                             .unwrap_or_else(|| profile_name);
 
                         let _ = this_handle.update(&mut async_cx, |this, cx| {
-                            if let Err(e) = this.save_profile(&path, chosen_name) {
+                            if let Err(e) = this.save_profile(&path, chosen_name, for_bundle) {
                                 eprintln!("Failed to save profile: {}", e);
                                 this.pending_new_after_save = false;
                                 this.pending_open_after_save = false;
                             } else {
-                                println!("Profile saved to: {:?}", path);
+                                println!("Profile saved to: {:?} (bundle: {})", path, for_bundle);
                                 // Remember the save path and mark as saved
                                 this.current_profile_path = Some(path);
                                 this.has_unsaved_changes = false;
@@ -1958,8 +2077,17 @@ impl FolderList {
                                     if setup.validation.valid_folders.contains(&folder_path_str) {
                                         // Restore conversion status from saved state
                                         if let Some(saved) = setup.folder_states.get(&folder_path_str) {
+                                            // Resolve output_dir path - for bundles it's relative
+                                            let output_dir = if let Some(ref bundle_path) = setup.bundle_path {
+                                                // Bundle format: resolve relative path
+                                                bundle_path.join(&saved.output_dir)
+                                            } else {
+                                                // Legacy format: path is already absolute
+                                                std::path::PathBuf::from(&saved.output_dir)
+                                            };
+
                                             folder.conversion_status = FolderConversionStatus::Converted {
-                                                output_dir: std::path::PathBuf::from(&saved.output_dir),
+                                                output_dir,
                                                 lossless_bitrate: saved.lossless_bitrate,
                                                 output_size: saved.output_size,
                                                 completed_at: 0,
@@ -1997,8 +2125,17 @@ impl FolderList {
                                 if setup.validation.valid_folders.contains(&folder_path_str) {
                                     // Restore conversion status from saved state
                                     if let Some(saved) = setup.folder_states.get(&folder_path_str) {
+                                        // Resolve output_dir path - for bundles it's relative
+                                        let output_dir = if let Some(ref bundle_path) = setup.bundle_path {
+                                            // Bundle format: resolve relative path
+                                            bundle_path.join(&saved.output_dir)
+                                        } else {
+                                            // Legacy format: path is already absolute
+                                            std::path::PathBuf::from(&saved.output_dir)
+                                        };
+
                                         folder.conversion_status = FolderConversionStatus::Converted {
-                                            output_dir: std::path::PathBuf::from(&saved.output_dir),
+                                            output_dir,
                                             lossless_bitrate: saved.lossless_bitrate,
                                             output_size: saved.output_size,
                                             completed_at: 0,

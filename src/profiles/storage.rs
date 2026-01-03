@@ -1,5 +1,8 @@
 //! Profile storage for saving/loading folder configurations
-//! (Future feature)
+//!
+//! Supports two formats:
+//! - **Bundle format (v2.0+)**: `.mp3cd` directory containing `profile.json` and `converted/` folder
+//! - **Legacy format (v1.x)**: Single `.mp3cd` JSON file (deprecated)
 #![allow(dead_code)]
 
 use super::types::{BurnProfile, ConversionStateValidation};
@@ -10,20 +13,73 @@ use std::time::UNIX_EPOCH;
 const RECENT_PROFILES_FILE: &str = "recent_profiles.json";
 const MAX_RECENT_PROFILES: usize = 10;
 
-/// Save a burn profile to a file
+/// Check if a path is a bundle (directory with .mp3cd extension)
+pub fn is_bundle(path: &Path) -> bool {
+    path.is_dir() && path.extension().map_or(false, |ext| ext == "mp3cd")
+}
+
+/// Get the profile.json path inside a bundle
+pub fn get_profile_json_path(bundle_path: &Path) -> PathBuf {
+    bundle_path.join("profile.json")
+}
+
+/// Get the converted/ directory path inside a bundle
+pub fn get_converted_dir(bundle_path: &Path) -> PathBuf {
+    bundle_path.join("converted")
+}
+
+/// Save a burn profile to a file or bundle
+///
+/// If the path ends with `.mp3cd`:
+/// - Creates a bundle directory structure
+/// - Writes `profile.json` inside the bundle
 pub fn save_profile(profile: &BurnProfile, path: &Path) -> Result<(), String> {
     let json = serde_json::to_string_pretty(profile)
         .map_err(|e| format!("Failed to serialize profile: {}", e))?;
 
-    fs::write(path, json)
-        .map_err(|e| format!("Failed to write profile file: {}", e))?;
+    // Check if this should be a bundle (path ends with .mp3cd and we're saving v2.0+)
+    let is_bundle_path = path.extension().map_or(false, |ext| ext == "mp3cd");
+
+    if is_bundle_path && profile.version.starts_with("2.") {
+        // Create bundle directory structure
+        fs::create_dir_all(path)
+            .map_err(|e| format!("Failed to create bundle directory: {}", e))?;
+
+        // Create converted/ subdirectory
+        let converted_dir = get_converted_dir(path);
+        fs::create_dir_all(&converted_dir)
+            .map_err(|e| format!("Failed to create converted directory: {}", e))?;
+
+        // Write profile.json inside bundle
+        let profile_json_path = get_profile_json_path(path);
+        fs::write(&profile_json_path, json)
+            .map_err(|e| format!("Failed to write profile.json: {}", e))?;
+
+        println!("Saved bundle profile to: {:?}", path);
+    } else {
+        // Legacy: write directly to path
+        fs::write(path, json)
+            .map_err(|e| format!("Failed to write profile file: {}", e))?;
+    }
 
     Ok(())
 }
 
-/// Load a burn profile from a file
+/// Load a burn profile from a file or bundle
+///
+/// Automatically detects:
+/// - Bundle format: directory containing `profile.json`
+/// - Legacy format: single JSON file
 pub fn load_profile(path: &Path) -> Result<BurnProfile, String> {
-    let contents = fs::read_to_string(path)
+    let profile_path = if is_bundle(path) {
+        // Bundle format: read profile.json from inside
+        get_profile_json_path(path)
+    } else {
+        // Legacy format: read directly
+        path.to_path_buf()
+    };
+
+    let contents = fs::read_to_string(&profile_path)
         .map_err(|e| format!("Failed to read profile file: {}", e))?;
 
     let profile: BurnProfile = serde_json::from_str(&contents)
@@ -35,11 +91,13 @@ pub fn load_profile(path: &Path) -> Result<BurnProfile, String> {
 /// Validate a profile's saved conversion state
 ///
 /// Checks if:
-/// - Session directory exists
-/// - Output directories exist for each folder
+/// - Output directories exist for each folder (in bundle or temp)
 /// - Source folders haven't been modified
 /// - ISO file exists (if saved)
-pub fn validate_conversion_state(profile: &BurnProfile) -> ConversionStateValidation {
+///
+/// For bundle format: `bundle_path` should be the path to the `.mp3cd` bundle.
+/// For legacy format: `bundle_path` should be `None`.
+pub fn validate_conversion_state(profile: &BurnProfile, bundle_path: Option<&Path>) -> ConversionStateValidation {
     let mut validation = ConversionStateValidation {
         session_exists: false,
         valid_folders: Vec::new(),
@@ -48,29 +106,53 @@ pub fn validate_conversion_state(profile: &BurnProfile) -> ConversionStateValida
     };
 
     // Check if profile has conversion state
-    let (session_id, folder_states) = match (&profile.session_id, &profile.folder_states) {
-        (Some(sid), Some(states)) => (sid, states),
-        _ => return validation, // No conversion state saved
+    let folder_states = match &profile.folder_states {
+        Some(states) => states,
+        None => {
+            // No conversion state - all folders need encoding
+            validation.invalid_folders = profile.folders.clone();
+            return validation;
+        }
     };
 
-    // Check session directory
-    let session_dir = std::env::temp_dir()
-        .join("mp3cd_output")
-        .join(session_id);
-
-    if !session_dir.exists() {
-        // Session directory gone - all folders invalid
+    // Determine base directory for resolving output paths
+    let base_dir: Option<PathBuf> = if let Some(bundle) = bundle_path {
+        // Bundle format: output_dir is relative to bundle (e.g., "converted/abc123...")
+        Some(bundle.to_path_buf())
+    } else if let Some(session_id) = &profile.session_id {
+        // Legacy format: output_dir is relative to session dir
+        let session_dir = std::env::temp_dir()
+            .join("mp3cd_output")
+            .join(session_id);
+        if session_dir.exists() {
+            validation.session_exists = true;
+            Some(session_dir)
+        } else {
+            // Session directory gone - all folders invalid
+            validation.invalid_folders = profile.folders.clone();
+            return validation;
+        }
+    } else {
+        // No session_id and no bundle - can't validate
         validation.invalid_folders = profile.folders.clone();
         return validation;
-    }
+    };
 
-    validation.session_exists = true;
+    // For bundles, session_exists means the bundle exists (which it does if we got here)
+    if bundle_path.is_some() {
+        validation.session_exists = true;
+    }
 
     // Check each folder
     for folder_path in &profile.folders {
         if let Some(saved_state) = folder_states.get(folder_path) {
-            // Check if output directory exists
-            let output_dir = session_dir.join(&saved_state.output_dir);
+            // Resolve output directory path
+            let output_dir = if let Some(base) = &base_dir {
+                base.join(&saved_state.output_dir)
+            } else {
+                PathBuf::from(&saved_state.output_dir)
+            };
+
             if !output_dir.exists() {
                 validation.invalid_folders.push(folder_path.clone());
                 continue;
@@ -103,7 +185,7 @@ pub fn validate_conversion_state(profile: &BurnProfile) -> ConversionStateValida
         }
     }
 
-    // Check ISO validity
+    // Check ISO validity (ISOs are always in temp, not in bundle)
     if let Some(iso_path) = &profile.iso_path {
         let iso_exists = Path::new(iso_path).exists();
         let hash_matches = profile.iso_folder_hash.is_some()

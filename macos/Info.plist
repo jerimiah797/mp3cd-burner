@@ -40,7 +40,7 @@
             <key>LSHandlerRank</key>
             <string>Owner</string>
             <key>LSTypeIsPackage</key>
-            <false/>
+            <true/>
         </dict>
     </array>
     <key>UTExportedTypeDeclarations</key>

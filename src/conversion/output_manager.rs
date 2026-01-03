@@ -7,19 +7,27 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{FolderId, MusicFolder};
 
 /// Manages output directories for a conversion session
+///
+/// Clone-safe: all clones share the same bundle_path state, so setting the
+/// bundle path on one clone affects all others.
 #[derive(Debug, Clone)]
 pub struct OutputManager {
     /// Session ID (timestamp-based)
     session_id: String,
-    /// Base output directory
+    /// Base output directory (in /tmp)
     base_dir: PathBuf,
-    /// Session directory path
+    /// Session directory path (in /tmp)
     session_dir: PathBuf,
+    /// Bundle path (when working with a saved bundle)
+    /// If set, output goes to {bundle}/converted/ instead of temp
+    /// Shared across all clones so encoder sees updates from UI
+    bundle_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl OutputManager {
@@ -42,7 +50,36 @@ impl OutputManager {
             session_id,
             base_dir,
             session_dir,
+            bundle_path: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Set the bundle path for working with saved bundles
+    ///
+    /// When set, `get_folder_output_dir()` returns paths inside the bundle
+    /// instead of the temp session directory.
+    ///
+    /// This is thread-safe: setting the bundle path affects all clones of this OutputManager.
+    pub fn set_bundle_path(&self, path: Option<PathBuf>) {
+        let mut guard = self.bundle_path.lock().unwrap();
+        *guard = path;
+        if let Some(ref p) = *guard {
+            println!("OutputManager: bundle path set to {:?}", p);
+        } else {
+            println!("OutputManager: bundle path cleared");
+        }
+    }
+
+    /// Get the current bundle path, if set
+    pub fn get_bundle_path(&self) -> Option<PathBuf> {
+        let guard = self.bundle_path.lock().unwrap();
+        guard.clone()
+    }
+
+    /// Check if we're working with a bundle
+    pub fn is_bundle_mode(&self) -> bool {
+        let guard = self.bundle_path.lock().unwrap();
+        guard.is_some()
     }
 
     /// Clean up all sessions except the current one
@@ -91,7 +128,14 @@ impl OutputManager {
     ///
     /// Creates the directory if it doesn't exist.
     pub fn get_folder_output_dir(&self, folder_id: &FolderId) -> Result<PathBuf, String> {
-        let folder_dir = self.session_dir.join(folder_id.as_str());
+        let bundle_path = self.get_bundle_path();
+        let folder_dir = if let Some(bundle) = bundle_path {
+            // Bundle mode: {bundle}/converted/{folder_id}/
+            bundle.join("converted").join(folder_id.as_str())
+        } else {
+            // Temp mode: {session_dir}/{folder_id}/
+            self.session_dir.join(folder_id.as_str())
+        };
 
         if !folder_dir.exists() {
             fs::create_dir_all(&folder_dir)
@@ -104,12 +148,22 @@ impl OutputManager {
     /// Check if a folder's output directory exists (used in tests)
     #[allow(dead_code)]
     pub fn folder_output_exists(&self, folder_id: &FolderId) -> bool {
-        self.session_dir.join(folder_id.as_str()).exists()
+        let bundle_path = self.get_bundle_path();
+        if let Some(bundle) = bundle_path {
+            bundle.join("converted").join(folder_id.as_str()).exists()
+        } else {
+            self.session_dir.join(folder_id.as_str()).exists()
+        }
     }
 
     /// Get the total size of a folder's output directory
     pub fn get_folder_output_size(&self, folder_id: &FolderId) -> Result<u64, String> {
-        let folder_dir = self.session_dir.join(folder_id.as_str());
+        let bundle_path = self.get_bundle_path();
+        let folder_dir = if let Some(bundle) = bundle_path {
+            bundle.join("converted").join(folder_id.as_str())
+        } else {
+            self.session_dir.join(folder_id.as_str())
+        };
 
         if !folder_dir.exists() {
             return Ok(0);
@@ -120,7 +174,12 @@ impl OutputManager {
 
     /// Delete a folder's output directory (e.g., when folder is removed from list)
     pub fn delete_folder_output(&self, folder_id: &FolderId) -> Result<(), String> {
-        let folder_dir = self.session_dir.join(folder_id.as_str());
+        let bundle_path = self.get_bundle_path();
+        let folder_dir = if let Some(bundle) = bundle_path {
+            bundle.join("converted").join(folder_id.as_str())
+        } else {
+            self.session_dir.join(folder_id.as_str())
+        };
 
         if folder_dir.exists() {
             fs::remove_dir_all(&folder_dir)
@@ -131,10 +190,45 @@ impl OutputManager {
         Ok(())
     }
 
+    /// Copy converted files from temp session to a bundle
+    ///
+    /// This is called during the first save to move converted files
+    /// from the temp directory to the bundle.
+    pub fn copy_to_bundle(&self, bundle_path: &Path, folder_ids: &[FolderId]) -> Result<(), String> {
+        let converted_dir = bundle_path.join("converted");
+        fs::create_dir_all(&converted_dir)
+            .map_err(|e| format!("Failed to create converted directory in bundle: {}", e))?;
+
+        for folder_id in folder_ids {
+            let src = self.session_dir.join(folder_id.as_str());
+            let dst = converted_dir.join(folder_id.as_str());
+
+            if src.exists() {
+                // Copy the entire folder
+                copy_dir_recursive(&src, &dst)?;
+                println!("Copied {} to bundle: {:?} -> {:?}", folder_id, src, dst);
+            } else {
+                println!("Warning: Source folder not found for {}: {:?}", folder_id, src);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the relative path for a folder's output (for storing in profile.json)
+    ///
+    /// Returns a path like "converted/abc123..." that is relative to the bundle root.
+    pub fn get_relative_output_path(&self, folder_id: &FolderId) -> String {
+        format!("converted/{}", folder_id.as_str())
+    }
+
     /// Create ISO staging directory with numbered symlinks
     ///
     /// This creates a staging directory with numbered folders that symlink
     /// to the actual output folders. This allows reordering without re-encoding.
+    ///
+    /// Note: Staging is always in the temp session directory (not in bundle),
+    /// but symlinks point to converted files which may be in a bundle.
     ///
     /// Returns the staging directory path.
     pub fn create_iso_staging(&self, folders: &[MusicFolder]) -> Result<PathBuf, String> {
@@ -149,9 +243,17 @@ impl OutputManager {
         fs::create_dir_all(&staging_dir)
             .map_err(|e| format!("Failed to create staging directory: {}", e))?;
 
+        // Get bundle path for source directory resolution
+        let bundle_path = self.get_bundle_path();
+
         // Create numbered symlinks to each folder's output
         for (index, folder) in folders.iter().enumerate() {
-            let source_dir = self.session_dir.join(folder.id.as_str());
+            // Get source from bundle or temp depending on mode
+            let source_dir = if let Some(ref bundle) = bundle_path {
+                bundle.join("converted").join(folder.id.as_str())
+            } else {
+                self.session_dir.join(folder.id.as_str())
+            };
 
             if !source_dir.exists() {
                 return Err(format!(
@@ -265,8 +367,7 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
-/// Copy a directory recursively (for non-Unix platforms)
-#[cfg(not(unix))]
+/// Copy a directory recursively
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("Failed to create directory {:?}: {}", dst, e))?;
 
