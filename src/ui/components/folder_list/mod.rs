@@ -325,16 +325,27 @@ impl FolderList {
         self.iso_state.as_ref().map(|iso| iso.size_bytes as f64 / (1024.0 * 1024.0))
     }
 
-    /// Get the list of encoded folder IDs (from background encoder state)
+    /// Get the list of encoded folder IDs (from background encoder state OR folder status)
     fn get_encoded_folder_ids(&self) -> Vec<FolderId> {
+        let mut encoded_ids: Vec<FolderId> = Vec::new();
+
+        // Get from encoder's completed map
         if let Some(ref encoder) = self.background_encoder {
             let state = encoder.get_state();
             let guard = state.lock().unwrap();
-            guard.completed.keys().cloned().collect()
-        } else {
-            // In legacy mode (no background encoder), we don't track this
-            vec![]
+            encoded_ids.extend(guard.completed.keys().cloned());
         }
+
+        // Also include folders with Converted status (e.g., loaded from bundle)
+        for folder in &self.folders {
+            if matches!(folder.conversion_status, FolderConversionStatus::Converted { .. }) {
+                if !encoded_ids.contains(&folder.id) {
+                    encoded_ids.push(folder.id.clone());
+                }
+            }
+        }
+
+        encoded_ids
     }
 
     /// Determine what action is needed for the current burn request
@@ -537,6 +548,13 @@ impl FolderList {
     /// Returns true if ISO generation was triggered.
     fn maybe_generate_iso(&mut self, cx: &mut Context<Self>) -> bool {
         use crate::burning::IsoGenerationCheck;
+
+        // Don't generate ISO while profile import is in progress
+        // (folders are still being loaded from bundle)
+        // Also check for pending folders that haven't been drained yet
+        if self.import_state.is_importing() || self.import_state.has_pending_folders() {
+            return false;
+        }
 
         // Check all conditions for ISO generation
         let check = IsoGenerationCheck {

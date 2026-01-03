@@ -511,6 +511,11 @@ impl ImportState {
         let mut folders = self.scanned_folders.lock().unwrap();
         std::mem::take(&mut *folders)
     }
+
+    /// Check if there are folders waiting to be drained
+    pub fn has_pending_folders(&self) -> bool {
+        !self.scanned_folders.lock().unwrap().is_empty()
+    }
 }
 
 impl Default for ImportState {
