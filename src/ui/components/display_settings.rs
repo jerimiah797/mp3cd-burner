@@ -36,12 +36,12 @@ impl DisplaySettingsModal {
 
     /// Open the Display Settings window
     pub fn open(cx: &mut gpui::App) -> WindowHandle<Self> {
-        let bounds = Bounds::centered(None, size(px(320.), px(380.)), cx);
+        let bounds = Bounds::centered(None, size(px(320.), px(580.)), cx);
 
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(320.), px(380.))),
+                window_min_size: Some(size(px(320.), px(580.))),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("Display Settings".into()),
                     appears_transparent: false,

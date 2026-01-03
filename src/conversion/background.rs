@@ -50,6 +50,8 @@ pub enum EncoderCommand {
     ImportStarted,
     /// Import batch completed - resume encoding
     ImportComplete,
+    /// Update embed album art setting
+    SetEmbedAlbumArt { embed: bool },
 }
 
 /// Events emitted by the background encoder
@@ -107,6 +109,8 @@ pub struct BackgroundEncoderState {
     pub imports_pending: usize,
     /// Global pause flag - workers check this between files and wait if true
     pub paused: Arc<AtomicBool>,
+    /// Whether to embed album art in output MP3s
+    pub embed_album_art: bool,
 }
 
 impl BackgroundEncoderState {
@@ -121,6 +125,7 @@ impl BackgroundEncoderState {
             pending_bitrate_requeue: Vec::new(),
             imports_pending: 0,
             paused: Arc::new(AtomicBool::new(false)),
+            embed_album_art: false, // Default to stripping art for CD burning
         }
     }
 
@@ -147,6 +152,8 @@ pub struct BackgroundEncoderHandle {
     command_tx: mpsc::UnboundedSender<EncoderCommand>,
     pub state: Arc<Mutex<BackgroundEncoderState>>,
 }
+
+impl gpui::Global for BackgroundEncoderHandle {}
 
 impl BackgroundEncoderHandle {
     /// Add a folder to be encoded
@@ -185,6 +192,11 @@ impl BackgroundEncoderHandle {
     /// Notify that an import batch has completed (resumes encoding)
     pub fn import_complete(&self) {
         let _ = self.command_tx.send(EncoderCommand::ImportComplete);
+    }
+
+    /// Update embed album art setting
+    pub fn set_embed_album_art(&self, embed: bool) {
+        let _ = self.command_tx.send(EncoderCommand::SetEmbedAlbumArt { embed });
     }
 
     /// Get the current state (for reading status)
@@ -469,6 +481,11 @@ async fn handle_encoder_command(
                 println!("Import complete, pending: {} (still paused)", s.imports_pending);
             }
         }
+        EncoderCommand::SetEmbedAlbumArt { embed } => {
+            let mut s = state.lock().unwrap();
+            s.embed_album_art = embed;
+            println!("Embed album art: {}", embed);
+        }
     }
 }
 
@@ -623,8 +640,11 @@ async fn try_start_folders(
             }
         };
 
-        // Get current lossless bitrate
-        let lossless_bitrate = state.lock().unwrap().lossless_bitrate;
+        // Get current settings from state
+        let (lossless_bitrate, embed_album_art) = {
+            let state_guard = state.lock().unwrap();
+            (state_guard.lossless_bitrate, state_guard.embed_album_art)
+        };
 
         // Build conversion jobs
         let mut jobs = Vec::new();
@@ -637,7 +657,7 @@ async fn try_start_folders(
                 lossless_bitrate,
                 file.is_lossy,
                 false, // no_lossy_mode
-                false, // embed_album_art
+                embed_album_art,
             );
 
             if matches!(strategy, EncodingStrategy::ConvertAtTargetBitrate(_)) {
@@ -651,11 +671,19 @@ async fn try_start_folders(
                 .unwrap_or("unknown");
             let output_path = output_dir.join(format!("{}.mp3", output_name));
 
+            // Only pass album art path if embed_album_art is enabled and we have art
+            let album_art_path = if embed_album_art {
+                folder.album_art.as_ref().map(|s| PathBuf::from(s))
+            } else {
+                None
+            };
+
             jobs.push(ConversionJob {
                 input_path: file.path.clone(),
                 output_path,
                 strategy,
                 folder_id: Some(id.clone()),
+                album_art_path,
             });
         }
 

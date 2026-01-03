@@ -64,7 +64,7 @@ src/
 - [x] Copy `profiles/` module (types, storage) - 3 tests
 - [x] Adapt state management (simplified, no Tauri State needed yet)
 
-**Total: 117 tests passing**
+**Total: 124 tests passing**
 
 ### Phase 4: Core Features ✅ DONE
 - [x] Folder scanning (scan_music_folder, get_audio_files) - 7 tests
@@ -96,6 +96,7 @@ src/
 - [x] Options menu (Simulate Burn with checkmark toggle)
 - [x] Keyboard shortcuts (Cmd+N, Cmd+O, Cmd+S, Cmd+Q)
 - [x] Open Output Folder action
+- [x] Display Settings modal (View menu)
 - [ ] No Lossy Conversions toggle
 - [ ] Embed Album Art toggle
 
@@ -111,6 +112,7 @@ src/
 - [x] Minimum window size (500x300)
 - [x] Error handling & user feedback (dialogs, progress states)
 - [x] Streamlined UI (hidden cancel, consistent button sizing)
+- [x] Album metadata display (album/artist/year from tags, not folder name)
 - [ ] Window state persistence
 
 ## What Was Directly Copied
@@ -138,17 +140,25 @@ These modules had **no Tauri dependencies** and were copied as-is:
 6. ~~**File dialogs** - Use GPUI's cx.prompt_for_paths() for Open/Save profiles~~ ✅ DONE
 7. ~~**Profile system** - Save/load burn profiles~~ ✅ DONE
 8. ~~**"Burn Another" mode** - Re-burn same ISO without re-converting~~ ✅ DONE
+
+### Remaining Items (Nice to Have)
 9. **Recent profiles menu** - Show recently opened profiles in File menu
 10. **Unsaved changes detection** - Prompt to save before closing/new
-11. **No Lossy Conversions toggle** - Options menu toggle
-12. **Embed Album Art toggle** - Options menu toggle
-13. **Window state persistence** - Remember window position/size
+11. **No Lossy Conversions toggle** - Options menu toggle (prevent transcoding lossy files)
+12. **Embed Album Art toggle** - Options menu toggle (include art in output MP3s)
+13. **Window state persistence** - Remember window position/size between launches
 
 ## New Features (Beyond Original Tauri App)
 
 1. ✅ **Background encoding** - Folders encode immediately as added (no waiting for Burn)
 2. ✅ **Smart re-encoding** - Lossless files automatically re-encode when bitrate changes
 3. ✅ **Priority queue** - Lossy folders encode first, ensuring stable bitrate before lossless
+4. ✅ **Parallel folder encoding** - Up to 3 folders encode simultaneously (spawned tokio tasks)
+5. ✅ **Per-folder progress bars** - Visual progress line at bottom of each folder card during encoding
+6. ✅ **Import pause mechanism** - Encoding pauses during folder imports for responsive UI
+7. ✅ **Display Settings modal** - Toggle visibility of file count, sizes, formats, bitrates per folder
+8. ✅ **Rich metadata display** - Shows "Album (Year) - Artist" from tags instead of folder names
+9. ✅ **Source format/bitrate info** - Shows codec type (FLAC, MP3, etc.) and bitrate ranges
 
 ## Key Architectural Differences
 

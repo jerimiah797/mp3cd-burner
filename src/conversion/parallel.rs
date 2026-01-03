@@ -68,6 +68,8 @@ pub struct ConversionJob {
     pub strategy: EncodingStrategy,
     /// Optional folder ID for multi-folder parallel processing
     pub folder_id: Option<FolderId>,
+    /// Optional album art path to embed during conversion
+    pub album_art_path: Option<PathBuf>,
 }
 
 /// Convert a single file asynchronously based on encoding strategy
@@ -76,6 +78,7 @@ async fn convert_file_async(
     input_path: &Path,
     output_path: &Path,
     strategy: &EncodingStrategy,
+    album_art_path: Option<&Path>,
 ) -> ConversionResult {
     // Create output directory if needed
     if let Some(parent) = output_path.parent() {
@@ -128,18 +131,48 @@ async fn convert_file_async(
             // Transcode lossy source to MP3 at specified bitrate (ABR mode)
             let bitrate_str = format!("{}k", bitrate);
 
-            let result = Command::new(ffmpeg_path)
-                .arg("-i")
-                .arg(input_path)
-                .arg("-vn")           // Skip video/album art for CD burning
-                .arg("-codec:a")
-                .arg("libmp3lame")
-                .arg("-b:a")
-                .arg(&bitrate_str)
-                .arg("-y")
-                .arg(output_path)
-                .output()
-                .await;
+            let result = if let Some(art_path) = album_art_path {
+                // Embed album art during conversion
+                Command::new(ffmpeg_path)
+                    .arg("-i")
+                    .arg(input_path)
+                    .arg("-i")
+                    .arg(art_path)
+                    .arg("-map")
+                    .arg("0:a")           // Map audio from first input
+                    .arg("-map")
+                    .arg("1:0")           // Map image from second input
+                    .arg("-codec:a")
+                    .arg("libmp3lame")
+                    .arg("-b:a")
+                    .arg(&bitrate_str)
+                    .arg("-c:v")
+                    .arg("mjpeg")         // Encode cover as JPEG
+                    .arg("-id3v2_version")
+                    .arg("3")             // Use ID3v2.3 for compatibility
+                    .arg("-metadata:s:v")
+                    .arg("title=Album cover")
+                    .arg("-metadata:s:v")
+                    .arg("comment=Cover (front)")
+                    .arg("-y")
+                    .arg(output_path)
+                    .output()
+                    .await
+            } else {
+                // No album art - skip video stream
+                Command::new(ffmpeg_path)
+                    .arg("-i")
+                    .arg(input_path)
+                    .arg("-vn")           // Skip video/album art
+                    .arg("-codec:a")
+                    .arg("libmp3lame")
+                    .arg("-b:a")
+                    .arg(&bitrate_str)
+                    .arg("-y")
+                    .arg(output_path)
+                    .output()
+                    .await
+            };
 
             handle_ffmpeg_result(result, input_path, output_path)
         }
@@ -147,20 +180,52 @@ async fn convert_file_async(
             // Transcode lossless to MP3 at specified bitrate (CBR mode for predictable size)
             let bitrate_str = format!("{}k", bitrate);
 
-            let result = Command::new(ffmpeg_path)
-                .arg("-i")
-                .arg(input_path)
-                .arg("-vn")           // Skip video/album art for CD burning
-                .arg("-codec:a")
-                .arg("libmp3lame")
-                .arg("-abr")
-                .arg("0")             // Force CBR mode for predictable file size
-                .arg("-b:a")
-                .arg(&bitrate_str)
-                .arg("-y")
-                .arg(output_path)
-                .output()
-                .await;
+            let result = if let Some(art_path) = album_art_path {
+                // Embed album art during conversion
+                Command::new(ffmpeg_path)
+                    .arg("-i")
+                    .arg(input_path)
+                    .arg("-i")
+                    .arg(art_path)
+                    .arg("-map")
+                    .arg("0:a")           // Map audio from first input
+                    .arg("-map")
+                    .arg("1:0")           // Map image from second input
+                    .arg("-codec:a")
+                    .arg("libmp3lame")
+                    .arg("-abr")
+                    .arg("0")             // Force CBR mode for predictable file size
+                    .arg("-b:a")
+                    .arg(&bitrate_str)
+                    .arg("-c:v")
+                    .arg("mjpeg")         // Encode cover as JPEG
+                    .arg("-id3v2_version")
+                    .arg("3")             // Use ID3v2.3 for compatibility
+                    .arg("-metadata:s:v")
+                    .arg("title=Album cover")
+                    .arg("-metadata:s:v")
+                    .arg("comment=Cover (front)")
+                    .arg("-y")
+                    .arg(output_path)
+                    .output()
+                    .await
+            } else {
+                // No album art - skip video stream
+                Command::new(ffmpeg_path)
+                    .arg("-i")
+                    .arg(input_path)
+                    .arg("-vn")           // Skip video/album art
+                    .arg("-codec:a")
+                    .arg("libmp3lame")
+                    .arg("-abr")
+                    .arg("0")             // Force CBR mode for predictable file size
+                    .arg("-b:a")
+                    .arg(&bitrate_str)
+                    .arg("-y")
+                    .arg(output_path)
+                    .output()
+                    .await
+            };
 
             handle_ffmpeg_result(result, input_path, output_path)
         }
@@ -288,6 +353,7 @@ where
                 &job.input_path,
                 &job.output_path,
                 &job.strategy,
+                job.album_art_path.as_deref(),
             )
             .await;
 
@@ -456,6 +522,7 @@ where
                 &job.input_path,
                 &job.output_path,
                 &job.strategy,
+                job.album_art_path.as_deref(),
             )
             .await;
 
@@ -559,6 +626,7 @@ mod tests {
             output_path: PathBuf::from("/output/song.mp3"),
             strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
             folder_id: None,
+            album_art_path: None,
         };
 
         assert_eq!(job.input_path, PathBuf::from("/input/song.flac"));
@@ -603,18 +671,21 @@ mod tests {
                 output_path: PathBuf::from("/tmp/1.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
                 folder_id: None,
+                album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/2.flac"),
                 output_path: PathBuf::from("/tmp/2.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
                 folder_id: None,
+                album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/3.flac"),
                 output_path: PathBuf::from("/tmp/3.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
                 folder_id: None,
+                album_art_path: None,
             },
         ];
         let progress = Arc::new(ConversionProgress::new(3));
@@ -652,12 +723,14 @@ mod tests {
                 output_path: PathBuf::from("/tmp/a.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
                 folder_id: None,
+                album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/b.flac"),
                 output_path: PathBuf::from("/tmp/b.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
                 folder_id: None,
+                album_art_path: None,
             },
         ];
         let progress = Arc::new(ConversionProgress::new(2));
@@ -689,12 +762,14 @@ mod tests {
                 output_path: PathBuf::from("/tmp/1.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
                 folder_id: None,
+                album_art_path: None,
             },
             ConversionJob {
                 input_path: PathBuf::from("/fake/2.flac"),
                 output_path: PathBuf::from("/tmp/2.mp3"),
                 strategy: EncodingStrategy::ConvertAtTargetBitrate(256),
                 folder_id: None,
+                album_art_path: None,
             },
         ];
         let progress = Arc::new(ConversionProgress::new(2));

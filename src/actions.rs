@@ -10,6 +10,7 @@ actions!(app, [
     About,
     OpenOutputDir,
     ToggleSimulateBurn,
+    ToggleEmbedAlbumArt,
     OpenDisplaySettings,
     // Profile actions
     NewProfile,

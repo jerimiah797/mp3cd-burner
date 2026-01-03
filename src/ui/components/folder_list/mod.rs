@@ -126,7 +126,8 @@ impl FolderList {
     ///
     /// This should be called after construction when background encoding is desired.
     /// If not called, folders will only be converted when "Burn" is clicked (legacy mode).
-    pub fn enable_background_encoding(&mut self) -> Result<(), String> {
+    /// Returns a clone of the encoder handle so it can be stored as a global.
+    pub fn enable_background_encoding(&mut self) -> Result<BackgroundEncoderHandle, String> {
         use crate::conversion::BackgroundEncoder;
 
         // Create the background encoder (this spawns its own thread with Tokio runtime)
@@ -138,6 +139,7 @@ impl FolderList {
         output_manager.cleanup_old_sessions()?;
 
         // Store the handle, event receiver, and output manager
+        let handle_clone = handle.clone();
         self.background_encoder = Some(handle);
         self.encoder_event_rx = Some(event_rx);
         self.output_manager = Some(output_manager);
@@ -145,7 +147,7 @@ impl FolderList {
         println!("Background encoding enabled, session: {:?}",
             self.output_manager.as_ref().map(|m| m.session_id()));
 
-        Ok(())
+        Ok(handle_clone)
     }
 
     /// Start polling for encoder events (called after enabling background encoding)
@@ -172,6 +174,16 @@ impl FolderList {
     #[allow(dead_code)]
     pub fn output_manager(&self) -> Option<&OutputManager> {
         self.output_manager.as_ref()
+    }
+
+    /// Update encoder's embed_album_art setting
+    pub fn set_embed_album_art(&self, embed: bool) {
+        if let Some(ref encoder) = self.background_encoder {
+            println!("[FolderList] Sending embed_album_art={} to encoder", embed);
+            encoder.set_embed_album_art(embed);
+        } else {
+            println!("[FolderList] WARNING: No encoder to send embed_album_art to!");
+        }
     }
 
     /// Queue a folder for background encoding (if encoder is available)

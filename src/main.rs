@@ -15,7 +15,7 @@ use gpui::{
     prelude::*, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
     WindowBounds, WindowHandle, WindowOptions,
 };
-use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, OpenDisplaySettings, NewProfile, OpenProfile, SaveProfile};
+use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, ToggleEmbedAlbumArt, OpenDisplaySettings, NewProfile, OpenProfile, SaveProfile};
 use core::{AppSettings, DisplaySettings};
 use ui::components::{AboutBox, DisplaySettingsModal, FolderList};
 
@@ -26,6 +26,12 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
         "✓ Simulate Burn"
     } else {
         "Simulate Burn"
+    };
+
+    let embed_album_art_label = if settings.embed_album_art {
+        "✓ Embed Album Art"
+    } else {
+        "Embed Album Art"
     };
 
     vec![
@@ -51,7 +57,7 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
             items: vec![
                 MenuItem::action(simulate_burn_label, ToggleSimulateBurn),
                 MenuItem::action("No Lossy Conversions", About), // TODO: Implement toggle
-                MenuItem::action("Embed Album Art", About), // TODO: Implement toggle
+                MenuItem::action(embed_album_art_label, ToggleEmbedAlbumArt),
                 MenuItem::separator(),
                 MenuItem::action("Display Settings...", OpenDisplaySettings),
                 MenuItem::separator(),
@@ -93,6 +99,8 @@ fn main() {
             let menus = build_menus(settings);
             cx.set_menus(menus);
         });
+        // Note: ToggleEmbedAlbumArt handler is registered after window creation
+        // so it can access the window_handle to notify the encoder.
         cx.on_action(|_: &OpenDisplaySettings, cx| {
             DisplaySettingsModal::open(cx);
         });
@@ -116,6 +124,11 @@ fn main() {
         // Open the main window
         let bounds = Bounds::centered(None, size(px(500.), px(600.)), cx);
 
+        // Use a shared cell to pass the encoder handle out of the window creation closure
+        let encoder_handle_cell: std::sync::Arc<std::sync::Mutex<Option<conversion::BackgroundEncoderHandle>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let encoder_handle_for_closure = encoder_handle_cell.clone();
+
         let window_handle: WindowHandle<FolderList> = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -131,18 +144,49 @@ fn main() {
                 cx.new(|cx| {
                     let mut folder_list = FolderList::new(cx);
                     // Enable background encoding for immediate folder conversion
-                    if let Err(e) = folder_list.enable_background_encoding() {
-                        eprintln!("Warning: Could not enable background encoding: {}", e);
-                        eprintln!("Falling back to legacy mode (convert on burn)");
-                    } else {
-                        // Start polling for encoder events
-                        folder_list.start_encoder_polling(cx);
+                    match folder_list.enable_background_encoding() {
+                        Ok(handle) => {
+                            // Store the handle so we can set it as a global
+                            *encoder_handle_for_closure.lock().unwrap() = Some(handle);
+                            // Start polling for encoder events
+                            folder_list.start_encoder_polling(cx);
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Could not enable background encoding: {}", e);
+                            eprintln!("Falling back to legacy mode (convert on burn)");
+                        }
                     }
                     folder_list
                 })
             },
         )
         .unwrap();
+
+        // Set the encoder handle as a global for access from action handlers
+        if let Some(handle) = encoder_handle_cell.lock().unwrap().take() {
+            cx.set_global(handle);
+        }
+
+        // Register ToggleEmbedAlbumArt handler
+        cx.on_action(|_: &ToggleEmbedAlbumArt, cx| {
+            // Toggle the setting
+            let settings = cx.global_mut::<AppSettings>();
+            settings.embed_album_art = !settings.embed_album_art;
+            let embed = settings.embed_album_art;
+            println!("[main.rs] Toggled embed_album_art = {}", embed);
+
+            // Rebuild menus to show updated checkmark
+            let menus = build_menus(settings);
+            cx.set_menus(menus);
+
+            // Notify the encoder via the global handle
+            if let Some(encoder) = cx.try_global::<conversion::BackgroundEncoderHandle>() {
+                encoder.set_embed_album_art(embed);
+                println!("[main.rs] Notified encoder");
+            } else {
+                println!("[main.rs] No encoder global available");
+            }
+        });
 
         // Quit the app when the main window is closed
         // This is appropriate for a single-window utility app
