@@ -10,8 +10,10 @@ BUNDLE_NAME="${APP_NAME}.app"
 BUILD_DIR="${PROJECT_DIR}/target/release"
 BUNDLE_DIR="${BUILD_DIR}/${BUNDLE_NAME}"
 
-# Code signing identity (from Apple Developer account)
-SIGNING_IDENTITY="Developer ID Application: Jerimiah Ham (3QUH73KW5Q)"
+# Code signing identity (from environment variable or default)
+# Set SIGNING_IDENTITY in your shell profile, e.g.:
+#   export SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
 
 # Parse arguments
 SIGN=false
@@ -97,8 +99,16 @@ echo -n "APPL????" > "${BUNDLE_DIR}/Contents/PkgInfo"
 
 # Code signing
 if [ "$SIGN" = true ]; then
+    if [ -z "$SIGNING_IDENTITY" ]; then
+        echo "Error: --sign requires SIGNING_IDENTITY environment variable"
+        echo "Set it in your shell profile:"
+        echo "  export SIGNING_IDENTITY=\"Developer ID Application: Your Name (TEAMID)\""
+        exit 1
+    fi
+
     echo ""
     echo "=== Code Signing ==="
+    echo "Using identity: ${SIGNING_IDENTITY}"
 
     # Sign the ffmpeg binary first (nested code must be signed first)
     echo "Signing ffmpeg..."

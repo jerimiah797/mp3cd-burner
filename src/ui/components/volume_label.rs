@@ -136,7 +136,7 @@ impl VolumeLabelDialog {
         false
     }
 
-    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
         // Call the callback with the label
         if let Some(ref on_confirm) = self.on_confirm {
             on_confirm(self.text.clone());
