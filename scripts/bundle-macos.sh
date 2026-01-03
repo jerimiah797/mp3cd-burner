@@ -15,9 +15,11 @@ SIGNING_IDENTITY="Developer ID Application: Jerimiah Ham (3QUH73KW5Q)"
 
 # Parse arguments
 SIGN=false
+UNIVERSAL=false
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --sign) SIGN=true ;;
+        --universal) UNIVERSAL=true ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
     shift
@@ -25,9 +27,31 @@ done
 
 echo "=== Building MP3 CD Burner for macOS ==="
 
-# Build release binary
-echo "Building release binary..."
-cargo build --release
+if [ "$UNIVERSAL" = true ]; then
+    echo "Building universal binary (ARM64 + x86_64)..."
+
+    # Build for ARM64
+    echo "  Building for aarch64-apple-darwin..."
+    cargo build --release --target aarch64-apple-darwin
+
+    # Build for x86_64
+    echo "  Building for x86_64-apple-darwin..."
+    cargo build --release --target x86_64-apple-darwin
+
+    # Create universal binary with lipo
+    echo "  Creating universal binary with lipo..."
+    mkdir -p "${BUILD_DIR}"
+    lipo -create \
+        "${PROJECT_DIR}/target/aarch64-apple-darwin/release/MP3-CD-Burner" \
+        "${PROJECT_DIR}/target/x86_64-apple-darwin/release/MP3-CD-Burner" \
+        -output "${BUILD_DIR}/MP3-CD-Burner"
+
+    echo "  Universal binary created!"
+else
+    # Build release binary for current architecture only
+    echo "Building release binary..."
+    cargo build --release
+fi
 
 # Create app bundle structure
 echo "Creating app bundle..."
