@@ -13,8 +13,9 @@
 use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::core::AudioFileInfo;
 
-/// CD capacity target in bytes (685 MB)
-const CD_CAPACITY_BYTES: u64 = 685 * 1024 * 1024;
+/// CD capacity target in bytes (700 MB decimal)
+/// CD-Rs are labeled 700 MB using decimal (not binary) megabytes
+const CD_CAPACITY_BYTES: u64 = 700 * 1000 * 1000;
 
 /// Safety margin for estimation errors (5%)
 /// Accounts for: VBR encoding unpredictability at higher bitrates,
@@ -29,6 +30,40 @@ const MIN_BITRATE: u32 = 64;
 
 /// Bitrate increment for optimization iterations (kbps)
 const BITRATE_STEP: u32 = 8;
+
+/// Valid LAME MP3 CBR bitrates (kbps)
+/// Non-standard bitrates will be encoded as VBR, resulting in unpredictable file sizes
+const VALID_CBR_BITRATES: &[u32] = &[64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+
+/// Snap a bitrate to the nearest valid LAME CBR bitrate
+/// Rounds DOWN to ensure we don't exceed CD capacity
+pub fn snap_to_valid_bitrate(bitrate: u32) -> u32 {
+    // Find the highest valid bitrate that doesn't exceed the target
+    VALID_CBR_BITRATES
+        .iter()
+        .rev()
+        .find(|&&b| b <= bitrate)
+        .copied()
+        .unwrap_or(MIN_BITRATE)
+}
+
+/// Get the next higher valid CBR bitrate, if one exists
+fn next_higher_bitrate(bitrate: u32) -> Option<u32> {
+    VALID_CBR_BITRATES
+        .iter()
+        .find(|&&b| b > bitrate)
+        .copied()
+}
+
+/// Calculate estimated size at a given bitrate for lossless content
+/// Note: No safety margin here - the raw bitrate calculation doesn't include it either
+fn estimate_lossless_size(duration_secs: f64, bitrate: u32) -> u64 {
+    // size = bitrate (kbps) * duration (s) * 1000 / 8
+    // Add 10KB per file overhead for MP3 framing (estimate ~15 tracks per hour)
+    let audio_bytes = (duration_secs * bitrate as f64 * 1000.0 / 8.0) as u64;
+    let estimated_tracks = (duration_secs / 240.0) as u64; // ~4 min per track
+    audio_bytes + (estimated_tracks * 10_000)
+}
 
 /// Result of estimating a single file's output size
 #[derive(Debug, Clone)]
@@ -271,10 +306,10 @@ pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> MultipassEstimate
     let remaining_bytes = CD_CAPACITY_BYTES.saturating_sub(fixed_size);
 
     // Calculate optimal lossless bitrate from remaining space
-    let target_bitrate = if lossless_duration > 0.0 && remaining_bytes > 0 {
+    let raw_bitrate = if lossless_duration > 0.0 && remaining_bytes > 0 {
         // bitrate = bytes * 8 / duration / 1000 (kbps)
-        let raw_bitrate = (remaining_bytes as f64 * 8.0 / lossless_duration / 1000.0) as u32;
-        raw_bitrate.clamp(MIN_BITRATE, MAX_BITRATE)
+        let raw = (remaining_bytes as f64 * 8.0 / lossless_duration / 1000.0) as u32;
+        raw.clamp(MIN_BITRATE, MAX_BITRATE)
     } else if lossless_count == 0 {
         // No lossless files - calculate what cap would be needed if we exceed capacity
         let total_duration: f64 = files.iter().map(|f| f.duration).sum();
@@ -288,6 +323,10 @@ pub fn calculate_multipass_bitrate(files: &[AudioFileInfo]) -> MultipassEstimate
         // Edge case: lossless files but no remaining space
         MIN_BITRATE
     };
+
+    // With ABR mode, we can use any bitrate - no need to snap to CBR values
+    // ABR targets the specified average bitrate with predictable file sizes
+    let target_bitrate = raw_bitrate;
 
     MultipassEstimate {
         target_bitrate,
@@ -384,5 +423,25 @@ mod tests {
         // Should decrease since total duration exceeds 5 hours
         assert!(optimized < 320, "Expected bitrate < 320, got {}", optimized);
         assert!(estimate.headroom_bytes >= 0);
+    }
+
+    #[test]
+    fn test_snap_to_valid_bitrate() {
+        // Exact matches should stay the same
+        assert_eq!(snap_to_valid_bitrate(320), 320);
+        assert_eq!(snap_to_valid_bitrate(256), 256);
+        assert_eq!(snap_to_valid_bitrate(128), 128);
+        assert_eq!(snap_to_valid_bitrate(64), 64);
+
+        // Non-standard bitrates should round DOWN
+        assert_eq!(snap_to_valid_bitrate(281), 256); // The case we discovered
+        assert_eq!(snap_to_valid_bitrate(300), 256);
+        assert_eq!(snap_to_valid_bitrate(319), 256);
+        assert_eq!(snap_to_valid_bitrate(200), 192);
+        assert_eq!(snap_to_valid_bitrate(150), 128);
+
+        // Below minimum should return minimum
+        assert_eq!(snap_to_valid_bitrate(32), 64);
+        assert_eq!(snap_to_valid_bitrate(1), 64);
     }
 }

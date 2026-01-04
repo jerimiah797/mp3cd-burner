@@ -8,8 +8,9 @@
 
 use super::AudioFileInfo;
 
-/// Target CD size in bytes (700MB)
-pub const TARGET_SIZE_BYTES: u64 = 700 * 1024 * 1024;
+/// Target CD size in bytes (700 MB decimal)
+/// CD-Rs are labeled 700 MB using decimal (not binary) megabytes
+pub const TARGET_SIZE_BYTES: u64 = 700 * 1000 * 1000;
 
 /// Maximum MP3 bitrate (kbps)
 pub const MAX_BITRATE: u32 = 320;

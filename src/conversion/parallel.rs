@@ -139,6 +139,8 @@ async fn convert_file_async(
                     .arg("1:0")           // Map image from second input
                     .arg("-codec:a")
                     .arg("libmp3lame")
+                    .arg("-abr")
+                    .arg("1")             // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-c:v")
@@ -161,6 +163,8 @@ async fn convert_file_async(
                     .arg("-vn")           // Skip video/album art
                     .arg("-codec:a")
                     .arg("libmp3lame")
+                    .arg("-abr")
+                    .arg("1")             // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-y")
@@ -172,7 +176,7 @@ async fn convert_file_async(
             handle_ffmpeg_result(result, input_path, output_path)
         }
         EncodingStrategy::ConvertAtTargetBitrate(bitrate) => {
-            // Transcode lossless to MP3 at specified bitrate (CBR mode for predictable size)
+            // Transcode lossless to MP3 at specified bitrate (ABR mode for predictable size)
             let bitrate_str = format!("{}k", bitrate);
 
             let result = if let Some(art_path) = album_art_path {
@@ -189,7 +193,7 @@ async fn convert_file_async(
                     .arg("-codec:a")
                     .arg("libmp3lame")
                     .arg("-abr")
-                    .arg("0")             // Force CBR mode for predictable file size
+                    .arg("1")             // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-c:v")
@@ -213,7 +217,7 @@ async fn convert_file_async(
                     .arg("-codec:a")
                     .arg("libmp3lame")
                     .arg("-abr")
-                    .arg("0")             // Force CBR mode for predictable file size
+                    .arg("1")             // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-y")
