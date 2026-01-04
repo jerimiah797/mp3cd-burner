@@ -82,6 +82,10 @@ pub struct FolderList {
     pub(crate) current_profile_path: Option<PathBuf>,
     /// Whether there are unsaved changes since last save/load
     pub(crate) has_unsaved_changes: bool,
+    /// Manual bitrate override (None = use calculated)
+    pub(crate) manual_bitrate_override: Option<u32>,
+    /// Receiver for bitrate override dialog result
+    pub(crate) pending_bitrate_rx: Option<std::sync::mpsc::Receiver<u32>>,
 }
 
 /// Action to take after volume label dialog closes
@@ -121,6 +125,8 @@ impl FolderList {
             pending_burn_action: None,
             current_profile_path: None,
             has_unsaved_changes: false,
+            manual_bitrate_override: None,
+            pending_bitrate_rx: None,
         }
     }
 
@@ -153,6 +159,8 @@ impl FolderList {
             pending_burn_action: None,
             current_profile_path: None,
             has_unsaved_changes: false,
+            manual_bitrate_override: None,
+            pending_bitrate_rx: None,
         }
     }
 }

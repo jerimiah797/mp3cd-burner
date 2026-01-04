@@ -102,6 +102,7 @@ impl FolderList {
             self.output_manager.as_ref(),
             self.iso_state.as_ref(),
             volume_label,
+            self.manual_bitrate_override,
             for_bundle,
         )?;
 
@@ -156,6 +157,9 @@ impl FolderList {
 
         // Restore volume label from profile (or default if not saved)
         self.volume_label = setup.volume_label.clone().unwrap_or_else(|| DEFAULT_LABEL.to_string());
+
+        // Restore manual bitrate override from profile (or reset to auto-calculate)
+        self.manual_bitrate_override = setup.manual_bitrate_override;
 
         // If loading a bundle, set up the output manager to use the bundle path
         if let Some(ref bundle_path) = setup.bundle_path {
@@ -290,6 +294,7 @@ impl FolderList {
         self.iso_has_been_burned = false;
         self.last_folder_change = None;
         self.last_calculated_bitrate = None;
+        self.manual_bitrate_override = None; // Reset to auto-calculate
         self.volume_label = DEFAULT_LABEL.to_string();
         self.current_profile_path = None;
         self.has_unsaved_changes = false;

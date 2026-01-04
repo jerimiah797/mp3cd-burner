@@ -47,14 +47,33 @@ pub struct StatusBarState {
     pub iso_size_mb: Option<f64>,
     /// Whether the ISO has been burned at least once
     pub iso_has_been_burned: bool,
+    /// Whether the bitrate is manually overridden
+    pub is_manual_override: bool,
+    /// The effective bitrate (either calculated or manual override)
+    pub effective_bitrate: u32,
 }
 
 impl StatusBarState {
     /// Get formatted bitrate display string
     pub fn bitrate_display(&self) -> String {
         match &self.bitrate_estimate {
-            Some(e) if e.should_show_bitrate() => format!("{} kbps", e.target_bitrate),
+            Some(e) if e.should_show_bitrate() => {
+                if self.is_manual_override {
+                    // Show the effective (overridden) bitrate with asterisk
+                    format!("{} kbps*", self.effective_bitrate)
+                } else {
+                    format!("{} kbps", e.target_bitrate)
+                }
+            }
             _ => "--".to_string(),
+        }
+    }
+
+    /// Check if the bitrate should be shown as clickable
+    pub fn should_show_bitrate(&self) -> bool {
+        match &self.bitrate_estimate {
+            Some(e) => e.should_show_bitrate(),
+            None => false,
         }
     }
 
@@ -64,13 +83,12 @@ impl StatusBarState {
     }
 }
 
-/// Render the left stats panel (Files, Duration, Size, Target, Bitrate)
+/// Render the left stats panel (Files, Duration, Size, Target)
+/// Note: Bitrate row is rendered separately in render.rs to support click handlers
 pub fn render_stats_panel(state: &StatusBarState, theme: &Theme) -> impl IntoElement {
-    let bitrate_display = state.bitrate_display();
     let size_mb = state.size_mb();
     let text_color = theme.text;
     let text_muted = theme.text_muted;
-    let success_color = theme.success;
 
     div()
         .flex()
@@ -137,52 +155,33 @@ pub fn render_stats_panel(state: &StatusBarState, theme: &Theme) -> impl IntoEle
                         ),
                 ),
         )
-        // Row 3: Bitrate, ISO size, and CD-RW indicator
+}
+
+/// Render just the clickable bitrate element (for wrapping with on_click in render.rs)
+pub fn render_clickable_bitrate(state: &StatusBarState, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+    let bitrate_display = state.bitrate_display();
+    let success_color = theme.success;
+    let text_muted = theme.text_muted;
+    let is_clickable = state.should_show_bitrate();
+
+    div()
+        .id(SharedString::from("bitrate-display"))
+        .flex()
+        .gap_1()
+        .text_color(text_muted)
+        .child("Bitrate:")
         .child(
             div()
-                .flex()
-                .gap_4()
-                .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child("Bitrate:")
-                        .child(
-                            div()
-                                .text_color(success_color)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(bitrate_display),
-                        ),
-                )
-                // ISO size (only show when we have a valid ISO)
-                .when(state.iso_size_mb.is_some(), |el| {
-                    let iso_mb = state.iso_size_mb.unwrap_or(0.0);
-                    el.child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .child("ISO:")
-                            .child(
-                                div()
-                                    .text_color(text_color)
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child(format!("{:.0} MB", iso_mb)),
-                            ),
-                    )
-                })
-                // CD-RW indicator (only show when erasable disc detected)
-                .when(
-                    state.is_converting && state.burn_stage == BurnStage::ErasableDiscDetected,
-                    |el| {
-                        el.child(
-                            div()
-                                .text_color(theme.danger)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child("CD-RW"),
-                        )
-                    },
-                ),
+                .text_color(success_color)
+                .font_weight(gpui::FontWeight::BOLD)
+                .child(bitrate_display),
         )
+        .when(is_clickable, |el| {
+            el.cursor_pointer()
+                .hover(|s| s.bg(theme.bg_card_hover).rounded_sm())
+                .px_1()
+                .mx(gpui::px(-4.0))
+        })
 }
 
 /// Render import progress display

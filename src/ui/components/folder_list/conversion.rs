@@ -9,6 +9,7 @@ use gpui::{AnyWindowHandle, AsyncApp, Context, PromptLevel, Timer, WeakEntity, W
 use crate::burning::IsoState;
 use crate::conversion::{calculate_multipass_bitrate, MultipassEstimate};
 use crate::core::{AppSettings, BurnStage, ConversionState};
+use crate::ui::components::BitrateOverrideDialog;
 
 use super::{FolderList, PendingBurnAction};
 
@@ -79,11 +80,63 @@ impl FolderList {
         Some(calculate_multipass_bitrate(&all_files))
     }
 
-    /// Get the target bitrate for display (convenience wrapper)
+    /// Get the target bitrate for encoding
+    ///
+    /// If a manual override is set, returns that value.
+    /// Otherwise returns the automatically calculated bitrate.
     pub fn calculated_bitrate(&self) -> u32 {
+        // If manual override is set, use it
+        if let Some(override_bitrate) = self.manual_bitrate_override {
+            return override_bitrate;
+        }
+
+        // Otherwise calculate automatically
         self.calculated_bitrate_estimate()
             .map(|e| e.target_bitrate)
             .unwrap_or(320)
+    }
+
+    /// Show the bitrate override dialog
+    pub fn show_bitrate_override_dialog(&mut self, cx: &mut Context<Self>) {
+        // Get current effective bitrate (either override or calculated)
+        let current_bitrate = self.calculated_bitrate();
+        // Get the auto-calculated bitrate for reference
+        let calculated_bitrate = self.calculated_bitrate_estimate()
+            .map(|e| e.target_bitrate)
+            .unwrap_or(320);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_bitrate_rx = Some(rx);
+
+        BitrateOverrideDialog::open(cx, current_bitrate, calculated_bitrate, move |new_bitrate| {
+            let _ = tx.send(new_bitrate);
+        });
+    }
+
+    /// Poll for bitrate override dialog result
+    ///
+    /// Returns true if a new bitrate was received and applied.
+    pub(super) fn poll_bitrate_override(&mut self) -> bool {
+        if let Some(ref rx) = self.pending_bitrate_rx {
+            if let Ok(new_bitrate) = rx.try_recv() {
+                println!("Manual bitrate override: {} kbps", new_bitrate);
+
+                self.manual_bitrate_override = Some(new_bitrate);
+                self.pending_bitrate_rx = None;
+
+                // Trigger re-encoding at new bitrate
+                if let Some(ref encoder) = self.background_encoder {
+                    encoder.recalculate_bitrate(new_bitrate);
+                }
+
+                // Invalidate ISO state - output files are being regenerated
+                self.iso_state = None;
+                self.iso_generation_attempted = false;
+
+                return true;
+            }
+        }
+        false
     }
 
     /// Check if debounce period has passed and trigger bitrate recalculation

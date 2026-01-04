@@ -30,6 +30,11 @@ pub struct BurnProfile {
     /// If None, auto-generate from folders
     pub volume_label: Option<String>,
 
+    /// Manual bitrate override (if user has set a custom bitrate)
+    /// If None, use auto-calculated bitrate
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_bitrate_override: Option<u32>,
+
     // === Conversion State (v1.1+) ===
     /// Session ID for the output directory
     /// Output is stored in /tmp/mp3cd_output/{session_id}/
@@ -139,6 +144,7 @@ impl BurnProfile {
             folders,
             settings,
             volume_label: None,
+            manual_bitrate_override: None,
             // Conversion state (v1.1+) - None for new profiles
             session_id: None,
             folder_states: None,

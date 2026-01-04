@@ -12,9 +12,9 @@ use crate::ui::Theme;
 
 use crate::ui::components::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
 use crate::ui::components::status_bar::{
-    is_stage_cancelable, render_burn_button_base, render_convert_burn_button_base,
-    render_erase_burn_button_base, render_import_progress, render_iso_too_large,
-    render_progress_box, render_stats_panel, StatusBarState,
+    is_stage_cancelable, render_burn_button_base, render_clickable_bitrate,
+    render_convert_burn_button_base, render_erase_burn_button_base, render_import_progress,
+    render_iso_too_large, render_progress_box, render_stats_panel, StatusBarState,
 };
 use super::{FolderList, PendingBurnAction};
 
@@ -100,6 +100,8 @@ impl FolderList {
             iso_exceeds_limit: self.iso_exceeds_limit(),
             iso_size_mb: self.iso_size_mb(),
             iso_has_been_burned: self.iso_has_been_burned,
+            is_manual_override: self.manual_bitrate_override.is_some(),
+            effective_bitrate: self.calculated_bitrate(), // Respects manual override
         }
     }
 
@@ -109,6 +111,60 @@ impl FolderList {
         let success_color = theme.success;
         let success_hover = theme.success_hover;
         let text_muted = theme.text_muted;
+        let text_color = theme.text;
+        let is_clickable = state.should_show_bitrate();
+
+        // Build clickable bitrate element
+        let mut bitrate_el = render_clickable_bitrate(&state, theme);
+        if is_clickable {
+            bitrate_el = bitrate_el.on_click(cx.listener(|this, _event, _window, cx| {
+                this.show_bitrate_override_dialog(cx);
+            }));
+        }
+
+        // Build row 3: Bitrate, ISO, CD-RW
+        let bitrate_row = div()
+            .flex()
+            .gap_4()
+            .text_color(text_muted)
+            .text_sm()
+            .child(bitrate_el)
+            // ISO size (only show when we have a valid ISO)
+            .when(state.iso_size_mb.is_some(), |el| {
+                let iso_mb = state.iso_size_mb.unwrap_or(0.0);
+                el.child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child("ISO:")
+                        .child(
+                            div()
+                                .text_color(text_color)
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child(format!("{:.0} MB", iso_mb)),
+                        ),
+                )
+            })
+            // CD-RW indicator (only show when erasable disc detected)
+            .when(
+                state.is_converting && state.burn_stage == BurnStage::ErasableDiscDetected,
+                |el| {
+                    el.child(
+                        div()
+                            .text_color(theme.danger)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("CD-RW"),
+                    )
+                },
+            );
+
+        // Build left side: stats panel (rows 1-2) + bitrate row
+        let left_panel = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(render_stats_panel(&state, theme))
+            .child(bitrate_row);
 
         div()
             .py_4()
@@ -120,8 +176,8 @@ impl FolderList {
             .border_t_1()
             .border_color(theme.border)
             .text_sm()
-            // Left side: stats panel (delegated to helper)
-            .child(render_stats_panel(&state, theme))
+            // Left side: stats panel with clickable bitrate
+            .child(left_panel)
             // Right side: action panel
             .child(self.render_action_panel(&state, theme, success_color, success_hover, text_muted, cx))
     }
