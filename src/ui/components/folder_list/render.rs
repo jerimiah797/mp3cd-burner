@@ -347,7 +347,23 @@ impl Render for FolderList {
 
         // Capture all listeners first (before borrowing for status bar)
         let on_external_drop = cx.listener(|this, paths: &ExternalPaths, _window, cx| {
-            this.add_external_folders(paths.paths(), cx);
+            // Check if any dropped path is a .mp3cd profile file
+            let profile_path = paths.paths().iter().find(|p| {
+                p.extension()
+                    .map(|ext| ext.to_string_lossy().to_lowercase() == "mp3cd")
+                    .unwrap_or(false)
+            });
+
+            if let Some(profile) = profile_path {
+                // Load as profile instead of treating as music folder
+                println!("Loading dropped profile: {:?}", profile);
+                if let Err(e) = this.load_profile(profile, cx) {
+                    eprintln!("Failed to load dropped profile: {}", e);
+                }
+            } else {
+                // No profile files - treat as music folders
+                this.add_external_folders(paths.paths(), cx);
+            }
             this.drop_target_index = None;
         });
 
