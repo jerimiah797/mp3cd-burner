@@ -243,16 +243,21 @@ impl OutputManager {
         fs::create_dir_all(&staging_dir)
             .map_err(|e| format!("Failed to create staging directory: {}", e))?;
 
-        // Get bundle path for source directory resolution
-        let bundle_path = self.get_bundle_path();
-
         // Create numbered symlinks to each folder's output
         for (index, folder) in folders.iter().enumerate() {
-            // Get source from bundle or temp depending on mode
-            let source_dir = if let Some(ref bundle) = bundle_path {
-                bundle.join("converted").join(folder.id.as_str())
-            } else {
-                self.session_dir.join(folder.id.as_str())
+            // Get source directory from folder's conversion status if available,
+            // otherwise fall back to session directory.
+            // This handles folders loaded from bundles (which have output_dir set)
+            // as well as newly encoded folders (which are in the session directory).
+            let source_dir = match &folder.conversion_status {
+                crate::core::FolderConversionStatus::Converted { output_dir, .. } => {
+                    output_dir.clone()
+                }
+                _ => {
+                    // Fall back to session directory for folders not yet converted
+                    // (shouldn't happen during ISO staging, but just in case)
+                    self.session_dir.join(folder.id.as_str())
+                }
             };
 
             if !source_dir.exists() {

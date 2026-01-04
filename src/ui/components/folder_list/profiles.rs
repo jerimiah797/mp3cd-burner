@@ -161,17 +161,12 @@ impl FolderList {
         // Restore manual bitrate override from profile (or reset to auto-calculate)
         self.manual_bitrate_override = setup.manual_bitrate_override;
 
-        // If loading a bundle, set up the output manager to use the bundle path
-        if let Some(ref bundle_path) = setup.bundle_path {
-            if let Some(output_manager) = &mut self.output_manager {
-                output_manager.set_bundle_path(Some(bundle_path.clone()));
-                println!("Set output manager bundle path to: {:?}", bundle_path);
-            }
-        } else {
-            // Legacy format - clear any bundle path
-            if let Some(output_manager) = &mut self.output_manager {
-                output_manager.set_bundle_path(None);
-            }
+        // DON'T set bundle_path when loading - new encodes should always go to temp.
+        // The bundle is a read-only snapshot until the user explicitly saves.
+        // Existing converted folders already have their output_dir pointing to the
+        // bundle files, which is fine for reading. But new/modified folders go to temp.
+        if let Some(output_manager) = &mut self.output_manager {
+            output_manager.set_bundle_path(None);
         }
 
         // Clear the encoder state and delete converted files

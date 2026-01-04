@@ -58,6 +58,11 @@ impl FolderList {
             return;
         }
 
+        // Clear manual bitrate override when adding folders (revert to auto-calculate)
+        // Note: The actual bitrate recalculation and re-encoding happens after import
+        // completes in start_import_polling(), which calls encoder.recalculate_bitrate()
+        self.manual_bitrate_override = None;
+
         println!("Starting async import of {} folders", new_paths.len());
 
         // Reset import state (total will be updated after expansion)
@@ -278,6 +283,9 @@ impl FolderList {
                         this.last_calculated_bitrate = Some(new_bitrate);
                         println!("Import complete - bitrate set to {} kbps", new_bitrate);
                     }
+                    // Also check folders loaded from bundles that need re-encoding
+                    // (they may have been encoded at a different bitrate)
+                    this.queue_bundle_folders_for_reencoding(new_bitrate);
                 });
 
                 // Notify encoder that import is complete (resumes encoding)

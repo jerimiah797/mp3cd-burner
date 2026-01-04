@@ -125,9 +125,13 @@ impl FolderList {
                 self.pending_bitrate_rx = None;
 
                 // Trigger re-encoding at new bitrate
+                // This handles folders the encoder knows about
                 if let Some(ref encoder) = self.background_encoder {
                     encoder.recalculate_bitrate(new_bitrate);
                 }
+
+                // Also check folders loaded from bundles that need re-encoding
+                self.queue_bundle_folders_for_reencoding(new_bitrate);
 
                 // Invalidate ISO state - output files are being regenerated
                 self.iso_state = None;
@@ -190,9 +194,69 @@ impl FolderList {
             new_bitrate);
 
         // Send recalculation command to background encoder
+        // This handles folders the encoder knows about
         if let Some(ref encoder) = self.background_encoder {
             encoder.recalculate_bitrate(new_bitrate);
         }
+
+        // Also check folders loaded from bundles that need re-encoding
+        // These aren't in the encoder's state, so we need to queue them manually
+        self.queue_bundle_folders_for_reencoding(new_bitrate);
+    }
+
+    /// Queue bundle-loaded folders for re-encoding if their lossless_bitrate differs
+    ///
+    /// Folders loaded from bundles have `Converted` status but aren't tracked by the encoder.
+    /// When bitrate changes, we need to check if they need re-encoding and queue them.
+    pub(super) fn queue_bundle_folders_for_reencoding(&mut self, new_bitrate: u32) {
+        use crate::core::FolderConversionStatus;
+
+        let encoder = match &self.background_encoder {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Find folders with Converted status that need re-encoding
+        // (they have lossless files encoded at a different bitrate)
+        let folders_to_reencode: Vec<_> = self.folders
+            .iter()
+            .filter(|f| {
+                if let FolderConversionStatus::Converted { lossless_bitrate, .. } = &f.conversion_status {
+                    // Only re-encode if:
+                    // 1. The folder has lossless files (lossless_bitrate is Some)
+                    // 2. The bitrate differs from the new target
+                    if let Some(old_bitrate) = lossless_bitrate {
+                        return *old_bitrate != new_bitrate;
+                    }
+                }
+                false
+            })
+            .cloned()
+            .collect();
+
+        if folders_to_reencode.is_empty() {
+            return;
+        }
+
+        println!(
+            "Queueing {} bundle-loaded folders for re-encoding at {} kbps",
+            folders_to_reencode.len(),
+            new_bitrate
+        );
+
+        // Reset their conversion status and queue for encoding
+        for folder in &folders_to_reencode {
+            // Reset status in our folder list
+            if let Some(f) = self.folders.iter_mut().find(|f| f.id == folder.id) {
+                f.conversion_status = FolderConversionStatus::NotConverted;
+            }
+            // Queue for encoding
+            encoder.add_folder(folder.clone());
+        }
+
+        // Invalidate ISO state since we're re-encoding
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
     }
 
     /// Cancel any ongoing conversion
