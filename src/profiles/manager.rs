@@ -33,6 +33,8 @@ pub struct ProfileLoadSetup {
     /// Bundle path if this is a bundle format profile (v2.0+)
     /// None for legacy single-file profiles
     pub bundle_path: Option<PathBuf>,
+    /// Manual bitrate override if saved in profile
+    pub manual_bitrate_override: Option<u32>,
 }
 
 /// Prepare to load a profile (fast, does not scan folders)
@@ -78,6 +80,7 @@ pub fn prepare_profile_load(path: &Path) -> Result<ProfileLoadSetup, String> {
         iso_path,
         volume_label: profile.volume_label,
         bundle_path,
+        manual_bitrate_override: profile.manual_bitrate_override,
     })
 }
 
@@ -94,6 +97,7 @@ pub fn create_profile(
     output_manager: Option<&OutputManager>,
     iso_state: Option<&IsoState>,
     volume_label: Option<String>,
+    manual_bitrate_override: Option<u32>,
     for_bundle: bool,
 ) -> BurnProfile {
     let settings = BurnSettings {
@@ -109,6 +113,7 @@ pub fn create_profile(
 
     let mut profile = BurnProfile::new(profile_name, folder_paths, settings);
     profile.volume_label = volume_label;
+    profile.manual_bitrate_override = manual_bitrate_override;
 
     // Add conversion state if we have it
     if let Some(output_manager) = output_manager {
@@ -186,9 +191,10 @@ pub fn save_profile_to_path(
     output_manager: Option<&OutputManager>,
     iso_state: Option<&IsoState>,
     volume_label: Option<String>,
+    manual_bitrate_override: Option<u32>,
     for_bundle: bool,
 ) -> Result<(), String> {
-    let profile = create_profile(profile_name, folders, output_manager, iso_state, volume_label, for_bundle);
+    let profile = create_profile(profile_name, folders, output_manager, iso_state, volume_label, manual_bitrate_override, for_bundle);
     save_profile(&profile, path)?;
     add_to_recent_profiles(&path.to_string_lossy())?;
     println!("Profile saved to: {}", path.display());
@@ -202,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_create_profile_empty_folders() {
-        let profile = create_profile("Test".to_string(), &[], None, None, None, false);
+        let profile = create_profile("Test".to_string(), &[], None, None, None, None, false);
         assert_eq!(profile.profile_name, "Test");
         assert!(profile.folders.is_empty());
     }
@@ -211,7 +217,7 @@ mod tests {
     fn test_create_profile_with_folders() {
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
-        let profile = create_profile("My Album".to_string(), &folders, None, None, None, false);
+        let profile = create_profile("My Album".to_string(), &folders, None, None, None, None, false);
         assert_eq!(profile.profile_name, "My Album");
         assert_eq!(profile.folders.len(), 1);
         assert_eq!(profile.folders[0], "/test/album");
@@ -227,6 +233,7 @@ mod tests {
             None,
             None,
             Some("My CD".to_string()),
+            None,
             false,
         );
         assert_eq!(profile.volume_label, Some("My CD".to_string()));
@@ -236,7 +243,7 @@ mod tests {
     fn test_create_profile_for_bundle() {
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
-        let profile = create_profile("Bundle Test".to_string(), &folders, None, None, None, true);
+        let profile = create_profile("Bundle Test".to_string(), &folders, None, None, None, None, true);
         assert_eq!(profile.version, "2.0");
     }
 
@@ -244,7 +251,7 @@ mod tests {
     fn test_create_profile_legacy() {
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
-        let profile = create_profile("Legacy Test".to_string(), &folders, None, None, None, false);
+        let profile = create_profile("Legacy Test".to_string(), &folders, None, None, None, None, false);
         assert_eq!(profile.version, "1.0");
     }
 
@@ -263,6 +270,7 @@ mod tests {
             None,
             None,
             Some("Test CD".to_string()),
+            None, // no bitrate override
             false, // legacy format
         );
         assert!(result.is_ok());
@@ -284,6 +292,7 @@ mod tests {
             None,
             None,
             Some("Test CD".to_string()),
+            Some(285), // with bitrate override
             true, // bundle format
         );
         assert!(result.is_ok());

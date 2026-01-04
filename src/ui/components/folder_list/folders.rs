@@ -123,6 +123,8 @@ impl FolderList {
                 self.iso_state = None;
                 self.iso_generation_attempted = false;
                 self.iso_has_been_burned = false;
+                // Clear manual bitrate override (revert to auto-calculate)
+                self.manual_bitrate_override = None;
                 // Mark as having unsaved changes
                 self.has_unsaved_changes = true;
                 // Record change time for debounced bitrate recalculation
@@ -141,6 +143,8 @@ impl FolderList {
             self.iso_state = None;
             self.iso_generation_attempted = false;
             self.iso_has_been_burned = false;
+            // Clear manual bitrate override (revert to auto-calculate)
+            self.manual_bitrate_override = None;
             // Mark as having unsaved changes
             self.has_unsaved_changes = true;
             // Record change time for debounced bitrate recalculation
@@ -172,6 +176,8 @@ impl FolderList {
         self.iso_state = None;
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
+        // Clear manual bitrate override (revert to auto-calculate)
+        self.manual_bitrate_override = None;
     }
 
     /// Get all folder paths (for saving profiles, etc.)

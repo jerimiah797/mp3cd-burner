@@ -280,6 +280,13 @@ impl FolderList {
                         new_bitrate,
                         reencode_needed.len()
                     );
+                    // Reset conversion status for folders that need re-encoding
+                    for folder in &mut self.folders {
+                        if reencode_needed.contains(&folder.id) {
+                            folder.conversion_status =
+                                crate::core::FolderConversionStatus::NotConverted;
+                        }
+                    }
                     // Invalidate ISO state - output files are being regenerated
                     self.iso_state = None;
                     self.iso_generation_attempted = false;
@@ -313,6 +320,9 @@ impl FolderList {
                             // Poll for volume label updates from the dialog
                             let label_updated = this.poll_volume_label();
 
+                            // Poll for bitrate override dialog result
+                            let bitrate_updated = this.poll_bitrate_override();
+
                             // Check for debounced bitrate recalculation
                             this.check_debounced_bitrate_recalculation();
 
@@ -322,8 +332,8 @@ impl FolderList {
                                 println!("Auto-ISO generation triggered");
                             }
 
-                            // Refresh UI if we had events or label was updated
-                            if had_events || label_updated {
+                            // Refresh UI if we had events or updates
+                            if had_events || label_updated || bitrate_updated {
                                 cx.notify();
                             }
 
