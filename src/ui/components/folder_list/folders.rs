@@ -288,9 +288,18 @@ impl FolderList {
                     });
                 }
 
+                // Check if we need to queue pre-encoded lossless folders for re-encoding
+                // This handles the case where lossy folders are added to a profile with
+                // pre-encoded lossless content that may need to be re-encoded at a lower bitrate
+                let _ = this.update(&mut async_cx, |this, _cx| {
+                    this.queue_preencoded_lossless_for_phase_transition();
+                });
+
                 // Calculate and set bitrate BEFORE resuming encoding
                 // This ensures all folders are accounted for in the bitrate calculation
                 let _ = this.update(&mut async_cx, |this, _cx| {
+                    // Clear cached bitrate to force fresh calculation with all folders
+                    this.last_calculated_bitrate = None;
                     let new_bitrate = this.calculated_bitrate();
                     if let Some(ref encoder) = this.background_encoder {
                         // Set the bitrate before resuming encoding
@@ -299,9 +308,6 @@ impl FolderList {
                         this.last_calculated_bitrate = Some(new_bitrate);
                         println!("Import complete - bitrate set to {} kbps", new_bitrate);
                     }
-                    // Also check folders loaded from bundles that need re-encoding
-                    // (they may have been encoded at a different bitrate)
-                    this.queue_bundle_folders_for_reencoding(new_bitrate);
                 });
 
                 // Notify encoder that import is complete (resumes encoding)
