@@ -241,11 +241,10 @@ pub fn render_folder_item<V: 'static>(
                     parts.push(format!("→ {}", format_size(*output_size)));
                 }
                 // Final bitrate after conversion (e.g., "@192k")
-                if show_final_bitrate {
-                    if let Some(bitrate) = lossless_bitrate {
+                if show_final_bitrate
+                    && let Some(bitrate) = lossless_bitrate {
                         parts.push(format!("@{}k", bitrate));
                     }
-                }
             }
             FolderConversionStatus::Converting {
                 files_completed,

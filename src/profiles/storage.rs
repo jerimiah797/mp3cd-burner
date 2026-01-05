@@ -15,7 +15,7 @@ const MAX_RECENT_PROFILES: usize = 10;
 
 /// Check if a path is a bundle (directory with .mp3cd extension)
 pub fn is_bundle(path: &Path) -> bool {
-    path.is_dir() && path.extension().map_or(false, |ext| ext == "mp3cd")
+    path.is_dir() && path.extension().is_some_and(|ext| ext == "mp3cd")
 }
 
 /// Get the profile.json path inside a bundle
@@ -38,7 +38,7 @@ pub fn save_profile(profile: &BurnProfile, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to serialize profile: {}", e))?;
 
     // Check if this should be a bundle (path ends with .mp3cd and we're saving v2.0+)
-    let is_bundle_path = path.extension().map_or(false, |ext| ext == "mp3cd");
+    let is_bundle_path = path.extension().is_some_and(|ext| ext == "mp3cd");
 
     if is_bundle_path && profile.version.starts_with("2.") {
         // Create bundle directory structure

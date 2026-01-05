@@ -31,7 +31,7 @@ impl AboutBox {
                 }),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|cx| AboutBox::new(cx)),
+            |_window, cx| cx.new(AboutBox::new),
         )
         .unwrap()
     }

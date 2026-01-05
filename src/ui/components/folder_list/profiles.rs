@@ -23,18 +23,17 @@ impl FolderList {
     ///
     /// Returns true if a label was received (useful for knowing if UI needs refresh)
     pub(super) fn poll_volume_label(&mut self) -> bool {
-        if let Some(ref rx) = self.pending_volume_label_rx {
-            if let Ok(label) = rx.try_recv() {
+        if let Some(ref rx) = self.pending_volume_label_rx
+            && let Ok(label) = rx.try_recv() {
                 println!("Volume label set to: {}", label);
 
                 // If the label changed, invalidate the ISO so it gets regenerated
-                if self.volume_label != label {
-                    if self.iso_state.is_some() {
+                if self.volume_label != label
+                    && self.iso_state.is_some() {
                         println!("Volume label changed - invalidating existing ISO");
                         self.iso_state = None;
                         self.iso_generation_attempted = false;
                     }
-                }
 
                 self.volume_label = label;
                 // Clear the receiver since we got the label
@@ -42,7 +41,6 @@ impl FolderList {
                 // Note: pending_burn_action will be handled in check_pending_burn_action
                 return true;
             }
-        }
         false
     }
 
@@ -81,8 +79,8 @@ impl FolderList {
         };
 
         // If saving as bundle and we have converted files in temp, copy them to bundle first
-        if for_bundle {
-            if let Some(output_manager) = &self.output_manager {
+        if for_bundle
+            && let Some(output_manager) = &self.output_manager {
                 // Collect folder IDs that have been converted
                 let converted_folder_ids: Vec<crate::core::FolderId> = self
                     .folders
@@ -104,7 +102,6 @@ impl FolderList {
                     output_manager.copy_to_bundle(path, &converted_folder_ids)?;
                 }
             }
-        }
 
         // Save the profile
         crate::profiles::save_profile_to_path(
@@ -119,11 +116,10 @@ impl FolderList {
         )?;
 
         // If we saved as bundle, update output manager to use the bundle path for future encodes
-        if for_bundle {
-            if let Some(output_manager) = &mut self.output_manager {
+        if for_bundle
+            && let Some(output_manager) = &mut self.output_manager {
                 output_manager.set_bundle_path(Some(path.to_path_buf()));
             }
-        }
 
         Ok(())
     }
@@ -195,11 +191,10 @@ impl FolderList {
 
         // Clear the encoder state and delete converted files
         // (Don't delete for bundle - we're using the bundle's converted files!)
-        if setup.bundle_path.is_none() {
-            if let Some(encoder) = &self.background_encoder {
+        if setup.bundle_path.is_none()
+            && let Some(encoder) = &self.background_encoder {
                 encoder.clear_all();
             }
-        }
 
         // Store the setup for the polling callback
         self.pending_profile_load = Some(setup.clone());
@@ -492,8 +487,8 @@ impl FolderList {
         cx.spawn(|this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut async_cx = cx.clone();
             async move {
-                if let Ok(Ok(Some(paths))) = receiver.await {
-                    if let Some(path) = paths.first() {
+                if let Ok(Ok(Some(paths))) = receiver.await
+                    && let Some(path) = paths.first() {
                         let path = path.clone();
                         let _ = this_handle.update(&mut async_cx, |this, cx| {
                             if let Err(e) = this.load_profile(&path, cx) {
@@ -501,7 +496,6 @@ impl FolderList {
                             }
                         });
                     }
-                }
             }
         })
         .detach();
@@ -647,11 +641,10 @@ impl FolderList {
                                     this.show_open_file_picker(cx);
                                 }
                                 // If we were saving before loading a dropped profile, load it now
-                                if let Some(profile_path) = this.pending_load_profile_path.take() {
-                                    if let Err(e) = this.load_profile(&profile_path, cx) {
+                                if let Some(profile_path) = this.pending_load_profile_path.take()
+                                    && let Err(e) = this.load_profile(&profile_path, cx) {
                                         eprintln!("Failed to load dropped profile: {}", e);
                                     }
-                                }
                             }
                         });
                     }
@@ -691,8 +684,8 @@ impl FolderList {
                                 // Check if this folder has valid saved state
                                 let folder_path_str = folder.path.to_string_lossy().to_string();
 
-                                if let Some(ref setup) = this.pending_profile_load {
-                                    if setup.validation.valid_folders.contains(&folder_path_str) {
+                                if let Some(ref setup) = this.pending_profile_load
+                                    && setup.validation.valid_folders.contains(&folder_path_str) {
                                         // Restore conversion status from saved state
                                         if let Some(saved) =
                                             setup.folder_states.get(&folder_path_str)
@@ -720,7 +713,6 @@ impl FolderList {
                                             );
                                         }
                                     }
-                                }
 
                                 this.folders.push(folder);
                             }
@@ -746,8 +738,8 @@ impl FolderList {
                             // Check if this folder has valid saved state
                             let folder_path_str = folder.path.to_string_lossy().to_string();
 
-                            if let Some(ref setup) = this.pending_profile_load {
-                                if setup.validation.valid_folders.contains(&folder_path_str) {
+                            if let Some(ref setup) = this.pending_profile_load
+                                && setup.validation.valid_folders.contains(&folder_path_str) {
                                     // Restore conversion status from saved state
                                     if let Some(saved) = setup.folder_states.get(&folder_path_str) {
                                         // Resolve output_dir path - for bundles it's relative
@@ -773,7 +765,6 @@ impl FolderList {
                                         );
                                     }
                                 }
-                            }
 
                             this.folders.push(folder);
                         }
@@ -789,14 +780,13 @@ impl FolderList {
                         );
 
                         // Restore ISO state if valid
-                        if let Some(iso_path) = setup.iso_path {
-                            if let Ok(iso_state) =
+                        if let Some(iso_path) = setup.iso_path
+                            && let Ok(iso_state) =
                                 crate::burning::IsoState::new(iso_path, &this.folders)
                             {
                                 this.iso_state = Some(iso_state);
                                 println!("Restored ISO state from profile");
                             }
-                        }
 
                         // Calculate bitrate and queue folders needing encoding
                         let folders_needing_encoding: Vec<_> = this
@@ -830,11 +820,10 @@ impl FolderList {
                             })
                             .sum();
 
-                        if let Some(ref encoder) = this.background_encoder {
-                            if preloaded_size > 0 {
+                        if let Some(ref encoder) = this.background_encoder
+                            && preloaded_size > 0 {
                                 encoder.set_preloaded_size(preloaded_size);
                             }
-                        }
 
                         if !folders_needing_encoding.is_empty() {
                             let target_bitrate = this.calculated_bitrate();

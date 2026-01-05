@@ -121,8 +121,8 @@ impl FolderList {
     /// Add a single folder to the list
     #[allow(dead_code)]
     pub fn add_folder(&mut self, path: PathBuf) {
-        if path.is_dir() && !self.contains_path(&path) {
-            if let Ok(folder) = scan_music_folder(&path) {
+        if path.is_dir() && !self.contains_path(&path)
+            && let Ok(folder) = scan_music_folder(&path) {
                 // Queue for background encoding if available
                 self.queue_folder_for_encoding(&folder);
                 self.folders.push(folder);
@@ -137,7 +137,6 @@ impl FolderList {
                 // Record change time for debounced bitrate recalculation
                 self.last_folder_change = Some(std::time::Instant::now());
             }
-        }
     }
 
     /// Remove a folder by index
@@ -147,8 +146,7 @@ impl FolderList {
 
             // If folder was preloaded as Converted, subtract its size from preloaded_size
             if let FolderConversionStatus::Converted { output_size, .. } = &folder.conversion_status
-            {
-                if let Some(ref encoder) = self.background_encoder {
+                && let Some(ref encoder) = self.background_encoder {
                     let state = encoder.get_state();
                     let mut s = state.lock().unwrap();
                     s.preloaded_size = s.preloaded_size.saturating_sub(*output_size);
@@ -157,7 +155,6 @@ impl FolderList {
                         output_size / 1_000_000
                     );
                 }
-            }
 
             // Notify encoder if available
             self.notify_folder_removed(&folder);

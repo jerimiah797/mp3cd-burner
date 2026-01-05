@@ -21,6 +21,7 @@ use super::MusicFolder;
 ///
 /// Persisted to ~/Library/Application Support/MP3 CD Burner/app_settings.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct AppSettings {
     /// Whether to simulate burning (don't actually burn)
     #[serde(default)]
@@ -33,15 +34,6 @@ pub struct AppSettings {
     pub embed_album_art: bool,
 }
 
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            simulate_burn: false,
-            no_lossy_conversions: false,
-            embed_album_art: false,
-        }
-    }
-}
 
 impl Global for AppSettings {}
 

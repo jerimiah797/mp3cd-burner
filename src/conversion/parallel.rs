@@ -76,9 +76,9 @@ async fn convert_file_async(
     album_art_path: Option<&Path>,
 ) -> ConversionResult {
     // Create output directory if needed
-    if let Some(parent) = output_path.parent() {
-        if !parent.exists() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+    if let Some(parent) = output_path.parent()
+        && !parent.exists()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await {
                 return ConversionResult {
                     output_path: output_path.to_path_buf(),
                     input_path: input_path.to_path_buf(),
@@ -86,8 +86,6 @@ async fn convert_file_async(
                     error: Some(format!("Failed to create output directory: {}", e)),
                 };
             }
-        }
-    }
 
     match strategy {
         EncodingStrategy::Copy => {

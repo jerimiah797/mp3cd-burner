@@ -190,6 +190,7 @@ pub fn create_profile(
 /// If `for_bundle` is false, saves as legacy v1.x format with absolute paths.
 ///
 /// Returns Ok(()) on success, or an error message on failure.
+#[allow(clippy::too_many_arguments)]
 pub fn save_profile_to_path(
     path: &Path,
     profile_name: String,

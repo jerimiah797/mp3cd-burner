@@ -8,7 +8,7 @@
 //! - Bitrate recalculation triggers
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
@@ -585,12 +585,10 @@ async fn handle_encoder_command(
                         lossless_bitrate: Some(br),
                         ..
                     } = status
-                    {
-                        if *br != target_bitrate {
+                        && *br != target_bitrate {
                             reencode_needed.push(id.clone());
                             folders_to_requeue.push((id.clone(), folder.clone()));
                         }
-                    }
                 }
 
                 // Remove from completed - they'll be re-queued
@@ -1006,7 +1004,7 @@ fn reset_to_lossy_pass(s: &mut BackgroundEncoderState) -> ResetResult {
 async fn try_start_folders(
     state: &Arc<Mutex<BackgroundEncoderState>>,
     output_manager: &OutputManager,
-    ffmpeg_path: &PathBuf,
+    ffmpeg_path: &Path,
     event_tx: &std_mpsc::Sender<EncoderEvent>,
     completion_tx: &mpsc::UnboundedSender<FolderConversionResult>,
 ) {
@@ -1132,7 +1130,7 @@ async fn try_start_folders(
 
             // Only pass album art path if embed_album_art is enabled and we have art
             let album_art_path = if embed_album_art {
-                folder.album_art.as_ref().map(|s| PathBuf::from(s))
+                folder.album_art.as_ref().map(PathBuf::from)
             } else {
                 None
             };
@@ -1186,7 +1184,7 @@ async fn try_start_folders(
         });
 
         // Clone what we need for the spawned task
-        let ffmpeg_path = ffmpeg_path.clone();
+        let ffmpeg_path = ffmpeg_path.to_path_buf();
         let event_tx = event_tx.clone();
         let completion_tx = completion_tx.clone();
         let id_for_task = id.clone();

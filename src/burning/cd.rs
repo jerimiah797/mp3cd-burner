@@ -142,24 +142,21 @@ pub fn burn_iso_with_cancel(
 
             for line in reader.lines() {
                 // Check for cancellation
-                if let Some(ref token) = cancel_token_clone {
-                    if token.load(Ordering::SeqCst) {
+                if let Some(ref token) = cancel_token_clone
+                    && token.load(Ordering::SeqCst) {
                         break;
                     }
-                }
 
                 if let Ok(line) = line {
                     // Parse progress lines like "PERCENT:0.059725" or "PERCENT:-1.000000"
-                    if line.starts_with("PERCENT:") {
-                        if let Some(percent_str) = line.strip_prefix("PERCENT:") {
-                            if let Ok(percentage_float) = percent_str.trim().parse::<f64>() {
+                    if line.starts_with("PERCENT:")
+                        && let Some(percent_str) = line.strip_prefix("PERCENT:")
+                            && let Ok(percentage_float) = percent_str.trim().parse::<f64>() {
                                 let percentage = percentage_float.round() as i32;
                                 if let Some(ref callback) = on_progress {
                                     callback(percentage);
                                 }
                             }
-                        }
-                    }
                 }
             }
         }
@@ -168,15 +165,14 @@ pub fn burn_iso_with_cancel(
     // Poll for cancellation while waiting for the process
     loop {
         // Check if cancelled
-        if let Some(ref token) = cancel_token {
-            if token.load(Ordering::SeqCst) {
+        if let Some(ref token) = cancel_token
+            && token.load(Ordering::SeqCst) {
                 println!("Burn cancelled - killing hdiutil process");
                 let _ = child.kill();
                 let _ = child.wait(); // Reap the process
                 let _ = progress_thread.join();
                 return Err("Burn cancelled by user".to_string());
             }
-        }
 
         // Check if process has exited
         match child.try_wait() {

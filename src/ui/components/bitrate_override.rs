@@ -83,7 +83,7 @@ impl BitrateOverrideDialog {
     /// Check if the current input is valid
     fn is_valid(&self) -> bool {
         match self.parse_bitrate() {
-            Some(br) => br >= MIN_BITRATE && br <= MAX_BITRATE,
+            Some(br) => (MIN_BITRATE..=MAX_BITRATE).contains(&br),
             None => false,
         }
     }
@@ -141,13 +141,11 @@ impl BitrateOverrideDialog {
     }
 
     fn confirm(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
-        if let Some(bitrate) = self.parse_bitrate() {
-            if bitrate >= MIN_BITRATE && bitrate <= MAX_BITRATE {
-                if let Some(ref on_confirm) = self.on_confirm {
+        if let Some(bitrate) = self.parse_bitrate()
+            && (MIN_BITRATE..=MAX_BITRATE).contains(&bitrate)
+                && let Some(ref on_confirm) = self.on_confirm {
                     on_confirm(bitrate);
                 }
-            }
-        }
         window.remove_window();
     }
 

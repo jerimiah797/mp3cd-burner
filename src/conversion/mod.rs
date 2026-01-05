@@ -34,8 +34,8 @@ pub fn get_ffmpeg_path() -> Result<PathBuf, String> {
     }
 
     // Try relative to current executable (release mode)
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent() {
             // macOS app bundle: Contents/MacOS/../Resources/bin/ffmpeg
             let bundle_path = exe_dir
                 .join("..")
@@ -55,7 +55,6 @@ pub fn get_ffmpeg_path() -> Result<PathBuf, String> {
                 return Ok(local_path);
             }
         }
-    }
 
     Err("ffmpeg binary not found. Expected at resources/bin/ffmpeg".to_string())
 }

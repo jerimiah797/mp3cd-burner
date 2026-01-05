@@ -289,16 +289,14 @@ pub fn get_audio_files(path: &Path) -> Result<Vec<AudioFileInfo>, String> {
         .filter_map(|e| e.ok())
     {
         let path_buf = entry.path().to_path_buf();
-        if path_buf.is_file() && is_audio_file(&path_buf) {
-            if let Some(parent) = path_buf.parent() {
-                if let Some(stem) = path_buf.file_stem().and_then(|s| s.to_str()) {
+        if path_buf.is_file() && is_audio_file(&path_buf)
+            && let Some(parent) = path_buf.parent()
+                && let Some(stem) = path_buf.file_stem().and_then(|s| s.to_str()) {
                     file_stems_by_dir
                         .entry(parent.to_path_buf())
                         .or_default()
                         .insert(stem.to_string());
                 }
-            }
-        }
     }
 
     // Second pass: collect files, but skip subdirectory files that duplicate parent stems
@@ -310,19 +308,16 @@ pub fn get_audio_files(path: &Path) -> Result<Vec<AudioFileInfo>, String> {
         let path_buf = entry.path().to_path_buf();
         if path_buf.is_file() && is_audio_file(&path_buf) {
             // Check if this file is in a subdirectory and duplicates a parent file
-            if let Some(parent) = path_buf.parent() {
-                if let Some(stem) = path_buf.file_stem().and_then(|s| s.to_str()) {
+            if let Some(parent) = path_buf.parent()
+                && let Some(stem) = path_buf.file_stem().and_then(|s| s.to_str()) {
                     // Check if parent directory has a file with the same stem
-                    if let Some(grandparent) = parent.parent() {
-                        if let Some(parent_stems) = file_stems_by_dir.get(grandparent) {
-                            if parent_stems.contains(stem) {
+                    if let Some(grandparent) = parent.parent()
+                        && let Some(parent_stems) = file_stems_by_dir.get(grandparent)
+                            && parent_stems.contains(stem) {
                                 // Skip this file - it's a duplicate in a subdirectory
                                 continue;
                             }
-                        }
-                    }
                 }
-            }
 
             if let Ok(metadata) = fs::metadata(&path_buf) {
                 // Try to get real audio metadata, fall back to estimates if it fails

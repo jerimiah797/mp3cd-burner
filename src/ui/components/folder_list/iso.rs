@@ -117,7 +117,7 @@ impl FolderList {
         };
 
         // Spawn ISO generation in background
-        let folders: Vec<_> = self.folders.iter().cloned().collect();
+        let folders: Vec<_> = self.folders.to_vec();
         crate::burning::spawn_iso_generation(
             output_manager,
             folders.clone(),

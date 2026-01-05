@@ -102,7 +102,7 @@ fn main() {
                 // URL decode the path (spaces become %20, etc.)
                 let decoded = percent_decode_str(path_str);
                 let path = std::path::PathBuf::from(&decoded);
-                if path.extension().map_or(false, |ext| ext == "mp3cd") {
+                if path.extension().is_some_and(|ext| ext == "mp3cd") {
                     println!("File opened from Finder: {:?}", path);
                     push_pending_file(path);
                 }
@@ -238,14 +238,13 @@ fn main() {
         // Register Quit handler (after conversion state global is available)
         cx.on_action(|_: &Quit, cx| {
             // Check if a burn is in progress
-            if let Some(state) = cx.try_global::<core::ConversionState>() {
-                if state.is_converting() {
+            if let Some(state) = cx.try_global::<core::ConversionState>()
+                && state.is_converting() {
                     // Show warning - don't quit
                     eprintln!("Cannot quit: burn in progress");
                     // TODO: Show a dialog instead of just logging
                     return;
                 }
-            }
             cx.quit();
         });
 
@@ -284,13 +283,12 @@ fn main() {
             let main_window_open = cx.windows().iter().any(|w| w.window_id() == main_window_id);
             if !main_window_open {
                 // Don't quit if a burn is in progress - show progress window instead
-                if let Some(state) = cx.try_global::<core::ConversionState>() {
-                    if state.is_converting() {
+                if let Some(state) = cx.try_global::<core::ConversionState>()
+                    && state.is_converting() {
                         println!("Window closed during burn - opening progress window");
                         ui::components::BurnProgressWindow::open(cx, state.clone());
                         return;
                     }
-                }
                 cx.quit();
             }
         })

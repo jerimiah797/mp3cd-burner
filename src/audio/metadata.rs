@@ -269,11 +269,10 @@ pub fn get_album_metadata(path: &Path) -> AlbumMetadata {
     };
 
     // Check container metadata first
-    if let Some(metadata_rev) = probed.metadata.get() {
-        if let Some(current) = metadata_rev.current() {
+    if let Some(metadata_rev) = probed.metadata.get()
+        && let Some(current) = metadata_rev.current() {
             extract_tags(&mut metadata, current.tags());
         }
-    }
 
     // Also check format metadata (some formats store tags here)
     if let Some(current) = probed.format.metadata().current() {

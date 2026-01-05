@@ -188,11 +188,10 @@ impl FolderList {
             if matches!(
                 folder.conversion_status,
                 FolderConversionStatus::Converted { .. }
-            ) {
-                if !encoded_ids.contains(&folder.id) {
+            )
+                && !encoded_ids.contains(&folder.id) {
                     encoded_ids.push(folder.id.clone());
                 }
-            }
         }
 
         encoded_ids

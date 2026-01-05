@@ -49,7 +49,7 @@ impl DisplaySettingsModal {
                 }),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|cx| DisplaySettingsModal::new(cx)),
+            |_window, cx| cx.new(DisplaySettingsModal::new),
         )
         .unwrap()
     }
@@ -105,6 +105,7 @@ impl DisplaySettingsModal {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_checkbox(
         &self,
         id: &str,

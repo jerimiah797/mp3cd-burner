@@ -141,8 +141,8 @@ impl FolderList {
     ///
     /// Returns true if a new bitrate was received and applied.
     pub(super) fn poll_bitrate_override(&mut self) -> bool {
-        if let Some(ref rx) = self.pending_bitrate_rx {
-            if let Ok(new_bitrate) = rx.try_recv() {
+        if let Some(ref rx) = self.pending_bitrate_rx
+            && let Ok(new_bitrate) = rx.try_recv() {
                 println!("Manual bitrate override: {} kbps", new_bitrate);
 
                 self.manual_bitrate_override = Some(new_bitrate);
@@ -167,12 +167,10 @@ impl FolderList {
                         lossless_bitrate: Some(br),
                         ..
                     } = folder.conversion_status
-                    {
-                        if br != new_bitrate {
+                        && br != new_bitrate {
                             folder.conversion_status =
                                 crate::core::FolderConversionStatus::NotConverted;
                         }
-                    }
                 }
 
                 // Invalidate ISO state - output files are being regenerated
@@ -181,7 +179,6 @@ impl FolderList {
 
                 return true;
             }
-        }
         false
     }
 
@@ -266,18 +263,16 @@ impl FolderList {
             .folders
             .iter()
             .filter(|f| {
-                if let FolderConversionStatus::Converted {
-                    lossless_bitrate, ..
-                } = &f.conversion_status
-                {
-                    // Only re-encode if:
-                    // 1. The folder has lossless files (lossless_bitrate is Some)
-                    // 2. The bitrate differs from the new target
-                    if let Some(old_bitrate) = lossless_bitrate {
-                        return *old_bitrate != new_bitrate;
-                    }
-                }
-                false
+                // Only re-encode if:
+                // 1. The folder has lossless files (lossless_bitrate is Some)
+                // 2. The bitrate differs from the new target
+                matches!(
+                    &f.conversion_status,
+                    FolderConversionStatus::Converted {
+                        lossless_bitrate: Some(old_bitrate),
+                        ..
+                    } if *old_bitrate != new_bitrate
+                )
             })
             .cloned()
             .collect();
@@ -377,7 +372,7 @@ impl FolderList {
 
         let state = self.conversion_state.clone();
         let simulate_burn = cx.global::<AppSettings>().simulate_burn;
-        let folders: Vec<_> = self.folders.iter().cloned().collect();
+        let folders: Vec<_> = self.folders.to_vec();
         let volume_label = self.volume_label.clone();
 
         // Spawn background thread to execute the full burn workflow
@@ -485,12 +480,11 @@ impl FolderList {
                             Some(existing) => existing.path != path,
                             None => true,
                         };
-                        if should_update {
-                            if let Ok(iso_state) = IsoState::new(path, &folder_list.folders) {
+                        if should_update
+                            && let Ok(iso_state) = IsoState::new(path, &folder_list.folders) {
                                 folder_list.iso_state = Some(iso_state);
                                 println!("ISO state saved - ready for Burn/Burn Another");
                             }
-                        }
                     });
                 }
 
