@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::core::{find_album_folders, scan_music_folder, ImportState, MusicFolder};
+use crate::core::{find_album_folders, scan_music_folder, FolderConversionStatus, ImportState, MusicFolder};
 
 use super::FolderList;
 
@@ -142,6 +142,17 @@ impl FolderList {
     pub fn remove_folder(&mut self, index: usize) {
         if index < self.folders.len() {
             let folder = self.folders.remove(index);
+
+            // If folder was preloaded as Converted, subtract its size from preloaded_size
+            if let FolderConversionStatus::Converted { output_size, .. } = &folder.conversion_status {
+                if let Some(ref encoder) = self.background_encoder {
+                    let state = encoder.get_state();
+                    let mut s = state.lock().unwrap();
+                    s.preloaded_size = s.preloaded_size.saturating_sub(*output_size);
+                    println!("Reduced preloaded size by {} MB (folder removed)", output_size / 1_000_000);
+                }
+            }
+
             // Notify encoder if available
             self.notify_folder_removed(&folder);
             // Invalidate ISO since folder list changed
@@ -150,6 +161,8 @@ impl FolderList {
             self.iso_has_been_burned = false;
             // Clear manual bitrate override (revert to auto-calculate)
             self.manual_bitrate_override = None;
+            // Clear cached bitrate to force fresh recalculation
+            self.last_calculated_bitrate = None;
             // Mark as having unsaved changes
             self.has_unsaved_changes = true;
             // Record change time for debounced bitrate recalculation

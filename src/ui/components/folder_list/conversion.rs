@@ -478,17 +478,19 @@ impl FolderList {
                         folder_list.iso_has_been_burned = true;
                     });
 
-                    // Need AppContext trait for update_window
+                    // Show completion prompt - await the future so it displays
                     use gpui::AppContext;
-                    let _ = async_cx.update_window(window_handle, |_, window, cx| {
-                        let _ = window.prompt(
+                    if let Ok(prompt_future) = async_cx.update_window(window_handle, |_, window, cx| {
+                        window.prompt(
                             PromptLevel::Info,
                             "Burn Complete",
                             Some("The CD has been burned successfully."),
                             &["OK"],
                             cx,
-                        );
-                    });
+                        )
+                    }) {
+                        let _ = prompt_future.await;
+                    }
                 }
             }
         }).detach();

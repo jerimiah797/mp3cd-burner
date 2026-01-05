@@ -36,8 +36,8 @@ struct FolderConversionResult {
 /// Commands that can be sent to the background encoder
 #[derive(Debug)]
 pub enum EncoderCommand {
-    /// Add a folder to be encoded
-    AddFolder(FolderId, MusicFolder),
+    /// Add a folder to be encoded (boxed to reduce enum size)
+    AddFolder(FolderId, Box<MusicFolder>),
     /// Remove a folder (cancel if active, remove from queue)
     RemoveFolder(FolderId),
     /// Notify that folders were reordered (no re-encoding needed)
@@ -52,6 +52,8 @@ pub enum EncoderCommand {
     ImportComplete,
     /// Update embed album art setting
     SetEmbedAlbumArt { embed: bool },
+    /// Register size of pre-loaded converted folders (for pass 2 bitrate calculation)
+    SetPreloadedSize { size: u64 },
 }
 
 /// Encoding phase for two-pass optimization
@@ -153,6 +155,8 @@ pub struct BackgroundEncoderState {
     pub pass1_completed: std::collections::HashSet<FolderId>,
     /// Size of lossy folders added after pass 1 (needs to be included in bitrate recalculation)
     pub late_lossy_size: u64,
+    /// Size of pre-loaded converted folders (from bundle profiles)
+    pub preloaded_size: u64,
 }
 
 impl BackgroundEncoderState {
@@ -174,6 +178,7 @@ impl BackgroundEncoderState {
             measured_lossy_size: 0,
             pass1_completed: std::collections::HashSet::new(),
             late_lossy_size: 0,
+            preloaded_size: 0,
         }
     }
 
@@ -209,7 +214,7 @@ impl BackgroundEncoderHandle {
     /// Add a folder to be encoded
     pub fn add_folder(&self, folder: MusicFolder) {
         let id = folder.id.clone();
-        let _ = self.command_tx.send(EncoderCommand::AddFolder(id, folder));
+        let _ = self.command_tx.send(EncoderCommand::AddFolder(id, Box::new(folder)));
     }
 
     /// Remove a folder (cancel if active)
@@ -247,6 +252,11 @@ impl BackgroundEncoderHandle {
     /// Update embed album art setting
     pub fn set_embed_album_art(&self, embed: bool) {
         let _ = self.command_tx.send(EncoderCommand::SetEmbedAlbumArt { embed });
+    }
+
+    /// Set the size of pre-loaded converted folders (from bundle profiles)
+    pub fn set_preloaded_size(&self, size: u64) {
+        let _ = self.command_tx.send(EncoderCommand::SetPreloadedSize { size });
     }
 
     /// Get the current state (for reading status)
@@ -380,7 +390,8 @@ async fn handle_encoder_command(
     event_tx: &std_mpsc::Sender<EncoderEvent>,
 ) {
     match cmd {
-        EncoderCommand::AddFolder(id, folder) => {
+        EncoderCommand::AddFolder(id, boxed_folder) => {
+            let folder = *boxed_folder;
             let reset_result = {
                 let mut s = state.lock().unwrap();
 
@@ -509,6 +520,9 @@ async fn handle_encoder_command(
             s.lossless_pending.clear();
             s.encoding_phase = EncodingPhase::Idle;
             s.measured_lossy_size = 0;
+            s.pass1_completed.clear();
+            s.late_lossy_size = 0;
+            s.preloaded_size = 0;
             drop(s);
             // Clean up the session directory (delete all converted files)
             if let Err(e) = output_manager.cleanup() {
@@ -623,6 +637,11 @@ async fn handle_encoder_command(
             s.embed_album_art = embed;
             println!("Embed album art: {}", embed);
         }
+        EncoderCommand::SetPreloadedSize { size } => {
+            let mut s = state.lock().unwrap();
+            s.preloaded_size = size;
+            println!("Preloaded folder size: {} MB", size / 1_000_000);
+        }
     }
 }
 
@@ -644,104 +663,106 @@ async fn handle_folder_completion(
         lossless_bitrate,
     } = result;
 
-    let mut s = state.lock().unwrap();
+    // Scope the lock to avoid holding it across await points
+    let need_delete_output = {
+        let mut s = state.lock().unwrap();
 
-    // Check if cancel token was set (might have been cancelled after task started)
-    let token_cancelled = s.active.get(&id)
-        .map(|(token, _)| token.load(Ordering::SeqCst))
-        .unwrap_or(false);
+        // Check if cancel token was set (might have been cancelled after task started)
+        let token_cancelled = s.active.get(&id)
+            .map(|(token, _)| token.load(Ordering::SeqCst))
+            .unwrap_or(false);
 
-    s.active.remove(&id);
-    s.active_progress.remove(&id);
+        s.active.remove(&id);
+        s.active_progress.remove(&id);
 
-    // Track if we need to delete partial output (for requeue case)
-    let mut need_delete_output = false;
+        // Track if we need to delete partial output (for requeue case)
+        let mut need_delete_output = false;
 
-    if was_cancelled || token_cancelled {
-        // Was cancelled - check if this was due to bitrate change
-        let should_requeue = s.pending_bitrate_requeue.contains(&id);
-        if should_requeue {
-            s.pending_bitrate_requeue.retain(|x| x != &id);
-            // Re-queue for re-encoding at new bitrate
-            println!(
-                "Re-queuing cancelled lossless folder for re-encoding: {}",
-                folder.path.display()
-            );
-            s.queue.push_back((id.clone(), folder));
-            need_delete_output = true;
-        } else {
-            // Regular cancellation (folder removed by user)
-            let _ = event_tx.send(EncoderEvent::FolderCancelled(id.clone()));
-        }
-    } else if completed == files_total || files_total == 0 {
-        // Success! (files_total == 0 means empty pass, e.g., pure lossless in LossyPass)
-        let output_size = output_manager
-            .get_folder_output_size(&id)
-            .unwrap_or(0);
-
-        // Check if this folder is still waiting for pass 2
-        let still_in_lossless_pending = s.lossless_pending.iter().any(|(fid, _)| fid == &id);
-
-        // A folder is "pass 1 complete" (not fully done) if:
-        // 1. It's still in lossless_pending (has lossless files to encode in pass 2), AND
-        // 2. Either we're in LossyPass, OR this was an empty pass (files_total == 0)
-        //    The empty pass check handles race conditions where completion is processed
-        //    after phase transition due to async timing
-        let is_pass1_complete = still_in_lossless_pending
-            && (s.encoding_phase == EncodingPhase::LossyPass || files_total == 0);
-
-        if is_pass1_complete {
-            // Pass 1 complete for this folder, but it has lossless files pending for pass 2
-            // Don't add to completed yet - it will be fully completed in pass 2
-            println!(
-                "Pass 1 complete for folder {} (lossy done, lossless pending)",
-                folder.path.display()
-            );
-            // Update measured_lossy_size with this folder's output (only in LossyPass)
-            if s.encoding_phase == EncodingPhase::LossyPass {
-                s.measured_lossy_size += output_size;
+        if was_cancelled || token_cancelled {
+            // Was cancelled - check if this was due to bitrate change
+            let should_requeue = s.pending_bitrate_requeue.contains(&id);
+            if should_requeue {
+                s.pending_bitrate_requeue.retain(|x| x != &id);
+                // Re-queue for re-encoding at new bitrate
+                println!(
+                    "Re-queuing cancelled lossless folder for re-encoding: {}",
+                    folder.path.display()
+                );
+                s.queue.push_back((id.clone(), folder));
+                need_delete_output = true;
+            } else {
+                // Regular cancellation (folder removed by user)
+                let _ = event_tx.send(EncoderEvent::FolderCancelled(id.clone()));
             }
-            // Mark this folder as having completed pass 1 (so we skip lossy files in pass 2)
-            s.pass1_completed.insert(id.clone());
-        } else {
-            // Fully complete (either pure lossy folder, or pass 2 complete)
-            let status = FolderConversionStatus::Converted {
-                output_dir: output_dir.clone(),
-                lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
-                output_size,
-                completed_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            };
+        } else if completed == files_total || files_total == 0 {
+            // Success! (files_total == 0 means empty pass, e.g., pure lossless in LossyPass)
+            let output_size = output_manager
+                .get_folder_output_size(&id)
+                .unwrap_or(0);
 
-            s.completed.insert(id.clone(), (status, folder.clone()));
+            // Check if this folder is still waiting for pass 2
+            let still_in_lossless_pending = s.lossless_pending.iter().any(|(fid, _)| fid == &id);
 
-            // If we just finished pass 2 for this folder, remove it from lossless_pending
-            if s.encoding_phase == EncodingPhase::LosslessPass {
-                s.lossless_pending.retain(|(fid, _)| fid != &id);
+            // A folder is "pass 1 complete" (not fully done) if:
+            // 1. It's still in lossless_pending (has lossless files to encode in pass 2), AND
+            // 2. Either we're in LossyPass, OR this was an empty pass (files_total == 0)
+            //    The empty pass check handles race conditions where completion is processed
+            //    after phase transition due to async timing
+            let is_pass1_complete = still_in_lossless_pending
+                && (s.encoding_phase == EncodingPhase::LossyPass || files_total == 0);
+
+            if is_pass1_complete {
+                // Pass 1 complete for this folder, but it has lossless files pending for pass 2
+                // Don't add to completed yet - it will be fully completed in pass 2
+                println!(
+                    "Pass 1 complete for folder {} (lossy done, lossless pending)",
+                    folder.path.display()
+                );
+                // Update measured_lossy_size with this folder's output (only in LossyPass)
+                if s.encoding_phase == EncodingPhase::LossyPass {
+                    s.measured_lossy_size += output_size;
+                }
+                // Mark this folder as having completed pass 1 (so we skip lossy files in pass 2)
+                s.pass1_completed.insert(id.clone());
+            } else {
+                // Fully complete (either pure lossy folder, or pass 2 complete)
+                let status = FolderConversionStatus::Converted {
+                    output_dir: output_dir.clone(),
+                    lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
+                    output_size,
+                    completed_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                };
+
+                s.completed.insert(id.clone(), (status, folder.clone()));
+
+                // If we just finished pass 2 for this folder, remove it from lossless_pending
+                if s.encoding_phase == EncodingPhase::LosslessPass {
+                    s.lossless_pending.retain(|(fid, _)| fid != &id);
+                }
+
+                let _ = event_tx.send(EncoderEvent::FolderCompleted {
+                    id: id.clone(),
+                    output_dir,
+                    output_size,
+                    lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
+                });
             }
-
-            let _ = event_tx.send(EncoderEvent::FolderCompleted {
+        } else {
+            // Some files failed
+            let _ = event_tx.send(EncoderEvent::FolderFailed {
                 id: id.clone(),
-                output_dir,
-                output_size,
-                lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
+                error: format!(
+                    "Only {} of {} files converted successfully",
+                    completed, files_total
+                ),
             });
         }
-    } else {
-        // Some files failed
-        let _ = event_tx.send(EncoderEvent::FolderFailed {
-            id: id.clone(),
-            error: format!(
-                "Only {} of {} files converted successfully",
-                completed, files_total
-            ),
-        });
-    }
 
-    // Release lock before file operations
-    drop(s);
+        need_delete_output
+    }; // Lock released here
 
     // Delete partial output if needed (for requeue case)
     if need_delete_output {
@@ -792,8 +813,9 @@ async fn transition_to_pass2(
     let (measured_size, lossless_duration, folders_to_queue, optimal_bitrate) = {
         let s = state.lock().unwrap();
 
-        // Sum up actual output sizes of completed folders + measured_lossy_size
+        // Sum up actual output sizes of completed folders + measured_lossy_size + preloaded_size
         // (measured_lossy_size contains sizes from pass 1 for folders still in lossless_pending)
+        // (preloaded_size contains sizes of folders loaded from bundle profiles)
         let completed_size: u64 = s.completed.values()
             .map(|(status, _)| {
                 if let FolderConversionStatus::Converted { output_size, .. } = status {
@@ -804,7 +826,7 @@ async fn transition_to_pass2(
             })
             .sum();
 
-        let total_lossy_size = completed_size + s.measured_lossy_size;
+        let total_lossy_size = completed_size + s.measured_lossy_size + s.preloaded_size;
 
         // Calculate total duration of pending lossless files
         let lossless_duration: f64 = s.lossless_pending.iter()

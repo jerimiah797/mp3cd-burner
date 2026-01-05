@@ -738,6 +738,27 @@ impl FolderList {
                             .cloned()
                             .collect();
 
+                        // Calculate preloaded size: folders that are Converted and won't be re-encoded
+                        // This is needed for pass 2 bitrate calculation
+                        let folders_needing_encoding_ids: std::collections::HashSet<_> =
+                            folders_needing_encoding.iter().map(|f| &f.id).collect();
+                        let preloaded_size: u64 = this.folders.iter()
+                            .filter(|f| !folders_needing_encoding_ids.contains(&f.id))
+                            .filter_map(|f| {
+                                if let FolderConversionStatus::Converted { output_size, .. } = &f.conversion_status {
+                                    Some(*output_size)
+                                } else {
+                                    None
+                                }
+                            })
+                            .sum();
+
+                        if let Some(ref encoder) = this.background_encoder {
+                            if preloaded_size > 0 {
+                                encoder.set_preloaded_size(preloaded_size);
+                            }
+                        }
+
                         if !folders_needing_encoding.is_empty() {
                             let target_bitrate = this.calculated_bitrate();
                             println!("Profile loaded - calculated bitrate: {} kbps", target_bitrate);
@@ -754,6 +775,20 @@ impl FolderList {
 
                             this.last_folder_change = Some(std::time::Instant::now());
                             this.last_calculated_bitrate = Some(target_bitrate);
+                        } else {
+                            // All folders already encoded - restore lossless_bitrate from saved state
+                            // Find any folder with a lossless_bitrate and use that
+                            let saved_lossless_bitrate = this.folders.iter().find_map(|f| {
+                                if let FolderConversionStatus::Converted { lossless_bitrate, .. } = &f.conversion_status {
+                                    *lossless_bitrate
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(bitrate) = saved_lossless_bitrate {
+                                println!("Profile loaded - restored lossless bitrate: {} kbps", bitrate);
+                                this.last_calculated_bitrate = Some(bitrate);
+                            }
                         }
                     }
 
