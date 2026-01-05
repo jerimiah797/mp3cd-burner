@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::burning::{determine_iso_action, IsoAction, IsoGenerationCheck, IsoState};
+use crate::burning::{IsoAction, IsoGenerationCheck, IsoState, determine_iso_action};
 use crate::core::{ConversionState, MusicFolder};
 
 use super::FolderList;
@@ -52,7 +52,9 @@ impl FolderList {
 
     /// Get the ISO size in MB (decimal, to match Finder and CD labels)
     pub fn iso_size_mb(&self) -> Option<f64> {
-        self.iso_state.as_ref().map(|iso| iso.size_bytes as f64 / 1_000_000.0)
+        self.iso_state
+            .as_ref()
+            .map(|iso| iso.size_bytes as f64 / 1_000_000.0)
     }
 
     /// Determine what action is needed for the current burn request
@@ -157,9 +159,11 @@ impl FolderList {
                 if let Some(path) = iso_path {
                     let _ = this.update(&mut async_cx, |folder_list, cx| {
                         if let Ok(iso_state) = IsoState::new(path.clone(), &folders) {
-                            println!("ISO size: {} bytes ({:.1} MB)",
+                            println!(
+                                "ISO size: {} bytes ({:.1} MB)",
                                 iso_state.size_bytes,
-                                iso_state.size_bytes as f64 / 1_000_000.0);
+                                iso_state.size_bytes as f64 / 1_000_000.0
+                            );
                             folder_list.iso_state = Some(iso_state);
                             println!("ISO state saved - ready for Burn");
                             cx.notify(); // Ensure UI updates with new ISO size

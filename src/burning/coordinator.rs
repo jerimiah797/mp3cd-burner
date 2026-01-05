@@ -7,10 +7,10 @@
 //! 4. Handle results and update state
 
 use std::path::Path;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
-use crate::burning::cd::{burn_iso_with_cancel, check_cd_status, CdStatus};
+use crate::burning::cd::{CdStatus, burn_iso_with_cancel, check_cd_status};
 use crate::core::{BurnStage, ConversionState};
 
 /// Configuration for burn coordination
@@ -107,7 +107,12 @@ pub fn coordinate_burn(
     let progress_callback = create_progress_callback(state.clone(), erase_first);
 
     // Execute burn
-    match burn_iso_with_cancel(iso_path, Some(progress_callback), Some(cancel_token), erase_first) {
+    match burn_iso_with_cancel(
+        iso_path,
+        Some(progress_callback),
+        Some(cancel_token),
+        erase_first,
+    ) {
         Ok(()) => {
             println!("CD burned successfully!");
             state.set_stage(BurnStage::Complete);
@@ -207,10 +212,7 @@ fn wait_for_erase_approval(
 }
 
 /// Create progress callback that handles stage transitions
-fn create_progress_callback(
-    state: ConversionState,
-    is_erasing: bool,
-) -> Box<dyn Fn(i32) + Send> {
+fn create_progress_callback(state: ConversionState, is_erasing: bool) -> Box<dyn Fn(i32) + Send> {
     let last_progress = Arc::new(AtomicI32::new(-1));
 
     Box::new(move |progress: i32| {

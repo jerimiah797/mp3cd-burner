@@ -194,7 +194,11 @@ impl OutputManager {
     ///
     /// This is called during the first save to move converted files
     /// from the temp directory to the bundle.
-    pub fn copy_to_bundle(&self, bundle_path: &Path, folder_ids: &[FolderId]) -> Result<(), String> {
+    pub fn copy_to_bundle(
+        &self,
+        bundle_path: &Path,
+        folder_ids: &[FolderId],
+    ) -> Result<(), String> {
         let converted_dir = bundle_path.join("converted");
         fs::create_dir_all(&converted_dir)
             .map_err(|e| format!("Failed to create converted directory in bundle: {}", e))?;
@@ -208,7 +212,10 @@ impl OutputManager {
                 copy_dir_recursive(&src, &dst)?;
                 println!("Copied {} to bundle: {:?} -> {:?}", folder_id, src, dst);
             } else {
-                println!("Warning: Source folder not found for {}: {:?}", folder_id, src);
+                println!(
+                    "Warning: Source folder not found for {}: {:?}",
+                    folder_id, src
+                );
             }
         }
 

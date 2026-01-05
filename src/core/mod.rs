@@ -12,11 +12,10 @@ mod folder_state;
 mod scanning;
 mod state;
 
-pub use folder_state::{
-    calculate_folder_hash, FolderConversionStatus, FolderId,
-};
+pub use folder_state::{FolderConversionStatus, FolderId, calculate_folder_hash};
 pub use scanning::{
-    find_album_folders, format_duration, format_size, scan_music_folder,
-    AudioFileInfo, MusicFolder,
+    AudioFileInfo, MusicFolder, find_album_folders, format_duration, format_size, scan_music_folder,
 };
-pub use state::{AppSettings, BurnStage, ConversionState, DisplaySettings, ImportState, WindowState};
+pub use state::{
+    AppSettings, BurnStage, ConversionState, DisplaySettings, ImportState, WindowState,
+};

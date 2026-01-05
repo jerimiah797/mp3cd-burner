@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use super::coordinator::{coordinate_burn, BurnConfig};
+use super::coordinator::{BurnConfig, coordinate_burn};
 use super::iso::create_iso;
 use crate::conversion::{BackgroundEncoderHandle, OutputManager};
 use crate::core::{BurnStage, ConversionState, MusicFolder};
@@ -83,7 +83,12 @@ pub fn execute_full_burn(
 /// This is a blocking function that:
 /// 1. Creates an ISO from the staging directory
 /// 2. Coordinates the burn process
-fn execute_iso_and_burn(state: ConversionState, staging_dir: PathBuf, simulate_burn: bool, volume_label: String) {
+fn execute_iso_and_burn(
+    state: ConversionState,
+    staging_dir: PathBuf,
+    simulate_burn: bool,
+    volume_label: String,
+) {
     state.set_stage(BurnStage::CreatingIso);
     println!("\n=== Creating ISO image ===");
 

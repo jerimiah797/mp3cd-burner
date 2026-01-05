@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use crate::audio::{determine_encoding_strategy, EncodingStrategy};
+use crate::audio::{EncodingStrategy, determine_encoding_strategy};
 use crate::core::AudioFileInfo;
 
 /// CD capacity target in bytes (700 MB decimal)
@@ -49,10 +49,7 @@ pub fn snap_to_valid_bitrate(bitrate: u32) -> u32 {
 
 /// Get the next higher valid CBR bitrate, if one exists
 fn next_higher_bitrate(bitrate: u32) -> Option<u32> {
-    VALID_CBR_BITRATES
-        .iter()
-        .find(|&&b| b > bitrate)
-        .copied()
+    VALID_CBR_BITRATES.iter().find(|&&b| b > bitrate).copied()
 }
 
 /// Calculate estimated size at a given bitrate for lossless content
@@ -93,10 +90,7 @@ impl ConversionEstimate {
 }
 
 /// Estimate output size for a single file based on its encoding strategy
-pub fn estimate_file_size(
-    file: &AudioFileInfo,
-    target_bitrate: u32,
-) -> FileEstimate {
+pub fn estimate_file_size(file: &AudioFileInfo, target_bitrate: u32) -> FileEstimate {
     let strategy = determine_encoding_strategy(
         &file.codec,
         file.bitrate,
@@ -117,8 +111,8 @@ pub fn estimate_file_size(
             let audio_estimate = (file.duration * file.bitrate as f64 * 1000.0 / 8.0) as u64;
             file.size.min(audio_estimate + 50_000) // Conservative: keep some overhead
         }
-        EncodingStrategy::ConvertAtSourceBitrate(br) |
-        EncodingStrategy::ConvertAtTargetBitrate(br) => {
+        EncodingStrategy::ConvertAtSourceBitrate(br)
+        | EncodingStrategy::ConvertAtTargetBitrate(br) => {
             // Estimate: duration * bitrate / 8 + small overhead for MP3 framing
             let audio_bytes = (file.duration * *br as f64 * 1000.0 / 8.0) as u64;
             audio_bytes + 10_000 // ~10KB overhead for headers/padding
@@ -133,10 +127,7 @@ pub fn estimate_file_size(
 }
 
 /// Estimate total output size for all files at a given target bitrate
-pub fn estimate_conversion(
-    files: &[AudioFileInfo],
-    target_bitrate: u32,
-) -> ConversionEstimate {
+pub fn estimate_conversion(files: &[AudioFileInfo], target_bitrate: u32) -> ConversionEstimate {
     let mut total_bytes = 0u64;
     let mut copy_count = 0usize;
     let mut transcode_count = 0usize;
@@ -343,7 +334,13 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn make_test_file(codec: &str, bitrate: u32, duration: f64, size: u64, is_lossy: bool) -> AudioFileInfo {
+    fn make_test_file(
+        codec: &str,
+        bitrate: u32,
+        duration: f64,
+        size: u64,
+        is_lossy: bool,
+    ) -> AudioFileInfo {
         AudioFileInfo {
             path: PathBuf::from("/test/file.mp3"),
             duration,
@@ -360,7 +357,10 @@ mod tests {
         let file = make_test_file("mp3", 128, 180.0, 3_000_000, true);
         let estimate = estimate_file_size(&file, 256);
 
-        assert!(matches!(estimate.strategy, EncodingStrategy::CopyWithoutArt));
+        assert!(matches!(
+            estimate.strategy,
+            EncodingStrategy::CopyWithoutArt
+        ));
         // CopyWithoutArt estimates: min(file_size, audio_estimate + 50KB)
         // audio_estimate = 180s * 128kbps * 1000 / 8 = 2,880,000 + 50,000 = 2,930,000
         assert_eq!(estimate.estimated_bytes, 2_930_000);
@@ -372,7 +372,10 @@ mod tests {
         let file = make_test_file("flac", 0, 180.0, 30_000_000, false);
         let estimate = estimate_file_size(&file, 256);
 
-        assert!(matches!(estimate.strategy, EncodingStrategy::ConvertAtTargetBitrate(256)));
+        assert!(matches!(
+            estimate.strategy,
+            EncodingStrategy::ConvertAtTargetBitrate(256)
+        ));
         // 180 seconds * 256 kbps * 1000 / 8 = 5,760,000 bytes + overhead
         assert!(estimate.estimated_bytes > 5_700_000);
         assert!(estimate.estimated_bytes < 6_000_000);
@@ -381,7 +384,7 @@ mod tests {
     #[test]
     fn test_estimate_conversion_total() {
         let files = vec![
-            make_test_file("mp3", 128, 180.0, 3_000_000, true),  // Copy
+            make_test_file("mp3", 128, 180.0, 3_000_000, true), // Copy
             make_test_file("flac", 0, 180.0, 30_000_000, false), // Transcode
         ];
 

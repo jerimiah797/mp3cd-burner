@@ -50,8 +50,8 @@ impl AppSettings {
 
     /// Get the app data directory (~/Library/Application Support/MP3 CD Burner/)
     fn get_app_data_dir() -> Result<PathBuf, String> {
-        let data_dir = dirs::data_dir()
-            .ok_or_else(|| "Could not determine data directory".to_string())?;
+        let data_dir =
+            dirs::data_dir().ok_or_else(|| "Could not determine data directory".to_string())?;
 
         let app_dir = data_dir.join("MP3 CD Burner");
 
@@ -89,8 +89,7 @@ impl AppSettings {
         let contents = std::fs::read_to_string(&settings_path)
             .map_err(|e| format!("Failed to read settings: {}", e))?;
 
-        serde_json::from_str(&contents)
-            .map_err(|e| format!("Failed to parse settings: {}", e))
+        serde_json::from_str(&contents).map_err(|e| format!("Failed to parse settings: {}", e))
     }
 
     /// Save app settings to disk
@@ -140,8 +139,8 @@ impl WindowState {
 
     /// Get the app data directory (~/Library/Application Support/MP3 CD Burner/)
     fn get_app_data_dir() -> Result<PathBuf, String> {
-        let data_dir = dirs::data_dir()
-            .ok_or_else(|| "Could not determine data directory".to_string())?;
+        let data_dir =
+            dirs::data_dir().ok_or_else(|| "Could not determine data directory".to_string())?;
 
         let app_dir = data_dir.join("MP3 CD Burner");
 
@@ -158,8 +157,10 @@ impl WindowState {
     pub fn load() -> Self {
         match Self::try_load() {
             Ok(state) => {
-                println!("Loaded window state from disk: {}x{} at ({}, {})",
-                    state.width, state.height, state.x, state.y);
+                println!(
+                    "Loaded window state from disk: {}x{} at ({}, {})",
+                    state.width, state.height, state.x, state.y
+                );
                 state
             }
             Err(e) => {
@@ -180,8 +181,7 @@ impl WindowState {
         let contents = std::fs::read_to_string(&state_path)
             .map_err(|e| format!("Failed to read state: {}", e))?;
 
-        serde_json::from_str(&contents)
-            .map_err(|e| format!("Failed to parse state: {}", e))
+        serde_json::from_str(&contents).map_err(|e| format!("Failed to parse state: {}", e))
     }
 
     /// Save window state to disk
@@ -192,8 +192,7 @@ impl WindowState {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize state: {}", e))?;
 
-        std::fs::write(&state_path, json)
-            .map_err(|e| format!("Failed to write state: {}", e))?;
+        std::fs::write(&state_path, json).map_err(|e| format!("Failed to write state: {}", e))?;
 
         Ok(())
     }
@@ -240,8 +239,8 @@ impl DisplaySettings {
 
     /// Get the app data directory (~/Library/Application Support/MP3 CD Burner/)
     fn get_app_data_dir() -> Result<PathBuf, String> {
-        let data_dir = dirs::data_dir()
-            .ok_or_else(|| "Could not determine data directory".to_string())?;
+        let data_dir =
+            dirs::data_dir().ok_or_else(|| "Could not determine data directory".to_string())?;
 
         let app_dir = data_dir.join("MP3 CD Burner");
 
@@ -279,8 +278,7 @@ impl DisplaySettings {
         let contents = std::fs::read_to_string(&settings_path)
             .map_err(|e| format!("Failed to read settings: {}", e))?;
 
-        serde_json::from_str(&contents)
-            .map_err(|e| format!("Failed to parse settings: {}", e))
+        serde_json::from_str(&contents).map_err(|e| format!("Failed to parse settings: {}", e))
     }
 
     /// Save display settings to disk

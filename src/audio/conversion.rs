@@ -90,12 +90,8 @@ mod tests {
         // In no lossy mode, MP3 files should be copied to preserve quality
         // If embed_album_art is true, use Copy to preserve art
         let strategy = determine_encoding_strategy(
-            "mp3",
-            192,
-            256,
-            true,
-            true,  // no_lossy_mode
-            true,  // embed_album_art
+            "mp3", 192, 256, true, true, // no_lossy_mode
+            true, // embed_album_art
         );
         assert_eq!(strategy, EncodingStrategy::Copy);
     }
@@ -105,11 +101,7 @@ mod tests {
         // In no lossy mode, MP3 files should be copied
         // If embed_album_art is false, use CopyWithoutArt to strip art
         let strategy = determine_encoding_strategy(
-            "mp3",
-            192,
-            256,
-            true,
-            true,  // no_lossy_mode
+            "mp3", 192, 256, true, true,  // no_lossy_mode
             false, // embed_album_art
         );
         assert_eq!(strategy, EncodingStrategy::CopyWithoutArt);
@@ -119,11 +111,8 @@ mod tests {
     fn test_no_lossy_mode_lossy_non_mp3_aac() {
         // AAC is lossy but not MP3 - convert at source bitrate to avoid double loss
         let strategy = determine_encoding_strategy(
-            "aac",
-            192,
-            256,
-            true,  // is_lossy
-            true,  // no_lossy_mode
+            "aac", 192, 256, true, // is_lossy
+            true, // no_lossy_mode
             true,
         );
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(192));
@@ -133,11 +122,8 @@ mod tests {
     fn test_no_lossy_mode_lossy_non_mp3_opus() {
         // OPUS is lossy but not MP3 - convert at source bitrate
         let strategy = determine_encoding_strategy(
-            "opus",
-            128,
-            256,
-            true,  // is_lossy
-            true,  // no_lossy_mode
+            "opus", 128, 256, true, // is_lossy
+            true, // no_lossy_mode
             false,
         );
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(128));
@@ -147,10 +133,8 @@ mod tests {
     fn test_no_lossy_mode_lossless_flac() {
         // FLAC is lossless - convert at target bitrate
         let strategy = determine_encoding_strategy(
-            "flac",
-            0,     // Bitrate doesn't apply to lossless
-            256,
-            false, // is_lossy
+            "flac", 0, // Bitrate doesn't apply to lossless
+            256, false, // is_lossy
             true,  // no_lossy_mode
             true,
         );
@@ -161,10 +145,7 @@ mod tests {
     fn test_no_lossy_mode_lossless_wav() {
         // WAV is lossless - convert at target bitrate
         let strategy = determine_encoding_strategy(
-            "wav",
-            0,
-            320,
-            false, // is_lossy
+            "wav", 0, 320, false, // is_lossy
             true,  // no_lossy_mode
             false,
         );
@@ -177,11 +158,7 @@ mod tests {
     fn test_normal_mode_mp3_below_target_with_art() {
         // MP3 at 192kbps, target 256kbps - copy to preserve quality
         let strategy = determine_encoding_strategy(
-            "mp3",
-            192,
-            256,
-            true,
-            false, // normal mode
+            "mp3", 192, 256, true, false, // normal mode
             true,  // embed_album_art
         );
         assert_eq!(strategy, EncodingStrategy::Copy);
@@ -191,11 +168,7 @@ mod tests {
     fn test_normal_mode_mp3_below_target_without_art() {
         // MP3 at 192kbps, target 256kbps - copy without art
         let strategy = determine_encoding_strategy(
-            "mp3",
-            192,
-            256,
-            true,
-            false, // normal mode
+            "mp3", 192, 256, true, false, // normal mode
             false, // no album art
         );
         assert_eq!(strategy, EncodingStrategy::CopyWithoutArt);
@@ -204,14 +177,7 @@ mod tests {
     #[test]
     fn test_normal_mode_mp3_equals_target() {
         // MP3 at 256kbps, target 256kbps - copy it
-        let strategy = determine_encoding_strategy(
-            "mp3",
-            256,
-            256,
-            true,
-            false,
-            true,
-        );
+        let strategy = determine_encoding_strategy("mp3", 256, 256, true, false, true);
         assert_eq!(strategy, EncodingStrategy::Copy);
     }
 
@@ -220,14 +186,7 @@ mod tests {
         // MP3 at 320kbps, target 256kbps - transcode at source bitrate (preserve quality)
         // We don't cap at target_bitrate because that's for lossless files only.
         // Transcoding lossy to lossy at a lower bitrate degrades quality.
-        let strategy = determine_encoding_strategy(
-            "mp3",
-            320,
-            256,
-            true,
-            false,
-            true,
-        );
+        let strategy = determine_encoding_strategy("mp3", 320, 256, true, false, true);
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(320));
     }
 
@@ -236,10 +195,7 @@ mod tests {
         // AAC at 128kbps, target 256kbps - use source bitrate (smart bitrate)
         // We want min(source, target) to avoid upsampling lossy
         let strategy = determine_encoding_strategy(
-            "aac",
-            128,
-            256,
-            true,  // is_lossy
+            "aac", 128, 256, true,  // is_lossy
             false, // normal mode
             true,
         );
@@ -251,10 +207,7 @@ mod tests {
         // AAC at 320kbps, target 256kbps - transcode at source bitrate (preserve quality)
         // We don't cap at target_bitrate because that's for lossless files only.
         let strategy = determine_encoding_strategy(
-            "aac",
-            320,
-            256,
-            true,  // is_lossy
+            "aac", 320, 256, true,  // is_lossy
             false, // normal mode
             true,
         );
@@ -264,42 +217,21 @@ mod tests {
     #[test]
     fn test_normal_mode_ogg_smart_bitrate() {
         // OGG is lossy non-MP3 - use smart bitrate
-        let strategy = determine_encoding_strategy(
-            "ogg",
-            192,
-            256,
-            true,
-            false,
-            false,
-        );
+        let strategy = determine_encoding_strategy("ogg", 192, 256, true, false, false);
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(192));
     }
 
     #[test]
     fn test_normal_mode_flac() {
         // FLAC is lossless - convert at target bitrate
-        let strategy = determine_encoding_strategy(
-            "flac",
-            0,
-            256,
-            false,
-            false,
-            true,
-        );
+        let strategy = determine_encoding_strategy("flac", 0, 256, false, false, true);
         assert_eq!(strategy, EncodingStrategy::ConvertAtTargetBitrate(256));
     }
 
     #[test]
     fn test_normal_mode_wav() {
         // WAV is lossless - convert at target bitrate
-        let strategy = determine_encoding_strategy(
-            "wav",
-            0,
-            320,
-            false,
-            false,
-            false,
-        );
+        let strategy = determine_encoding_strategy("wav", 0, 320, false, false, false);
         assert_eq!(strategy, EncodingStrategy::ConvertAtTargetBitrate(320));
     }
 
@@ -308,14 +240,7 @@ mod tests {
     #[test]
     fn test_very_low_bitrate_mp3() {
         // Very low quality MP3 - should still copy in normal mode
-        let strategy = determine_encoding_strategy(
-            "mp3",
-            64,
-            256,
-            true,
-            false,
-            true,
-        );
+        let strategy = determine_encoding_strategy("mp3", 64, 256, true, false, true);
         assert_eq!(strategy, EncodingStrategy::Copy);
     }
 
@@ -325,28 +250,14 @@ mod tests {
         // We don't transcode lossy files down to target because:
         // 1. Target bitrate is calculated for lossless files
         // 2. Lossy-to-lossy transcoding at lower bitrate degrades quality
-        let strategy = determine_encoding_strategy(
-            "mp3",
-            320,
-            192,
-            true,
-            false,
-            true,
-        );
+        let strategy = determine_encoding_strategy("mp3", 320, 192, true, false, true);
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(320));
     }
 
     #[test]
     fn test_unusual_codec_lossy() {
         // Test with WMA (lossy but not MP3)
-        let strategy = determine_encoding_strategy(
-            "wma",
-            192,
-            256,
-            true,
-            false,
-            true,
-        );
+        let strategy = determine_encoding_strategy("wma", 192, 256, true, false, true);
         // Should use smart bitrate (min of source and target)
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(192));
     }
@@ -356,12 +267,8 @@ mod tests {
         // MP3 at 170kbps, target 151kbps - within 20kbps threshold, should copy
         // This handles album art inflation and avoids pointless re-encoding
         let strategy = determine_encoding_strategy(
-            "mp3",
-            170,  // 170 <= 151 + 20 = 171, so within threshold
-            151,
-            true,
-            false,
-            false,
+            "mp3", 170, // 170 <= 151 + 20 = 171, so within threshold
+            151, true, false, false,
         );
         assert_eq!(strategy, EncodingStrategy::CopyWithoutArt);
     }
@@ -371,12 +278,8 @@ mod tests {
         // MP3 at 180kbps, target 151kbps - above 20kbps threshold, should transcode
         // But transcode at SOURCE bitrate to preserve quality (not target)
         let strategy = determine_encoding_strategy(
-            "mp3",
-            180,  // 180 > 151 + 20 = 171, so above threshold
-            151,
-            true,
-            false,
-            true,
+            "mp3", 180, // 180 > 151 + 20 = 171, so above threshold
+            151, true, false, true,
         );
         assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(180));
     }

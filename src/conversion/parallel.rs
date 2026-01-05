@@ -3,10 +3,10 @@
 //! Converts multiple audio files concurrently using a worker pool
 //! sized based on CPU cores.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
@@ -112,9 +112,9 @@ async fn convert_file_async(
             let result = Command::new(ffmpeg_path)
                 .arg("-i")
                 .arg(input_path)
-                .arg("-vn")           // Skip video/album art
+                .arg("-vn") // Skip video/album art
                 .arg("-codec:a")
-                .arg("copy")          // Copy audio stream as-is
+                .arg("copy") // Copy audio stream as-is
                 .arg("-y")
                 .arg(output_path)
                 .output()
@@ -134,19 +134,19 @@ async fn convert_file_async(
                     .arg("-i")
                     .arg(art_path)
                     .arg("-map")
-                    .arg("0:a")           // Map audio from first input
+                    .arg("0:a") // Map audio from first input
                     .arg("-map")
-                    .arg("1:0")           // Map image from second input
+                    .arg("1:0") // Map image from second input
                     .arg("-codec:a")
                     .arg("libmp3lame")
                     .arg("-abr")
-                    .arg("1")             // ABR mode: targets average bitrate
+                    .arg("1") // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-c:v")
-                    .arg("mjpeg")         // Encode cover as JPEG
+                    .arg("mjpeg") // Encode cover as JPEG
                     .arg("-id3v2_version")
-                    .arg("3")             // Use ID3v2.3 for compatibility
+                    .arg("3") // Use ID3v2.3 for compatibility
                     .arg("-metadata:s:v")
                     .arg("title=Album cover")
                     .arg("-metadata:s:v")
@@ -160,11 +160,11 @@ async fn convert_file_async(
                 Command::new(ffmpeg_path)
                     .arg("-i")
                     .arg(input_path)
-                    .arg("-vn")           // Skip video/album art
+                    .arg("-vn") // Skip video/album art
                     .arg("-codec:a")
                     .arg("libmp3lame")
                     .arg("-abr")
-                    .arg("1")             // ABR mode: targets average bitrate
+                    .arg("1") // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-y")
@@ -187,19 +187,19 @@ async fn convert_file_async(
                     .arg("-i")
                     .arg(art_path)
                     .arg("-map")
-                    .arg("0:a")           // Map audio from first input
+                    .arg("0:a") // Map audio from first input
                     .arg("-map")
-                    .arg("1:0")           // Map image from second input
+                    .arg("1:0") // Map image from second input
                     .arg("-codec:a")
                     .arg("libmp3lame")
                     .arg("-abr")
-                    .arg("1")             // ABR mode: targets average bitrate
+                    .arg("1") // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-c:v")
-                    .arg("mjpeg")         // Encode cover as JPEG
+                    .arg("mjpeg") // Encode cover as JPEG
                     .arg("-id3v2_version")
-                    .arg("3")             // Use ID3v2.3 for compatibility
+                    .arg("3") // Use ID3v2.3 for compatibility
                     .arg("-metadata:s:v")
                     .arg("title=Album cover")
                     .arg("-metadata:s:v")
@@ -213,11 +213,11 @@ async fn convert_file_async(
                 Command::new(ffmpeg_path)
                     .arg("-i")
                     .arg(input_path)
-                    .arg("-vn")           // Skip video/album art
+                    .arg("-vn") // Skip video/album art
                     .arg("-codec:a")
                     .arg("libmp3lame")
                     .arg("-abr")
-                    .arg("1")             // ABR mode: targets average bitrate
+                    .arg("1") // ABR mode: targets average bitrate
                     .arg("-b:a")
                     .arg(&bitrate_str)
                     .arg("-y")
@@ -334,7 +334,9 @@ where
         let on_complete = on_complete.clone();
 
         let handle = tokio::spawn(async move {
-            let input_name = job.input_path.file_name()
+            let input_name = job
+                .input_path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
@@ -342,8 +344,12 @@ where
             let strategy_desc = match &job.strategy {
                 EncodingStrategy::Copy => "copy".to_string(),
                 EncodingStrategy::CopyWithoutArt => "copy (no art)".to_string(),
-                EncodingStrategy::ConvertAtSourceBitrate(br) => format!("transcode @{}k (source)", br),
-                EncodingStrategy::ConvertAtTargetBitrate(br) => format!("transcode @{}k (target)", br),
+                EncodingStrategy::ConvertAtSourceBitrate(br) => {
+                    format!("transcode @{}k (source)", br)
+                }
+                EncodingStrategy::ConvertAtTargetBitrate(br) => {
+                    format!("transcode @{}k (target)", br)
+                }
             };
             println!("Processing: {} [{}]", input_name, strategy_desc);
 
@@ -358,12 +364,7 @@ where
 
             if result.success {
                 let count = progress.increment_completed();
-                println!(
-                    "Completed ({}/{}): {}",
-                    count,
-                    progress.total,
-                    input_name
-                );
+                println!("Completed ({}/{}): {}", count, progress.total, input_name);
             } else {
                 progress.increment_failed();
                 if let Some(ref error) = result.error {
@@ -386,7 +387,11 @@ where
         // Tasks already called on_complete when they finished
     }
 
-    (progress.completed_count(), progress.failed_count(), was_cancelled)
+    (
+        progress.completed_count(),
+        progress.failed_count(),
+        was_cancelled,
+    )
 }
 
 #[cfg(test)]

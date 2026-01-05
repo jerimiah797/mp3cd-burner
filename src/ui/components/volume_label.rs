@@ -4,8 +4,8 @@
 //! Joliet format: max 16 characters, excludes * / : ; ? \
 
 use gpui::{
-    div, prelude::*, px, size, Bounds, Context, FocusHandle, KeyDownEvent,
-    Render, SharedString, Window, WindowBounds, WindowOptions,
+    Bounds, Context, FocusHandle, KeyDownEvent, Render, SharedString, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::ui::Theme;
@@ -50,7 +50,11 @@ impl VolumeLabelDialog {
     ///
     /// The callback will be called with the validated label when OK is pressed.
     /// Returns the window handle.
-    pub fn open<F>(cx: &mut gpui::App, initial_label: Option<String>, on_confirm: F) -> gpui::WindowHandle<Self>
+    pub fn open<F>(
+        cx: &mut gpui::App,
+        initial_label: Option<String>,
+        on_confirm: F,
+    ) -> gpui::WindowHandle<Self>
     where
         F: Fn(String) + 'static,
     {
@@ -79,7 +83,12 @@ impl VolumeLabelDialog {
     }
 
     /// Handle a key press - returns true if the event was handled
-    fn handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn handle_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let keystroke = &event.keystroke;
 
         // Handle special keys
@@ -198,7 +207,11 @@ impl Render for VolumeLabelDialog {
                     .child(
                         div()
                             .text_base()
-                            .text_color(if is_default { theme.text_muted } else { theme.text })
+                            .text_color(if is_default {
+                                theme.text_muted
+                            } else {
+                                theme.text
+                            })
                             .when(is_default, |el| el.italic())
                             .child(if text_display.is_empty() {
                                 " ".to_string() // Prevent collapse
@@ -207,13 +220,7 @@ impl Render for VolumeLabelDialog {
                             }),
                     )
                     // Cursor
-                    .child(
-                        div()
-                            .w(px(2.))
-                            .h(px(20.))
-                            .bg(theme.accent)
-                            .ml_px(),
-                    ),
+                    .child(div().w(px(2.)).h(px(20.)).bg(theme.accent).ml_px()),
             )
             // Character count
             .child(

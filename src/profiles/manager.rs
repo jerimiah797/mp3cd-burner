@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::storage::{add_to_recent_profiles, is_bundle, load_profile, save_profile, validate_conversion_state};
+use super::storage::{
+    add_to_recent_profiles, is_bundle, load_profile, save_profile, validate_conversion_state,
+};
 use super::types::{BurnProfile, BurnSettings, ConversionStateValidation, SavedFolderState};
 use crate::burning::IsoState;
 use crate::conversion::OutputManager;
@@ -54,7 +56,11 @@ pub fn prepare_profile_load(path: &Path) -> Result<ProfileLoadSetup, String> {
     // Validate conversion state, passing bundle path if applicable
     let validation = validate_conversion_state(&profile, bundle_path.as_deref());
 
-    println!("Loading profile: {} (bundle: {})", profile.profile_name, bundle_path.is_some());
+    println!(
+        "Loading profile: {} (bundle: {})",
+        profile.profile_name,
+        bundle_path.is_some()
+    );
     println!("  Valid folders: {:?}", validation.valid_folders);
     println!("  Invalid folders: {:?}", validation.invalid_folders);
     println!("  ISO valid: {}", validation.iso_valid);
@@ -194,7 +200,15 @@ pub fn save_profile_to_path(
     manual_bitrate_override: Option<u32>,
     for_bundle: bool,
 ) -> Result<(), String> {
-    let profile = create_profile(profile_name, folders, output_manager, iso_state, volume_label, manual_bitrate_override, for_bundle);
+    let profile = create_profile(
+        profile_name,
+        folders,
+        output_manager,
+        iso_state,
+        volume_label,
+        manual_bitrate_override,
+        for_bundle,
+    );
     save_profile(&profile, path)?;
     add_to_recent_profiles(&path.to_string_lossy())?;
     println!("Profile saved to: {}", path.display());
@@ -217,7 +231,15 @@ mod tests {
     fn test_create_profile_with_folders() {
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
-        let profile = create_profile("My Album".to_string(), &folders, None, None, None, None, false);
+        let profile = create_profile(
+            "My Album".to_string(),
+            &folders,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
         assert_eq!(profile.profile_name, "My Album");
         assert_eq!(profile.folders.len(), 1);
         assert_eq!(profile.folders[0], "/test/album");
@@ -243,7 +265,15 @@ mod tests {
     fn test_create_profile_for_bundle() {
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
-        let profile = create_profile("Bundle Test".to_string(), &folders, None, None, None, None, true);
+        let profile = create_profile(
+            "Bundle Test".to_string(),
+            &folders,
+            None,
+            None,
+            None,
+            None,
+            true,
+        );
         assert_eq!(profile.version, "2.0");
     }
 
@@ -251,7 +281,15 @@ mod tests {
     fn test_create_profile_legacy() {
         let folders = vec![MusicFolder::new_for_test("/test/album")];
 
-        let profile = create_profile("Legacy Test".to_string(), &folders, None, None, None, None, false);
+        let profile = create_profile(
+            "Legacy Test".to_string(),
+            &folders,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
         assert_eq!(profile.version, "1.0");
     }
 
@@ -270,7 +308,7 @@ mod tests {
             None,
             None,
             Some("Test CD".to_string()),
-            None, // no bitrate override
+            None,  // no bitrate override
             false, // legacy format
         );
         assert!(result.is_ok());
@@ -293,7 +331,7 @@ mod tests {
             None,
             Some("Test CD".to_string()),
             Some(285), // with bitrate override
-            true, // bundle format
+            true,      // bundle format
         );
         assert!(result.is_ok());
         // Bundle creates a directory

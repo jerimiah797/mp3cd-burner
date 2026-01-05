@@ -6,10 +6,10 @@
 //!
 //! Button rendering with click handlers remains in folder_list.rs to use cx.listener().
 
-use gpui::{div, prelude::*, SharedString};
+use gpui::{SharedString, div, prelude::*};
 
 use crate::conversion::MultipassEstimate;
-use crate::core::{format_duration, BurnStage};
+use crate::core::{BurnStage, format_duration};
 use crate::ui::Theme;
 
 /// State needed to render the status bar
@@ -110,28 +110,20 @@ pub fn render_stats_panel(state: &StatusBarState, theme: &Theme) -> impl IntoEle
                 .flex()
                 .gap_4()
                 .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child("Files:")
-                        .child(
-                            div()
-                                .text_color(text_color)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(format!("{}", state.total_files)),
-                        ),
+                    div().flex().gap_1().child("Files:").child(
+                        div()
+                            .text_color(text_color)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child(format!("{}", state.total_files)),
+                    ),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child("Duration:")
-                        .child(
-                            div()
-                                .text_color(text_color)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(format_duration(state.total_duration)),
-                        ),
+                    div().flex().gap_1().child("Duration:").child(
+                        div()
+                            .text_color(text_color)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child(format_duration(state.total_duration)),
+                    ),
                 ),
         )
         // Row 2: Size and Target
@@ -140,34 +132,29 @@ pub fn render_stats_panel(state: &StatusBarState, theme: &Theme) -> impl IntoEle
                 .flex()
                 .gap_4()
                 .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child("Source:")
-                        .child(
-                            div()
-                                .text_color(text_color)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(format!("{:.2} MB", size_mb)),
-                        ),
+                    div().flex().gap_1().child("Source:").child(
+                        div()
+                            .text_color(text_color)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child(format!("{:.2} MB", size_mb)),
+                    ),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child("Target:")
-                        .child(
-                            div()
-                                .text_color(text_color)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child("700 MB"),
-                        ),
+                    div().flex().gap_1().child("Target:").child(
+                        div()
+                            .text_color(text_color)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("700 MB"),
+                    ),
                 ),
         )
 }
 
 /// Render just the clickable bitrate element (for wrapping with on_click in render.rs)
-pub fn render_clickable_bitrate(state: &StatusBarState, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+pub fn render_clickable_bitrate(
+    state: &StatusBarState,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
     let bitrate_display = state.bitrate_display();
     let success_color = theme.success;
     let text_muted = theme.text_muted;
@@ -514,7 +501,11 @@ pub fn render_convert_burn_button_base(
         .flex()
         .items_center()
         .justify_center()
-        .bg(if has_folders { success_color } else { text_muted })
+        .bg(if has_folders {
+            success_color
+        } else {
+            text_muted
+        })
         .text_color(gpui::white())
         .text_lg()
         .rounded_md()

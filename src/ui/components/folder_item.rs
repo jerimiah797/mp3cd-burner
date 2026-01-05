@@ -1,12 +1,12 @@
 //! FolderItem component - A single draggable folder entry in the list
 
 use gpui::{
-    div, img, prelude::*, px, rgb, Context, Half, IntoElement, Pixels, Point, Render,
-    SharedString, Window,
+    Context, Half, IntoElement, Pixels, Point, Render, SharedString, Window, div, img, prelude::*,
+    px, rgb,
 };
 use std::path::{Path, PathBuf};
 
-use crate::core::{format_size, FolderConversionStatus, MusicFolder};
+use crate::core::{FolderConversionStatus, MusicFolder, format_size};
 use crate::ui::Theme;
 
 /// Data carried during a drag operation for internal reordering
@@ -27,7 +27,13 @@ pub struct DraggedFolder {
 }
 
 impl DraggedFolder {
-    pub fn new(index: usize, path: PathBuf, album_art: Option<String>, file_count: u32, total_size: u64) -> Self {
+    pub fn new(
+        index: usize,
+        path: PathBuf,
+        album_art: Option<String>,
+        file_count: u32,
+        total_size: u64,
+    ) -> Self {
         Self {
             index,
             path,
@@ -98,12 +104,12 @@ impl Render for DraggedFolder {
                                 el.child(
                                     img(Path::new(&path))
                                         .size_full()
-                                        .object_fit(gpui::ObjectFit::Cover)
+                                        .object_fit(gpui::ObjectFit::Cover),
                                 )
                             })
                             .when(self.album_art.is_none(), |el| {
                                 el.child(div().text_xl().child("📁"))
-                            })
+                            }),
                     )
                     // Folder name and metadata
                     .child(
@@ -220,7 +226,11 @@ pub fn render_folder_item<V: 'static>(
         }
 
         match &folder.conversion_status {
-            FolderConversionStatus::Converted { output_size, lossless_bitrate, .. } => {
+            FolderConversionStatus::Converted {
+                output_size,
+                lossless_bitrate,
+                ..
+            } => {
                 if show_file_count {
                     parts.push(format!("{} files", folder.file_count));
                 }
@@ -237,7 +247,10 @@ pub fn render_folder_item<V: 'static>(
                     }
                 }
             }
-            FolderConversionStatus::Converting { files_completed, files_total } => {
+            FolderConversionStatus::Converting {
+                files_completed,
+                files_total,
+            } => {
                 // Converting state always shows progress
                 parts.push(format!("{}/{} files", files_completed, files_total));
                 if show_original_size {
@@ -294,7 +307,10 @@ pub fn render_folder_item<V: 'static>(
 
     // Calculate progress percentage for the progress line
     let progress_percent = match &folder.conversion_status {
-        FolderConversionStatus::Converting { files_completed, files_total } => {
+        FolderConversionStatus::Converting {
+            files_completed,
+            files_total,
+        } => {
             if *files_total > 0 {
                 Some((*files_completed as f32 / *files_total as f32) * 100.0)
             } else {
@@ -324,19 +340,25 @@ pub fn render_folder_item<V: 'static>(
         .rounded_md()
         .overflow_hidden() // Clip progress line to rounded corners
         .cursor_grab()
-        .hover(|s| s.bg(if needs_transcoding { bg_queued_hover } else { bg_hover }))
+        .hover(|s| {
+            s.bg(if needs_transcoding {
+                bg_queued_hover
+            } else {
+                bg_hover
+            })
+        })
         // Make this item draggable
         .on_drag(drag_info, |info: &DraggedFolder, position, _, cx| {
             cx.new(|_| info.clone().with_position(position))
         })
         // Handle internal drops (reordering)
-        .on_drop(cx.listener(move |view, dragged: &DraggedFolder, _window, _cx| {
-            on_drop_clone(view, dragged.index, index);
-        }))
+        .on_drop(
+            cx.listener(move |view, dragged: &DraggedFolder, _window, _cx| {
+                on_drop_clone(view, dragged.index, index);
+            }),
+        )
         // Style when dragging over this item
-        .drag_over::<DraggedFolder>(|style, _, _, _| {
-            style.bg(rgb(0x3d3d3d))
-        })
+        .drag_over::<DraggedFolder>(|style, _, _, _| style.bg(rgb(0x3d3d3d)))
         // Content row
         .child(
             div()
@@ -359,12 +381,12 @@ pub fn render_folder_item<V: 'static>(
                             el.child(
                                 img(Path::new(&path))
                                     .size_full()
-                                    .object_fit(gpui::ObjectFit::Cover)
+                                    .object_fit(gpui::ObjectFit::Cover),
                             )
                         })
                         .when(folder.album_art.is_none(), |el| {
                             el.child(div().text_xl().child("📁"))
-                        })
+                        }),
                 )
                 // Folder name and metadata
                 .child(
@@ -381,12 +403,7 @@ pub fn render_folder_item<V: 'static>(
                                 .text_ellipsis()
                                 .child(folder_name),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(text_muted)
-                                .child(file_info),
-                        ),
+                        .child(div().text_xs().text_color(text_muted).child(file_info)),
                 )
                 // Remove button
                 .child(
@@ -401,7 +418,7 @@ pub fn render_folder_item<V: 'static>(
                             on_remove(view, index);
                         }))
                         .child("✕"),
-                )
+                ),
         )
         // Progress line at bottom (only during active conversion)
         .when_some(progress_percent, |el, pct| {
@@ -410,7 +427,7 @@ pub fn render_folder_item<V: 'static>(
                     .w(gpui::relative(pct / 100.0))
                     .h(px(3.))
                     .flex_shrink_0()
-                    .bg(progress_line)
+                    .bg(progress_line),
             )
         })
 }

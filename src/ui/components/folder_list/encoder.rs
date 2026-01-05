@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::conversion::{BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, EncodingPhase, OutputManager};
+use crate::conversion::{
+    BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, EncodingPhase, OutputManager,
+};
 use crate::core::{FolderConversionStatus, FolderId};
 
 use super::FolderList;

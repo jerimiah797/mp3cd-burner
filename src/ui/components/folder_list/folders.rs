@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::core::{find_album_folders, scan_music_folder, FolderConversionStatus, ImportState, MusicFolder};
+use crate::core::{
+    FolderConversionStatus, ImportState, MusicFolder, find_album_folders, scan_music_folder,
+};
 
 use super::FolderList;
 
@@ -144,12 +146,16 @@ impl FolderList {
             let folder = self.folders.remove(index);
 
             // If folder was preloaded as Converted, subtract its size from preloaded_size
-            if let FolderConversionStatus::Converted { output_size, .. } = &folder.conversion_status {
+            if let FolderConversionStatus::Converted { output_size, .. } = &folder.conversion_status
+            {
                 if let Some(ref encoder) = self.background_encoder {
                     let state = encoder.get_state();
                     let mut s = state.lock().unwrap();
                     s.preloaded_size = s.preloaded_size.saturating_sub(*output_size);
-                    println!("Reduced preloaded size by {} MB (folder removed)", output_size / 1_000_000);
+                    println!(
+                        "Reduced preloaded size by {} MB (folder removed)",
+                        output_size / 1_000_000
+                    );
                 }
             }
 
@@ -310,6 +316,7 @@ impl FolderList {
 
                 let _ = async_cx.refresh();
             }
-        }).detach();
+        })
+        .detach();
     }
 }

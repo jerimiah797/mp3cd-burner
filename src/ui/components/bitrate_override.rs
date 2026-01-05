@@ -4,8 +4,8 @@
 //! Valid range: 64-320 kbps (LAME encoder limits).
 
 use gpui::{
-    div, prelude::*, px, size, Bounds, Context, FocusHandle, KeyDownEvent, Render, SharedString,
-    Window, WindowBounds, WindowOptions,
+    Bounds, Context, FocusHandle, KeyDownEvent, Render, SharedString, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::ui::Theme;
@@ -193,12 +193,7 @@ impl Render for BitrateOverrideDialog {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text)
-                            .child("New bitrate:"),
-                    )
+                    .child(div().text_sm().text_color(theme.text).child("New bitrate:"))
                     .child(
                         div()
                             .id(SharedString::from("bitrate-input"))
@@ -215,31 +210,17 @@ impl Render for BitrateOverrideDialog {
                                 theme.danger
                             })
                             .rounded_md()
-                            .child(
-                                div()
-                                    .text_base()
-                                    .text_color(theme.text)
-                                    .child(if text_display.is_empty() {
-                                        " ".to_string()
-                                    } else {
-                                        text_display
-                                    }),
-                            )
+                            .child(div().text_base().text_color(theme.text).child(
+                                if text_display.is_empty() {
+                                    " ".to_string()
+                                } else {
+                                    text_display
+                                },
+                            ))
                             // Cursor
-                            .child(
-                                div()
-                                    .w(px(2.))
-                                    .h(px(20.))
-                                    .bg(theme.accent)
-                                    .ml_px(),
-                            ),
+                            .child(div().w(px(2.)).h(px(20.)).bg(theme.accent).ml_px()),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text)
-                            .child("kbps"),
-                    ),
+                    .child(div().text_sm().text_color(theme.text).child("kbps")),
             )
             // Valid range hint
             .child(
@@ -278,7 +259,11 @@ impl Render for BitrateOverrideDialog {
                             .id(SharedString::from("apply-btn"))
                             .px_4()
                             .py_2()
-                            .bg(if is_valid { theme.accent } else { theme.bg_card })
+                            .bg(if is_valid {
+                                theme.accent
+                            } else {
+                                theme.bg_card
+                            })
                             .text_color(if is_valid {
                                 gpui::white()
                             } else {

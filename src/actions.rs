@@ -7,19 +7,22 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 // Define actions for menu items
-actions!(app, [
-    Quit,
-    About,
-    OpenOutputDir,
-    ToggleSimulateBurn,
-    ToggleEmbedAlbumArt,
-    OpenDisplaySettings,
-    SetVolumeLabel,
-    // Profile actions
-    NewProfile,
-    OpenProfile,
-    SaveProfile,
-]);
+actions!(
+    app,
+    [
+        Quit,
+        About,
+        OpenOutputDir,
+        ToggleSimulateBurn,
+        ToggleEmbedAlbumArt,
+        OpenDisplaySettings,
+        SetVolumeLabel,
+        // Profile actions
+        NewProfile,
+        OpenProfile,
+        SaveProfile,
+    ]
+);
 
 /// Static storage for files opened via Finder/command line
 ///

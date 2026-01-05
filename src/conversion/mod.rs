@@ -8,11 +8,9 @@ mod optimizer;
 mod output_manager;
 mod parallel;
 
-pub use background::{
-    BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, EncodingPhase,
-};
+pub use background::{BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, EncodingPhase};
 pub use ffmpeg::ConversionResult;
-pub use optimizer::{calculate_multipass_bitrate, MultipassEstimate};
+pub use optimizer::{MultipassEstimate, calculate_multipass_bitrate};
 pub use output_manager::OutputManager;
 
 use std::path::PathBuf;

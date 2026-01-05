@@ -11,12 +11,15 @@ mod core;
 mod profiles;
 mod ui;
 
-use gpui::{
-    prelude::*, point, px, size, App, Application, Bounds, KeyBinding, Menu, MenuItem,
-    WindowBounds, WindowHandle, WindowOptions,
+use actions::{
+    About, NewProfile, OpenDisplaySettings, OpenOutputDir, OpenProfile, Quit, SaveProfile,
+    SetVolumeLabel, ToggleEmbedAlbumArt, ToggleSimulateBurn, push_pending_file,
 };
-use actions::{Quit, About, OpenOutputDir, ToggleSimulateBurn, ToggleEmbedAlbumArt, OpenDisplaySettings, SetVolumeLabel, NewProfile, OpenProfile, SaveProfile, push_pending_file};
 use core::{AppSettings, DisplaySettings, WindowState};
+use gpui::{
+    App, Application, Bounds, KeyBinding, Menu, MenuItem, WindowBounds, WindowHandle,
+    WindowOptions, point, prelude::*, px, size,
+};
 use ui::components::{AboutBox, DisplaySettingsModal, FolderList};
 
 /// Decode percent-encoded URL path (e.g., %20 -> space)
@@ -122,9 +125,7 @@ fn main() {
         cx.on_action(|_: &OpenOutputDir, _cx| {
             let output_dir = conversion::get_output_dir();
             if output_dir.exists() {
-                let _ = std::process::Command::new("open")
-                    .arg(&output_dir)
-                    .spawn();
+                let _ = std::process::Command::new("open").arg(&output_dir).spawn();
             } else {
                 println!("Output directory does not exist yet: {:?}", output_dir);
             }
@@ -169,55 +170,60 @@ fn main() {
         // Open the main window with saved position/size
         let bounds = Bounds::new(
             point(px(window_state.x as f32), px(window_state.y as f32)),
-            size(px(window_state.width as f32), px(window_state.height as f32)),
+            size(
+                px(window_state.width as f32),
+                px(window_state.height as f32),
+            ),
         );
 
         // Use shared cells to pass handles out of the window creation closure
-        let encoder_handle_cell: std::sync::Arc<std::sync::Mutex<Option<conversion::BackgroundEncoderHandle>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let encoder_handle_cell: std::sync::Arc<
+            std::sync::Mutex<Option<conversion::BackgroundEncoderHandle>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
         let encoder_handle_for_closure = encoder_handle_cell.clone();
 
         let conversion_state_cell: std::sync::Arc<std::sync::Mutex<Option<core::ConversionState>>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let conversion_state_for_closure = conversion_state_cell.clone();
 
-        let window_handle: WindowHandle<FolderList> = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(500.), px(300.))),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("MP3 CD Burner".into()),
-                    appears_transparent: false,
-                    traffic_light_position: None,
-                }),
-                ..Default::default()
-            },
-            |_window, cx| {
-                cx.new(|cx| {
-                    let mut folder_list = FolderList::new(cx);
+        let window_handle: WindowHandle<FolderList> = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(500.), px(300.))),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("MP3 CD Burner".into()),
+                        appears_transparent: false,
+                        traffic_light_position: None,
+                    }),
+                    ..Default::default()
+                },
+                |_window, cx| {
+                    cx.new(|cx| {
+                        let mut folder_list = FolderList::new(cx);
 
-                    // Store conversion state for quit/close guards
-                    *conversion_state_for_closure.lock().unwrap() =
-                        Some(folder_list.conversion_state.clone());
+                        // Store conversion state for quit/close guards
+                        *conversion_state_for_closure.lock().unwrap() =
+                            Some(folder_list.conversion_state.clone());
 
-                    // Enable background encoding for immediate folder conversion
-                    match folder_list.enable_background_encoding() {
-                        Ok(handle) => {
-                            // Store the handle so we can set it as a global
-                            *encoder_handle_for_closure.lock().unwrap() = Some(handle);
-                            // Start polling for encoder events
-                            folder_list.start_encoder_polling(cx);
+                        // Enable background encoding for immediate folder conversion
+                        match folder_list.enable_background_encoding() {
+                            Ok(handle) => {
+                                // Store the handle so we can set it as a global
+                                *encoder_handle_for_closure.lock().unwrap() = Some(handle);
+                                // Start polling for encoder events
+                                folder_list.start_encoder_polling(cx);
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: Could not enable background encoding: {}", e);
+                                eprintln!("Falling back to legacy mode (convert on burn)");
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("Warning: Could not enable background encoding: {}", e);
-                            eprintln!("Falling back to legacy mode (convert on burn)");
-                        }
-                    }
-                    folder_list
-                })
-            },
-        )
-        .unwrap();
+                        folder_list
+                    })
+                },
+            )
+            .unwrap();
 
         // Set the encoder handle as a global for access from action handlers
         if let Some(handle) = encoder_handle_cell.lock().unwrap().take() {

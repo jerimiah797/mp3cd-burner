@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use gpui::{
-    div, px, size, App, AppContext, AsyncApp, Context, IntoElement, ParentElement, Render, Styled,
-    Timer, WeakEntity, Window, WindowOptions,
+    App, AppContext, AsyncApp, Context, IntoElement, ParentElement, Render, Styled, Timer,
+    WeakEntity, Window, WindowOptions, div, px, size,
 };
 
 use crate::core::{BurnStage, ConversionState};
@@ -110,17 +110,8 @@ impl Render for BurnProgressWindow {
             .size_full()
             .bg(gpui::rgb(0x2d2d2d))
             .text_color(gpui::rgb(0xffffff))
-            .child(
-                div()
-                    .text_size(px(14.0))
-                    .child(stage_text),
-            )
-            .child(
-                div()
-                    .text_size(px(24.0))
-                    .mt(px(8.0))
-                    .child(progress_text),
-            )
+            .child(div().text_size(px(14.0)).child(stage_text))
+            .child(div().text_size(px(24.0)).mt(px(8.0)).child(progress_text))
             .child(
                 div()
                     .text_size(px(11.0))

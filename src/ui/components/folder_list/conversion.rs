@@ -7,7 +7,7 @@ use std::time::Duration;
 use gpui::{AnyWindowHandle, AsyncApp, Context, PromptLevel, Timer, WeakEntity, Window};
 
 use crate::burning::IsoState;
-use crate::conversion::{calculate_multipass_bitrate, MultipassEstimate};
+use crate::conversion::{MultipassEstimate, calculate_multipass_bitrate};
 use crate::core::{AppSettings, BurnStage, ConversionState};
 use crate::ui::components::BitrateOverrideDialog;
 
@@ -18,7 +18,11 @@ impl FolderList {
     ///
     /// This should be called from the render loop where we have window access.
     /// Returns true if an action was triggered.
-    pub(super) fn check_pending_burn_action(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn check_pending_burn_action(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         // Only trigger if we've finished receiving the volume label
         // (pending_volume_label_rx is None means dialog closed and we got the label)
         if self.pending_volume_label_rx.is_some() {
@@ -67,7 +71,8 @@ impl FolderList {
         }
 
         // Collect all audio files from cached folder data
-        let all_files: Vec<_> = self.folders
+        let all_files: Vec<_> = self
+            .folders
             .iter()
             .flat_map(|f| f.audio_files.iter().cloned())
             .collect();
@@ -114,16 +119,22 @@ impl FolderList {
         // Get current effective bitrate (either override or calculated)
         let current_bitrate = self.calculated_bitrate();
         // Get the auto-calculated bitrate for reference
-        let calculated_bitrate = self.calculated_bitrate_estimate()
+        let calculated_bitrate = self
+            .calculated_bitrate_estimate()
             .map(|e| e.target_bitrate)
             .unwrap_or(320);
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pending_bitrate_rx = Some(rx);
 
-        BitrateOverrideDialog::open(cx, current_bitrate, calculated_bitrate, move |new_bitrate| {
-            let _ = tx.send(new_bitrate);
-        });
+        BitrateOverrideDialog::open(
+            cx,
+            current_bitrate,
+            calculated_bitrate,
+            move |new_bitrate| {
+                let _ = tx.send(new_bitrate);
+            },
+        );
     }
 
     /// Poll for bitrate override dialog result
@@ -185,9 +196,7 @@ impl FolderList {
 
         // Check if we have a pending change that's old enough
         let should_recalculate = match self.last_folder_change {
-            Some(change_time) => {
-                change_time.elapsed() >= Duration::from_millis(DEBOUNCE_MS)
-            }
+            Some(change_time) => change_time.elapsed() >= Duration::from_millis(DEBOUNCE_MS),
             None => false,
         };
 
@@ -220,9 +229,13 @@ impl FolderList {
             return;
         }
 
-        println!("Bitrate recalculated: {:?} -> {} kbps",
-            self.last_calculated_bitrate.map(|b| format!("{}", b)).unwrap_or_else(|| "None".to_string()),
-            new_bitrate);
+        println!(
+            "Bitrate recalculated: {:?} -> {} kbps",
+            self.last_calculated_bitrate
+                .map(|b| format!("{}", b))
+                .unwrap_or_else(|| "None".to_string()),
+            new_bitrate
+        );
 
         // Send recalculation command to background encoder
         // This handles folders the encoder knows about
@@ -249,10 +262,14 @@ impl FolderList {
 
         // Find folders with Converted status that need re-encoding
         // (they have lossless files encoded at a different bitrate)
-        let folders_to_reencode: Vec<_> = self.folders
+        let folders_to_reencode: Vec<_> = self
+            .folders
             .iter()
             .filter(|f| {
-                if let FolderConversionStatus::Converted { lossless_bitrate, .. } = &f.conversion_status {
+                if let FolderConversionStatus::Converted {
+                    lossless_bitrate, ..
+                } = &f.conversion_status
+                {
                     // Only re-encode if:
                     // 1. The folder has lossless files (lossless_bitrate is Some)
                     // 2. The bitrate differs from the new target
@@ -365,7 +382,14 @@ impl FolderList {
 
         // Spawn background thread to execute the full burn workflow
         std::thread::spawn(move || {
-            crate::burning::execute_full_burn(state, encoder_handle, output_manager, folders, simulate_burn, volume_label);
+            crate::burning::execute_full_burn(
+                state,
+                encoder_handle,
+                output_manager,
+                folders,
+                simulate_burn,
+                volume_label,
+            );
         });
 
         // Start polling for progress updates
@@ -480,19 +504,22 @@ impl FolderList {
 
                     // Show completion prompt - await the future so it displays
                     use gpui::AppContext;
-                    if let Ok(prompt_future) = async_cx.update_window(window_handle, |_, window, cx| {
-                        window.prompt(
-                            PromptLevel::Info,
-                            "Burn Complete",
-                            Some("The CD has been burned successfully."),
-                            &["OK"],
-                            cx,
-                        )
-                    }) {
+                    if let Ok(prompt_future) =
+                        async_cx.update_window(window_handle, |_, window, cx| {
+                            window.prompt(
+                                PromptLevel::Info,
+                                "Burn Complete",
+                                Some("The CD has been burned successfully."),
+                                &["OK"],
+                                cx,
+                            )
+                        })
+                    {
                         let _ = prompt_future.await;
                     }
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 }

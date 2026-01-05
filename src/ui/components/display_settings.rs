@@ -3,8 +3,8 @@
 //! Controls which details are shown for each folder in the folder list.
 
 use gpui::{
-    div, prelude::*, px, size, Bounds, Context, Render, SharedString, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    Bounds, Context, Render, SharedString, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    prelude::*, px, size,
 };
 
 use crate::core::DisplaySettings;
@@ -148,18 +148,8 @@ impl DisplaySettingsModal {
                     .flex()
                     .flex_col()
                     .gap_px()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(text_color)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(text_muted)
-                            .child(hint),
-                    ),
+                    .child(div().text_sm().text_color(text_color).child(label))
+                    .child(div().text_xs().text_color(text_muted).child(hint)),
             )
     }
 }

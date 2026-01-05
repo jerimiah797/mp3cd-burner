@@ -1,8 +1,8 @@
 //! About window component
 
 use gpui::{
-    div, img, prelude::*, px, size, Bounds, Context, Render, SharedString, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    Bounds, Context, Render, SharedString, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    img, prelude::*, px, size,
 };
 use std::path::{Path, PathBuf};
 
@@ -72,7 +72,7 @@ impl Render for AboutBox {
                     .child(
                         img(icon_path.as_path())
                             .size_full()
-                            .object_fit(gpui::ObjectFit::Contain)
+                            .object_fit(gpui::ObjectFit::Contain),
                     ),
             )
             .child(

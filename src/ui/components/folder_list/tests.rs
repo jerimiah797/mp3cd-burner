@@ -14,8 +14,10 @@ fn test_folder_list_new() {
 #[test]
 fn test_add_folder() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(MusicFolder::new_for_test("/test/folder1"));
-    list.folders.push(MusicFolder::new_for_test("/test/folder2"));
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder1"));
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder2"));
 
     assert_eq!(list.len(), 2);
 }
@@ -23,8 +25,10 @@ fn test_add_folder() {
 #[test]
 fn test_remove_folder() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(MusicFolder::new_for_test("/test/folder1"));
-    list.folders.push(MusicFolder::new_for_test("/test/folder2"));
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder1"));
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder2"));
 
     list.remove_folder(0);
 
@@ -65,8 +69,10 @@ fn test_move_folder_backward() {
 #[test]
 fn test_clear() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(MusicFolder::new_for_test("/test/folder1"));
-    list.folders.push(MusicFolder::new_for_test("/test/folder2"));
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder1"));
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder2"));
 
     list.clear();
 
@@ -76,8 +82,10 @@ fn test_clear() {
 #[test]
 fn test_total_files() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(MusicFolder::new_for_test("/test/folder1")); // 10 files
-    list.folders.push(MusicFolder::new_for_test("/test/folder2")); // 10 files
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder1")); // 10 files
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder2")); // 10 files
 
     assert_eq!(list.total_files(), 20);
 }
@@ -85,8 +93,10 @@ fn test_total_files() {
 #[test]
 fn test_total_size() {
     let mut list = FolderList::new_for_test();
-    list.folders.push(MusicFolder::new_for_test("/test/folder1")); // 50MB
-    list.folders.push(MusicFolder::new_for_test("/test/folder2")); // 50MB
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder1")); // 50MB
+    list.folders
+        .push(MusicFolder::new_for_test("/test/folder2")); // 50MB
 
     assert_eq!(list.total_size(), 100_000_000);
 }

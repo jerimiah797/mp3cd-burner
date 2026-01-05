@@ -27,16 +27,12 @@ pub struct IsoResult {
 /// (copied as real files) before creating the ISO, since hdiutil doesn't
 /// follow symlinks properly.
 pub fn create_iso(source_dir: &Path, volume_label: &str) -> Result<IsoResult, String> {
-    let iso_path = source_dir
-        .parent()
-        .unwrap_or(source_dir)
-        .join("mp3cd.iso");
+    let iso_path = source_dir.parent().unwrap_or(source_dir).join("mp3cd.iso");
 
     // Remove existing ISO file if it exists
     if iso_path.exists() {
         println!("Removing existing ISO file at {}", iso_path.display());
-        fs::remove_file(&iso_path)
-            .map_err(|e| format!("Failed to remove existing ISO: {}", e))?;
+        fs::remove_file(&iso_path).map_err(|e| format!("Failed to remove existing ISO: {}", e))?;
     }
 
     // Check if source directory contains symlinks - if so, dereference them
@@ -52,9 +48,11 @@ pub fn create_iso(source_dir: &Path, volume_label: &str) -> Result<IsoResult, St
                 .map_err(|e| format!("Failed to clean dereferenced directory: {}", e))?;
         }
 
-        println!("Dereferencing symlinks from {} to {}",
+        println!(
+            "Dereferencing symlinks from {} to {}",
             source_dir.display(),
-            dereferenced_dir.display());
+            dereferenced_dir.display()
+        );
 
         // Use cp -RL to copy with symlink dereferencing
         // -R = recursive, -L = follow symbolic links (dereference them)

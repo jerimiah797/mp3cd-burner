@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use super::output_manager::OutputManager;
-use super::parallel::{convert_files_parallel_with_callback, ConversionJob, ConversionProgress};
+use super::parallel::{ConversionJob, ConversionProgress, convert_files_parallel_with_callback};
 use super::verify_ffmpeg;
-use crate::audio::{determine_encoding_strategy, EncodingStrategy};
+use crate::audio::{EncodingStrategy, determine_encoding_strategy};
 use crate::core::{FolderConversionStatus, FolderId, MusicFolder};
 
 /// Result of a folder conversion (sent back from spawned task)
@@ -82,10 +82,7 @@ impl Default for EncodingPhase {
 #[derive(Debug, Clone)]
 pub enum EncoderEvent {
     /// Started encoding a folder
-    FolderStarted {
-        id: FolderId,
-        files_total: usize,
-    },
+    FolderStarted { id: FolderId, files_total: usize },
     /// Progress update for a folder
     FolderProgress {
         id: FolderId,
@@ -100,10 +97,7 @@ pub enum EncoderEvent {
         lossless_bitrate: Option<u32>,
     },
     /// Folder encoding failed
-    FolderFailed {
-        id: FolderId,
-        error: String,
-    },
+    FolderFailed { id: FolderId, error: String },
     /// Folder was cancelled (removed mid-encoding)
     FolderCancelled(FolderId),
     /// Bitrate was recalculated, some folders need re-encoding
@@ -143,7 +137,6 @@ pub struct BackgroundEncoderState {
     pub embed_album_art: bool,
 
     // === Two-pass encoding state ===
-
     /// Current encoding phase (Idle, LossyPass, or LosslessPass)
     pub encoding_phase: EncodingPhase,
     /// Folders with lossless files waiting for pass 2
@@ -214,12 +207,16 @@ impl BackgroundEncoderHandle {
     /// Add a folder to be encoded
     pub fn add_folder(&self, folder: MusicFolder) {
         let id = folder.id.clone();
-        let _ = self.command_tx.send(EncoderCommand::AddFolder(id, Box::new(folder)));
+        let _ = self
+            .command_tx
+            .send(EncoderCommand::AddFolder(id, Box::new(folder)));
     }
 
     /// Remove a folder (cancel if active)
     pub fn remove_folder(&self, id: &FolderId) {
-        let _ = self.command_tx.send(EncoderCommand::RemoveFolder(id.clone()));
+        let _ = self
+            .command_tx
+            .send(EncoderCommand::RemoveFolder(id.clone()));
     }
 
     /// Notify that folders were reordered
@@ -229,9 +226,9 @@ impl BackgroundEncoderHandle {
 
     /// Request bitrate recalculation
     pub fn recalculate_bitrate(&self, target: u32) {
-        let _ = self
-            .command_tx
-            .send(EncoderCommand::RecalculateBitrate { target_bitrate: target });
+        let _ = self.command_tx.send(EncoderCommand::RecalculateBitrate {
+            target_bitrate: target,
+        });
     }
 
     /// Clear all state (for New profile)
@@ -251,12 +248,16 @@ impl BackgroundEncoderHandle {
 
     /// Update embed album art setting
     pub fn set_embed_album_art(&self, embed: bool) {
-        let _ = self.command_tx.send(EncoderCommand::SetEmbedAlbumArt { embed });
+        let _ = self
+            .command_tx
+            .send(EncoderCommand::SetEmbedAlbumArt { embed });
     }
 
     /// Set the size of pre-loaded converted folders (from bundle profiles)
     pub fn set_preloaded_size(&self, size: u64) {
-        let _ = self.command_tx.send(EncoderCommand::SetPreloadedSize { size });
+        let _ = self
+            .command_tx
+            .send(EncoderCommand::SetPreloadedSize { size });
     }
 
     /// Get the current state (for reading status)
@@ -286,7 +287,15 @@ impl BackgroundEncoder {
     /// Returns (encoder, handle, event_receiver, output_manager) where:
     /// - event_receiver uses std::sync::mpsc so it can be polled from any thread without async
     /// - output_manager is the shared output manager used by the encoder (use this for ISO staging!)
-    pub fn new() -> Result<(Self, BackgroundEncoderHandle, std_mpsc::Receiver<EncoderEvent>, OutputManager), String> {
+    pub fn new() -> Result<
+        (
+            Self,
+            BackgroundEncoderHandle,
+            std_mpsc::Receiver<EncoderEvent>,
+            OutputManager,
+        ),
+        String,
+    > {
         let output_manager = OutputManager::new()?;
         let ffmpeg_path = verify_ffmpeg()?;
         let state = Arc::new(Mutex::new(BackgroundEncoderState::new()));
@@ -378,7 +387,8 @@ async fn run_encoder_loop(
             &ffmpeg_path,
             &event_tx,
             &completion_tx,
-        ).await;
+        )
+        .await;
     }
 }
 
@@ -452,7 +462,12 @@ async fn handle_encoder_command(
 
                 println!(
                     "RemoveFolder: {:?}, current phase: {:?}, queue: {}, active: {}, completed: {}, lossless_pending: {}",
-                    id, s.encoding_phase, s.queue.len(), s.active.len(), s.completed.len(), s.lossless_pending.len()
+                    id,
+                    s.encoding_phase,
+                    s.queue.len(),
+                    s.active.len(),
+                    s.completed.len(),
+                    s.lossless_pending.len()
                 );
 
                 // Remove from queue if present
@@ -595,17 +610,17 @@ async fn handle_encoder_command(
             if !folders_to_requeue.is_empty() {
                 let mut s = state.lock().unwrap();
                 for (id, folder) in folders_to_requeue {
-                    println!("Re-queuing folder for re-encoding: {}", folder.path.display());
+                    println!(
+                        "Re-queuing folder for re-encoding: {}",
+                        folder.path.display()
+                    );
                     s.queue.push_back((id, folder));
                 }
             }
 
             // Notify UI about re-encoding
             if !reencode_needed.is_empty() {
-                println!(
-                    "Folders queued for re-encoding: {}",
-                    reencode_needed.len()
-                );
+                println!("Folders queued for re-encoding: {}", reencode_needed.len());
                 let _ = event_tx.send(EncoderEvent::BitrateRecalculated {
                     new_bitrate: target_bitrate,
                     reencode_needed,
@@ -619,7 +634,10 @@ async fn handle_encoder_command(
             s.imports_pending = s.imports_pending.saturating_add(1);
             // Pause encoding while importing
             s.paused.store(true, Ordering::SeqCst);
-            println!("Import started, pending: {} (encoding paused)", s.imports_pending);
+            println!(
+                "Import started, pending: {} (encoding paused)",
+                s.imports_pending
+            );
         }
         EncoderCommand::ImportComplete => {
             let mut s = state.lock().unwrap();
@@ -629,7 +647,10 @@ async fn handle_encoder_command(
                 s.paused.store(false, Ordering::SeqCst);
                 println!("Import complete, pending: 0 (encoding resumed)");
             } else {
-                println!("Import complete, pending: {} (still paused)", s.imports_pending);
+                println!(
+                    "Import complete, pending: {} (still paused)",
+                    s.imports_pending
+                );
             }
         }
         EncoderCommand::SetEmbedAlbumArt { embed } => {
@@ -668,7 +689,9 @@ async fn handle_folder_completion(
         let mut s = state.lock().unwrap();
 
         // Check if cancel token was set (might have been cancelled after task started)
-        let token_cancelled = s.active.get(&id)
+        let token_cancelled = s
+            .active
+            .get(&id)
             .map(|(token, _)| token.load(Ordering::SeqCst))
             .unwrap_or(false);
 
@@ -696,9 +719,7 @@ async fn handle_folder_completion(
             }
         } else if completed == files_total || files_total == 0 {
             // Success! (files_total == 0 means empty pass, e.g., pure lossless in LossyPass)
-            let output_size = output_manager
-                .get_folder_output_size(&id)
-                .unwrap_or(0);
+            let output_size = output_manager.get_folder_output_size(&id).unwrap_or(0);
 
             // Check if this folder is still waiting for pass 2
             let still_in_lossless_pending = s.lossless_pending.iter().any(|(fid, _)| fid == &id);
@@ -728,7 +749,11 @@ async fn handle_folder_completion(
                 // Fully complete (either pure lossy folder, or pass 2 complete)
                 let status = FolderConversionStatus::Converted {
                     output_dir: output_dir.clone(),
-                    lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
+                    lossless_bitrate: if has_lossless {
+                        Some(lossless_bitrate)
+                    } else {
+                        None
+                    },
                     output_size,
                     completed_at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -747,7 +772,11 @@ async fn handle_folder_completion(
                     id: id.clone(),
                     output_dir,
                     output_size,
-                    lossless_bitrate: if has_lossless { Some(lossless_bitrate) } else { None },
+                    lossless_bitrate: if has_lossless {
+                        Some(lossless_bitrate)
+                    } else {
+                        None
+                    },
                 });
             }
         } else {
@@ -816,7 +845,9 @@ async fn transition_to_pass2(
         // Sum up actual output sizes of completed folders + measured_lossy_size + preloaded_size
         // (measured_lossy_size contains sizes from pass 1 for folders still in lossless_pending)
         // (preloaded_size contains sizes of folders loaded from bundle profiles)
-        let completed_size: u64 = s.completed.values()
+        let completed_size: u64 = s
+            .completed
+            .values()
             .map(|(status, _)| {
                 if let FolderConversionStatus::Converted { output_size, .. } = status {
                     *output_size
@@ -829,7 +860,9 @@ async fn transition_to_pass2(
         let total_lossy_size = completed_size + s.measured_lossy_size + s.preloaded_size;
 
         // Calculate total duration of pending lossless files
-        let lossless_duration: f64 = s.lossless_pending.iter()
+        let lossless_duration: f64 = s
+            .lossless_pending
+            .iter()
             .flat_map(|(_, folder)| &folder.audio_files)
             .filter(|f| !f.is_lossy)
             .map(|f| f.duration)
@@ -839,8 +872,8 @@ async fn transition_to_pass2(
         const CD_CAPACITY: u64 = 700 * 1000 * 1000;
         const SAFETY_MARGIN: f64 = 0.98; // 2% safety margin
 
-        let remaining_space = ((CD_CAPACITY as f64 * SAFETY_MARGIN) as u64)
-            .saturating_sub(total_lossy_size);
+        let remaining_space =
+            ((CD_CAPACITY as f64 * SAFETY_MARGIN) as u64).saturating_sub(total_lossy_size);
 
         let optimal_bitrate = if lossless_duration > 0.0 {
             let bitrate = ((remaining_space * 8) as f64 / lossless_duration / 1000.0) as u32;
@@ -851,7 +884,12 @@ async fn transition_to_pass2(
 
         let folders = s.lossless_pending.clone();
 
-        (total_lossy_size, lossless_duration, folders, optimal_bitrate)
+        (
+            total_lossy_size,
+            lossless_duration,
+            folders,
+            optimal_bitrate,
+        )
     };
 
     println!(
@@ -884,7 +922,10 @@ async fn transition_to_pass2(
         optimal_bitrate,
     });
 
-    println!("=== Pass 2 started: encoding lossless files at {} kbps ===", optimal_bitrate);
+    println!(
+        "=== Pass 2 started: encoding lossless files at {} kbps ===",
+        optimal_bitrate
+    );
 }
 
 /// Result of resetting from LosslessPass to LossyPass
@@ -986,7 +1027,9 @@ async fn try_start_folders(
             }
 
             // Look for a lossy-only folder first (no lossless files)
-            let lossy_only_idx = s.queue.iter()
+            let lossy_only_idx = s
+                .queue
+                .iter()
                 .position(|(_, folder)| !folder.has_lossless_files());
 
             if let Some(idx) = lossy_only_idx {
@@ -1008,7 +1051,8 @@ async fn try_start_folders(
         let folder_for_task = folder.clone();
         {
             let mut s = state.lock().unwrap();
-            s.active.insert(id.clone(), (cancel_token.clone(), folder_has_lossless));
+            s.active
+                .insert(id.clone(), (cancel_token.clone(), folder_has_lossless));
         }
 
         // Get output directory for this folder
@@ -1028,7 +1072,12 @@ async fn try_start_folders(
         let (lossless_bitrate, embed_album_art, encoding_phase, folder_did_pass1) = {
             let state_guard = state.lock().unwrap();
             let did_pass1 = state_guard.pass1_completed.contains(&id);
-            (state_guard.lossless_bitrate, state_guard.embed_album_art, state_guard.encoding_phase, did_pass1)
+            (
+                state_guard.lossless_bitrate,
+                state_guard.embed_album_art,
+                state_guard.encoding_phase,
+                did_pass1,
+            )
         };
 
         // Build conversion jobs
@@ -1077,10 +1126,7 @@ async fn try_start_folders(
             // Skip files that are already encoded (for efficient "resume" after reset)
             // This allows lossy files to be reused when we reset from LosslessPass to LossyPass
             if output_path.exists() {
-                println!(
-                    "Skipping already-encoded file: {}",
-                    output_path.display()
-                );
+                println!("Skipping already-encoded file: {}", output_path.display());
                 continue;
             }
 
@@ -1168,7 +1214,8 @@ async fn try_start_folders(
 
                     // Update state for UI
                     if let Ok(mut s) = state_for_callback.lock() {
-                        s.active_progress.insert(id_for_callback.clone(), (completed, total));
+                        s.active_progress
+                            .insert(id_for_callback.clone(), (completed, total));
                     }
 
                     let _ = event_tx_for_callback.send(EncoderEvent::FolderProgress {
@@ -1193,7 +1240,10 @@ async fn try_start_folders(
             });
         });
 
-        println!("Spawned encoding task for folder: {}", folder.path.display());
+        println!(
+            "Spawned encoding task for folder: {}",
+            folder.path.display()
+        );
     }
 }
 
@@ -1221,12 +1271,16 @@ mod tests {
         assert!(!state.is_pending(&id1));
 
         // Add to queue
-        state.queue.push_back((id1.clone(), MusicFolder::new_for_test_with_id("test")));
+        state
+            .queue
+            .push_back((id1.clone(), MusicFolder::new_for_test_with_id("test")));
         assert!(state.is_pending(&id1));
         assert!(!state.is_pending(&id2));
 
         // Set active
-        state.active.insert(id2.clone(), (Arc::new(AtomicBool::new(false)), false));
+        state
+            .active
+            .insert(id2.clone(), (Arc::new(AtomicBool::new(false)), false));
         assert!(state.is_pending(&id2));
         assert!(!state.is_pending(&id3));
     }

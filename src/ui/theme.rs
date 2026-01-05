@@ -1,6 +1,6 @@
 //! Theme module - OS-aware light and dark mode color schemes
 
-use gpui::{rgb, Hsla, WindowAppearance};
+use gpui::{Hsla, WindowAppearance, rgb};
 
 /// Color scheme for the application
 #[derive(Debug, Clone, Copy)]
@@ -47,9 +47,9 @@ impl Theme {
             success: rgb(0x22c55e).into(),
             success_hover: rgb(0x16a34a).into(),
             danger: rgb(0xef4444).into(),
-            bg_queued: rgb(0x3a2525).into(),        // Dark red tint
-            bg_queued_hover: rgb(0x452a2a).into(),  // Slightly lighter
-            progress_line: rgb(0x6b3a3a).into(),    // Brighter red for progress
+            bg_queued: rgb(0x3a2525).into(),       // Dark red tint
+            bg_queued_hover: rgb(0x452a2a).into(), // Slightly lighter
+            progress_line: rgb(0x6b3a3a).into(),   // Brighter red for progress
         }
     }
 
@@ -66,9 +66,9 @@ impl Theme {
             success: rgb(0x22c55e).into(),
             success_hover: rgb(0x16a34a).into(),
             danger: rgb(0xef4444).into(),
-            bg_queued: rgb(0xfce8e8).into(),        // Light pink/red tint
-            bg_queued_hover: rgb(0xf8d4d4).into(),  // Slightly darker on hover
-            progress_line: rgb(0xe57373).into(),    // Brighter red for progress
+            bg_queued: rgb(0xfce8e8).into(), // Light pink/red tint
+            bg_queued_hover: rgb(0xf8d4d4).into(), // Slightly darker on hover
+            progress_line: rgb(0xe57373).into(), // Brighter red for progress
         }
     }
 

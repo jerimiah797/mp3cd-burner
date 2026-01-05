@@ -97,8 +97,7 @@ pub fn calculate_optimal_bitrate(
 
         if convert_duration > 0.0 {
             // Recalculate bitrate for remaining files
-            let new_bitrate =
-                ((space_for_converts * 8) as f64 / convert_duration / 1000.0) as u32;
+            let new_bitrate = ((space_for_converts * 8) as f64 / convert_duration / 1000.0) as u32;
             let new_bitrate = new_bitrate.clamp(MIN_BITRATE, MAX_BITRATE);
 
             // Check for convergence
@@ -232,8 +231,13 @@ pub fn calculate_estimated_output_size(
 }
 
 /// Check if the files will fit on a CD at the given bitrate
-pub fn will_fit_on_cd(files: &[AudioFileInfo], target_bitrate: u32, no_lossy_conversions: bool) -> bool {
-    let estimated_size = calculate_estimated_output_size(files, target_bitrate, no_lossy_conversions);
+pub fn will_fit_on_cd(
+    files: &[AudioFileInfo],
+    target_bitrate: u32,
+    no_lossy_conversions: bool,
+) -> bool {
+    let estimated_size =
+        calculate_estimated_output_size(files, target_bitrate, no_lossy_conversions);
     estimated_size <= TARGET_SIZE_BYTES
 }
 

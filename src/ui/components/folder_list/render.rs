@@ -4,19 +4,21 @@
 
 use std::sync::atomic::Ordering;
 
-use gpui::{div, prelude::*, rgb, Context, ExternalPaths, IntoElement, Render, SharedString, Window};
+use gpui::{
+    Context, ExternalPaths, IntoElement, Render, SharedString, Window, div, prelude::*, rgb,
+};
 
 use crate::actions::{NewProfile, OpenProfile, SaveProfile, SetVolumeLabel};
 use crate::core::{BurnStage, DisplaySettings, FolderConversionStatus, WindowState};
 use crate::ui::Theme;
 
-use crate::ui::components::folder_item::{render_folder_item, DraggedFolder, FolderItemProps};
-use crate::ui::components::status_bar::{
-    is_stage_cancelable, render_burn_button_base, render_clickable_bitrate,
-    render_convert_burn_button_base, render_erase_burn_button_base, render_import_progress,
-    render_iso_too_large, render_progress_box, render_stats_panel, StatusBarState,
-};
 use super::{FolderList, PendingBurnAction};
+use crate::ui::components::folder_item::{DraggedFolder, FolderItemProps, render_folder_item};
+use crate::ui::components::status_bar::{
+    StatusBarState, is_stage_cancelable, render_burn_button_base, render_clickable_bitrate,
+    render_convert_burn_button_base, render_erase_burn_button_base, render_import_progress,
+    render_iso_too_large, render_progress_box, render_stats_panel,
+};
 
 impl FolderList {
     /// Render the empty state drop zone
@@ -35,7 +37,11 @@ impl FolderList {
     }
 
     /// Render the populated folder list
-    pub(super) fn render_folder_items(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_folder_items(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let drop_target = self.drop_target_index;
         // Clone display settings to avoid borrow conflict with cx
         let display_settings = cx.global::<DisplaySettings>().clone();
@@ -107,7 +113,11 @@ impl FolderList {
     }
 
     /// Render the status bar with detailed stats and action button
-    pub(super) fn render_status_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_status_bar(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let state = self.build_status_bar_state();
         let success_color = theme.success;
         let success_hover = theme.success_hover;
@@ -134,16 +144,12 @@ impl FolderList {
             .when(state.iso_size_mb.is_some(), |el| {
                 let iso_mb = state.iso_size_mb.unwrap_or(0.0);
                 el.child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child("ISO:")
-                        .child(
-                            div()
-                                .text_color(text_color)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(format!("{:.0} MB", iso_mb)),
-                        ),
+                    div().flex().gap_1().child("ISO:").child(
+                        div()
+                            .text_color(text_color)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child(format!("{:.0} MB", iso_mb)),
+                    ),
                 )
             })
             // CD-RW indicator (only show when erasable disc detected)
@@ -180,7 +186,14 @@ impl FolderList {
             // Left side: stats panel with clickable bitrate
             .child(left_panel)
             // Right side: action panel
-            .child(self.render_action_panel(&state, theme, success_color, success_hover, text_muted, cx))
+            .child(self.render_action_panel(
+                &state,
+                theme,
+                success_color,
+                success_hover,
+                text_muted,
+                cx,
+            ))
     }
 
     /// Render the right action panel (progress displays and buttons)
@@ -204,8 +217,14 @@ impl FolderList {
             self.render_burn_button(state.iso_has_been_burned, success_color, success_hover, cx)
                 .into_any_element()
         } else {
-            self.render_convert_burn_button(state.has_folders, success_color, success_hover, text_muted, cx)
-                .into_any_element()
+            self.render_convert_burn_button(
+                state.has_folders,
+                success_color,
+                success_hover,
+                text_muted,
+                cx,
+            )
+            .into_any_element()
         }
     }
 
@@ -230,22 +249,25 @@ impl FolderList {
             .when(state.burn_stage != BurnStage::ErasableDiscDetected, |el| {
                 let mut progress_box = render_progress_box(state, theme);
                 if is_cancelable {
-                    progress_box = progress_box
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _event, _window, _cx| {
+                    progress_box = progress_box.cursor_pointer().on_click(cx.listener(
+                        |this, _event, _window, _cx| {
                             this.conversion_state.request_cancel();
-                        }));
+                        },
+                    ));
                 }
                 el.child(progress_box)
             })
             // Erase & Burn button (only show when erasable disc detected)
             .when(state.burn_stage == BurnStage::ErasableDiscDetected, |el| {
                 el.child(
-                    render_erase_burn_button_base(success_color, success_hover)
-                        .on_click(cx.listener(|this, _event, _window, _cx| {
+                    render_erase_burn_button_base(success_color, success_hover).on_click(
+                        cx.listener(|this, _event, _window, _cx| {
                             println!("Erase & Burn clicked");
-                            this.conversion_state.erase_approved.store(true, Ordering::SeqCst);
-                        })),
+                            this.conversion_state
+                                .erase_approved
+                                .store(true, Ordering::SeqCst);
+                        }),
+                    ),
                 )
             })
     }
@@ -258,11 +280,12 @@ impl FolderList {
         success_hover: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        render_burn_button_base(iso_has_been_burned, success_color, success_hover)
-            .on_click(cx.listener(move |this, _event, _window, cx| {
+        render_burn_button_base(iso_has_been_burned, success_color, success_hover).on_click(
+            cx.listener(move |this, _event, _window, cx| {
                 println!("Burn clicked - showing volume label dialog");
                 this.show_volume_label_dialog(Some(PendingBurnAction::BurnExisting), cx);
-            }))
+            }),
+        )
     }
 
     /// Render Convert & Burn button
@@ -391,11 +414,7 @@ impl Render for FolderList {
         let status_bar = self.render_status_bar(&theme, cx);
 
         // Build the base container
-        let mut container = div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme.bg);
+        let mut container = div().size_full().flex().flex_col().bg(theme.bg);
 
         // Track focus if we have a focus handle (not in tests)
         if let Some(ref focus_handle) = self.focus_handle {

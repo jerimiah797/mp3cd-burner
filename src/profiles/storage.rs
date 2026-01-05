@@ -58,8 +58,7 @@ pub fn save_profile(profile: &BurnProfile, path: &Path) -> Result<(), String> {
         println!("Saved bundle profile to: {:?}", path);
     } else {
         // Legacy: write directly to path
-        fs::write(path, json)
-            .map_err(|e| format!("Failed to write profile file: {}", e))?;
+        fs::write(path, json).map_err(|e| format!("Failed to write profile file: {}", e))?;
     }
 
     Ok(())
@@ -97,7 +96,10 @@ pub fn load_profile(path: &Path) -> Result<BurnProfile, String> {
 ///
 /// For bundle format: `bundle_path` should be the path to the `.mp3cd` bundle.
 /// For legacy format: `bundle_path` should be `None`.
-pub fn validate_conversion_state(profile: &BurnProfile, bundle_path: Option<&Path>) -> ConversionStateValidation {
+pub fn validate_conversion_state(
+    profile: &BurnProfile,
+    bundle_path: Option<&Path>,
+) -> ConversionStateValidation {
     let mut validation = ConversionStateValidation {
         session_exists: false,
         valid_folders: Vec::new(),
@@ -121,9 +123,7 @@ pub fn validate_conversion_state(profile: &BurnProfile, bundle_path: Option<&Pat
         Some(bundle.to_path_buf())
     } else if let Some(session_id) = &profile.session_id {
         // Legacy format: output_dir is relative to session dir
-        let session_dir = std::env::temp_dir()
-            .join("mp3cd_output")
-            .join(session_id);
+        let session_dir = std::env::temp_dir().join("mp3cd_output").join(session_id);
         if session_dir.exists() {
             validation.session_exists = true;
             Some(session_dir)
@@ -188,8 +188,8 @@ pub fn validate_conversion_state(profile: &BurnProfile, bundle_path: Option<&Pat
     // Check ISO validity (ISOs are always in temp, not in bundle)
     if let Some(iso_path) = &profile.iso_path {
         let iso_exists = Path::new(iso_path).exists();
-        let hash_matches = profile.iso_folder_hash.is_some()
-            && validation.invalid_folders.is_empty();
+        let hash_matches =
+            profile.iso_folder_hash.is_some() && validation.invalid_folders.is_empty();
         validation.iso_valid = iso_exists && hash_matches;
     }
 
@@ -198,8 +198,7 @@ pub fn validate_conversion_state(profile: &BurnProfile, bundle_path: Option<&Pat
 
 /// Get the path to the app's data directory for storing recent profiles
 fn get_app_data_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| "Could not determine home directory".to_string())?;
+    let home = dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
 
     let app_data = home.join(".mp3cd-burner");
 
@@ -225,11 +224,10 @@ pub fn load_recent_profiles() -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
 
-    let contents = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read recent profiles: {}", e))?;
+    let contents =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read recent profiles: {}", e))?;
 
-    let recent: Vec<String> = serde_json::from_str(&contents)
-        .unwrap_or_else(|_| Vec::new());
+    let recent: Vec<String> = serde_json::from_str(&contents).unwrap_or_else(|_| Vec::new());
 
     // Filter out paths that no longer exist
     let existing: Vec<String> = recent
@@ -260,8 +258,7 @@ pub fn add_to_recent_profiles(profile_path: &str) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&recent)
         .map_err(|e| format!("Failed to serialize recent profiles: {}", e))?;
 
-    fs::write(&path, json)
-        .map_err(|e| format!("Failed to write recent profiles: {}", e))?;
+    fs::write(&path, json).map_err(|e| format!("Failed to write recent profiles: {}", e))?;
 
     Ok(())
 }
@@ -276,8 +273,7 @@ pub fn remove_from_recent_profiles(profile_path: &str) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&recent)
         .map_err(|e| format!("Failed to serialize recent profiles: {}", e))?;
 
-    fs::write(&path, json)
-        .map_err(|e| format!("Failed to write recent profiles: {}", e))?;
+    fs::write(&path, json).map_err(|e| format!("Failed to write recent profiles: {}", e))?;
 
     Ok(())
 }

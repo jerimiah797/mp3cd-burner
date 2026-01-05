@@ -29,9 +29,15 @@ pub fn get_album_art(path: &Path) -> Option<String> {
     if let Some(metadata_rev) = probed.metadata.get() {
         println!("Found container metadata");
         if let Some(metadata_rev) = metadata_rev.current() {
-            println!("Found current metadata revision with {} visuals", metadata_rev.visuals().len());
+            println!(
+                "Found current metadata revision with {} visuals",
+                metadata_rev.visuals().len()
+            );
             for visual in metadata_rev.visuals() {
-                println!("Found visual in container, data size: {} bytes", visual.data.len());
+                println!(
+                    "Found visual in container, data size: {} bytes",
+                    visual.data.len()
+                );
                 if let Some(file_path) = save_album_art_to_temp(&visual.data, &visual.media_type) {
                     println!("Successfully saved album art to: {}", file_path);
                     return Some(file_path);
@@ -44,9 +50,15 @@ pub fn get_album_art(path: &Path) -> Option<String> {
     println!("Checking format metadata...");
     let mut format = probed.format;
     if let Some(metadata_rev) = format.metadata().current() {
-        println!("Found format metadata with {} visuals", metadata_rev.visuals().len());
+        println!(
+            "Found format metadata with {} visuals",
+            metadata_rev.visuals().len()
+        );
         for visual in metadata_rev.visuals() {
-            println!("Found visual in format metadata, data size: {} bytes", visual.data.len());
+            println!(
+                "Found visual in format metadata, data size: {} bytes",
+                visual.data.len()
+            );
             if let Some(file_path) = save_album_art_to_temp(&visual.data, &visual.media_type) {
                 println!("Successfully saved album art to: {}", file_path);
                 return Some(file_path);
@@ -126,7 +138,8 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
         .map_err(|e| format!("Failed to probe audio format: {}", e))?;
 
     let format = probed.format;
-    let track = format.default_track()
+    let track = format
+        .default_track()
         .ok_or_else(|| "No default track found".to_string())?;
 
     let sample_rate = track.codec_params.sample_rate.unwrap_or(44100) as f64;
@@ -146,10 +159,14 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
     // Detect codec from Symphonia's codec type or fall back to file extension
     let codec_str = format!("{:?}", track.codec_params.codec);
     println!("File: {:?}, Codec string: {}", path.file_name(), codec_str);
-    let codec = if codec_str.contains("MP3") || codec_str.contains("Mp3") || codec_str.contains("4099") {
+    let codec = if codec_str.contains("MP3")
+        || codec_str.contains("Mp3")
+        || codec_str.contains("4099")
+    {
         // CodecType(4099) is MP3
         "mp3".to_string()
-    } else if codec_str.contains("FLAC") || codec_str.contains("Flac") || codec_str.contains("8192") {
+    } else if codec_str.contains("FLAC") || codec_str.contains("Flac") || codec_str.contains("8192")
+    {
         // CodecType(8192) is FLAC
         "flac".to_string()
     } else if codec_str.contains("AAC") || codec_str.contains("Aac") || codec_str.contains("4100") {
@@ -159,7 +176,8 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
         "ogg".to_string()
     } else if codec_str.contains("Opus") {
         "opus".to_string()
-    } else if codec_str.contains("ALAC") || codec_str.contains("Alac") || codec_str.contains("4101") {
+    } else if codec_str.contains("ALAC") || codec_str.contains("Alac") || codec_str.contains("4101")
+    {
         // CodecType(4101) is ALAC
         "alac".to_string()
     } else if codec_str.contains("PCM") || codec_str.contains("Pcm") {
@@ -209,12 +227,11 @@ pub fn get_album_metadata(path: &Path) -> AlbumMetadata {
     let format_opts = FormatOptions::default();
     let metadata_opts = MetadataOptions::default();
 
-    let mut probed = match symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
-    {
-        Ok(p) => p,
-        Err(_) => return metadata,
-    };
+    let mut probed =
+        match symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts) {
+            Ok(p) => p,
+            Err(_) => return metadata,
+        };
 
     // Helper to extract tags from a metadata revision
     let extract_tags = |metadata: &mut AlbumMetadata, tags: &[symphonia::core::meta::Tag]| {
@@ -225,7 +242,9 @@ pub fn get_album_metadata(path: &Path) -> AlbumMetadata {
                 }
                 Some(StandardTagKey::Artist) | Some(StandardTagKey::AlbumArtist) => {
                     // Prefer AlbumArtist, but use Artist if we don't have one yet
-                    if metadata.artist.is_none() || matches!(tag.std_key, Some(StandardTagKey::AlbumArtist)) {
+                    if metadata.artist.is_none()
+                        || matches!(tag.std_key, Some(StandardTagKey::AlbumArtist))
+                    {
                         metadata.artist = Some(tag.value.to_string());
                     }
                 }
@@ -238,7 +257,9 @@ pub fn get_album_metadata(path: &Path) -> AlbumMetadata {
                         value
                     };
                     // Prefer OriginalDate for year
-                    if metadata.year.is_none() || matches!(tag.std_key, Some(StandardTagKey::OriginalDate)) {
+                    if metadata.year.is_none()
+                        || matches!(tag.std_key, Some(StandardTagKey::OriginalDate))
+                    {
                         metadata.year = Some(year);
                     }
                 }

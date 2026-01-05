@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::core::{calculate_folder_hash, FolderId, MusicFolder};
+use crate::core::{FolderId, MusicFolder, calculate_folder_hash};
 
 /// Maximum ISO size for CD burning (699 MB)
 pub const MAX_ISO_SIZE_BYTES: u64 = 699 * 1024 * 1024;
@@ -107,9 +107,7 @@ pub fn determine_iso_action(
                     current_folders.iter().map(|f| f.id.clone()).collect();
 
                 // Check if all current folders are already encoded
-                let all_encoded = current_ids
-                    .iter()
-                    .all(|id| encoded_folder_ids.contains(id));
+                let all_encoded = current_ids.iter().all(|id| encoded_folder_ids.contains(id));
 
                 if all_encoded {
                     // All folders encoded, just need to regenerate ISO with new order
@@ -127,12 +125,9 @@ pub fn determine_iso_action(
         }
         _ => {
             // No valid ISO - check if we need encoding
-            let current_ids: Vec<FolderId> =
-                current_folders.iter().map(|f| f.id.clone()).collect();
+            let current_ids: Vec<FolderId> = current_folders.iter().map(|f| f.id.clone()).collect();
 
-            let all_encoded = current_ids
-                .iter()
-                .all(|id| encoded_folder_ids.contains(id));
+            let all_encoded = current_ids.iter().all(|id| encoded_folder_ids.contains(id));
 
             if all_encoded {
                 // All folders encoded, just need to create ISO

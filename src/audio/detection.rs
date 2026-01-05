@@ -4,7 +4,10 @@ use std::path::Path;
 pub fn is_audio_file(path: &Path) -> bool {
     if let Some(ext) = path.extension() {
         let ext = ext.to_string_lossy().to_lowercase();
-        matches!(ext.as_str(), "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "aiff" | "opus" | "alac")
+        matches!(
+            ext.as_str(),
+            "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "aiff" | "opus" | "alac"
+        )
     } else {
         false
     }

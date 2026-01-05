@@ -2,11 +2,11 @@
 //! (Future: Stage 10)
 #![allow(dead_code)]
 
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Progress callback type for burn operations
 pub type ProgressCallback = Box<dyn Fn(i32) + Send>;
