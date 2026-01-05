@@ -2,6 +2,7 @@
 
 mod about;
 mod bitrate_override;
+mod burn_progress;
 mod display_settings;
 mod folder_item;
 mod folder_list;
@@ -10,6 +11,7 @@ mod volume_label;
 
 pub use about::AboutBox;
 pub use bitrate_override::BitrateOverrideDialog;
+pub use burn_progress::BurnProgressWindow;
 pub use display_settings::DisplaySettingsModal;
 pub use folder_list::FolderList;
 pub use volume_label::VolumeLabelDialog;

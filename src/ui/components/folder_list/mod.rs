@@ -70,6 +70,8 @@ pub struct FolderList {
     pub(crate) pending_new_after_save: bool,
     /// Flag to show open file picker after save completes (for Open -> Save flow)
     pub(crate) pending_open_after_save: bool,
+    /// Path to load after save completes (for drag-drop profile -> Save flow)
+    pub(crate) pending_load_profile_path: Option<PathBuf>,
     /// Pending profile load setup (for async profile loading)
     pub(crate) pending_profile_load: Option<ProfileLoadSetup>,
     /// CD volume label (for ISO creation)
@@ -122,6 +124,7 @@ impl FolderList {
             needs_initial_focus: true,
             pending_new_after_save: false,
             pending_open_after_save: false,
+            pending_load_profile_path: None,
             pending_profile_load: None,
             volume_label: "Untitled MP3CD".to_string(),
             pending_volume_label_rx: None,
@@ -157,6 +160,7 @@ impl FolderList {
             needs_initial_focus: false,
             pending_new_after_save: false,
             pending_open_after_save: false,
+            pending_load_profile_path: None,
             pending_profile_load: None,
             volume_label: "Untitled MP3CD".to_string(),
             pending_volume_label_rx: None,

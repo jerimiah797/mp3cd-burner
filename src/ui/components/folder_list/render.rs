@@ -348,7 +348,7 @@ impl Render for FolderList {
         };
 
         // Capture all listeners first (before borrowing for status bar)
-        let on_external_drop = cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+        let on_external_drop = cx.listener(|this, paths: &ExternalPaths, window, cx| {
             // Check if any dropped path is a .mp3cd profile file
             let profile_path = paths.paths().iter().find(|p| {
                 p.extension()
@@ -358,10 +358,9 @@ impl Render for FolderList {
 
             if let Some(profile) = profile_path {
                 // Load as profile instead of treating as music folder
+                // This handles unsaved changes check like File > Open
                 println!("Loading dropped profile: {:?}", profile);
-                if let Err(e) = this.load_profile(profile, cx) {
-                    eprintln!("Failed to load dropped profile: {}", e);
-                }
+                this.load_dropped_profile(profile.clone(), window, cx);
             } else {
                 // No profile files - treat as music folders
                 this.add_external_folders(paths.paths(), cx);

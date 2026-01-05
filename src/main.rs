@@ -115,8 +115,7 @@ fn main() {
         // Load window state from disk (for position/size)
         let window_state = WindowState::load();
 
-        // Register action handlers
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // Register action handlers (Quit is registered later, after conversion state global is set)
         cx.on_action(|_: &About, cx| {
             AboutBox::open(cx);
         });
@@ -173,10 +172,14 @@ fn main() {
             size(px(window_state.width as f32), px(window_state.height as f32)),
         );
 
-        // Use a shared cell to pass the encoder handle out of the window creation closure
+        // Use shared cells to pass handles out of the window creation closure
         let encoder_handle_cell: std::sync::Arc<std::sync::Mutex<Option<conversion::BackgroundEncoderHandle>>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let encoder_handle_for_closure = encoder_handle_cell.clone();
+
+        let conversion_state_cell: std::sync::Arc<std::sync::Mutex<Option<core::ConversionState>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let conversion_state_for_closure = conversion_state_cell.clone();
 
         let window_handle: WindowHandle<FolderList> = cx.open_window(
             WindowOptions {
@@ -192,6 +195,11 @@ fn main() {
             |_window, cx| {
                 cx.new(|cx| {
                     let mut folder_list = FolderList::new(cx);
+
+                    // Store conversion state for quit/close guards
+                    *conversion_state_for_closure.lock().unwrap() =
+                        Some(folder_list.conversion_state.clone());
+
                     // Enable background encoding for immediate folder conversion
                     match folder_list.enable_background_encoding() {
                         Ok(handle) => {
@@ -215,6 +223,25 @@ fn main() {
         if let Some(handle) = encoder_handle_cell.lock().unwrap().take() {
             cx.set_global(handle);
         }
+
+        // Set the conversion state as a global for quit/close guards
+        if let Some(state) = conversion_state_cell.lock().unwrap().take() {
+            cx.set_global(state);
+        }
+
+        // Register Quit handler (after conversion state global is available)
+        cx.on_action(|_: &Quit, cx| {
+            // Check if a burn is in progress
+            if let Some(state) = cx.try_global::<core::ConversionState>() {
+                if state.is_converting() {
+                    // Show warning - don't quit
+                    eprintln!("Cannot quit: burn in progress");
+                    // TODO: Show a dialog instead of just logging
+                    return;
+                }
+            }
+            cx.quit();
+        });
 
         // Register ToggleEmbedAlbumArt handler
         cx.on_action(|_: &ToggleEmbedAlbumArt, cx| {
@@ -250,6 +277,14 @@ fn main() {
             // Check if main window still exists in the list of open windows
             let main_window_open = cx.windows().iter().any(|w| w.window_id() == main_window_id);
             if !main_window_open {
+                // Don't quit if a burn is in progress - show progress window instead
+                if let Some(state) = cx.try_global::<core::ConversionState>() {
+                    if state.is_converting() {
+                        println!("Window closed during burn - opening progress window");
+                        ui::components::BurnProgressWindow::open(cx, state.clone());
+                        return;
+                    }
+                }
                 cx.quit();
             }
         })

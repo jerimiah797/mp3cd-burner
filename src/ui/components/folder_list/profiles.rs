@@ -383,6 +383,67 @@ impl FolderList {
         }).detach();
     }
 
+    /// Load a dropped profile file, with unsaved changes check
+    ///
+    /// Similar to open_profile but for a specific path (from drag-drop).
+    pub fn load_dropped_profile(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // If no unsaved changes, load immediately
+        if !self.has_unsaved_changes {
+            if let Err(e) = self.load_profile(&path, cx) {
+                eprintln!("Failed to load dropped profile: {}", e);
+            }
+            return;
+        }
+
+        // Show confirmation dialog
+        let receiver = window.prompt(
+            PromptLevel::Warning,
+            "Unsaved Changes",
+            Some("You have folders that haven't been saved to a Burn Profile. What would you like to do?"),
+            &["Save Burn Profile...", "Don't Save", "Cancel"],
+            cx,
+        );
+
+        let window_handle = window.window_handle();
+
+        cx.spawn(move |this_handle: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut async_cx = cx.clone();
+            async move {
+                if let Ok(choice) = receiver.await {
+                    match choice {
+                        0 => {
+                            // Save first, then load dropped profile
+                            println!("User chose to save before loading dropped profile");
+                            let _ = async_cx.update_window(window_handle, |_, window, cx| {
+                                let _ = this_handle.update(cx, |this, cx| {
+                                    // Store the path to load after save completes
+                                    this.pending_load_profile_path = Some(path);
+                                    this.save_profile_dialog(window, cx);
+                                });
+                            });
+                        }
+                        1 => {
+                            // Don't Save - load profile directly
+                            println!("User chose not to save - loading dropped profile");
+                            let _ = async_cx.update(|cx| {
+                                let _ = this_handle.update(cx, |this, cx| {
+                                    if let Err(e) = this.load_profile(&path, cx) {
+                                        eprintln!("Failed to load dropped profile: {}", e);
+                                    }
+                                });
+                            });
+                        }
+                        2 => {
+                            // Cancel - do nothing
+                            println!("User cancelled loading dropped profile");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }).detach();
+    }
+
     /// Actually show the file picker to open a profile
     pub(super) fn show_open_file_picker(&mut self, cx: &mut Context<Self>) {
         let options = PathPromptOptions {
@@ -459,6 +520,7 @@ impl FolderList {
                                     let _ = this_handle.update(cx, |this, _cx| {
                                         this.pending_new_after_save = false;
                                         this.pending_open_after_save = false;
+                                        this.pending_load_profile_path = None;
                                     });
                                 });
                             }
@@ -518,6 +580,7 @@ impl FolderList {
                                 eprintln!("Failed to save profile: {}", e);
                                 this.pending_new_after_save = false;
                                 this.pending_open_after_save = false;
+                                this.pending_load_profile_path = None;
                             } else {
                                 println!("Profile saved to: {:?} (bundle: {})", path, for_bundle);
                                 // Remember the save path and mark as saved
@@ -534,6 +597,12 @@ impl FolderList {
                                     this.pending_open_after_save = false;
                                     this.show_open_file_picker(cx);
                                 }
+                                // If we were saving before loading a dropped profile, load it now
+                                if let Some(profile_path) = this.pending_load_profile_path.take() {
+                                    if let Err(e) = this.load_profile(&profile_path, cx) {
+                                        eprintln!("Failed to load dropped profile: {}", e);
+                                    }
+                                }
                             }
                         });
                     }
@@ -542,6 +611,7 @@ impl FolderList {
                         let _ = this_handle.update(&mut async_cx, |this, _cx| {
                             this.pending_new_after_save = false;
                             this.pending_open_after_save = false;
+                            this.pending_load_profile_path = None;
                         });
                     }
                 }

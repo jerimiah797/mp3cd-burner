@@ -379,6 +379,8 @@ pub struct ConversionState {
     pub iso_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
+impl Global for ConversionState {}
+
 impl ConversionState {
     pub fn new() -> Self {
         Self {
