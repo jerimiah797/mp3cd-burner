@@ -8,7 +8,7 @@
 
 use gpui::{div, prelude::*, SharedString};
 
-use crate::conversion::{EncodingPhase, MultipassEstimate};
+use crate::conversion::MultipassEstimate;
 use crate::core::{format_duration, BurnStage};
 use crate::ui::Theme;
 
@@ -51,8 +51,6 @@ pub struct StatusBarState {
     pub is_manual_override: bool,
     /// The effective bitrate (either calculated or manual override)
     pub effective_bitrate: u32,
-    /// Current encoding phase (for knowing when bitrate is preliminary)
-    pub encoding_phase: EncodingPhase,
     /// Whether the bitrate is preliminary (will be recalculated after lossy encoding)
     pub is_bitrate_preliminary: bool,
 }

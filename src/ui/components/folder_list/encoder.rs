@@ -67,6 +67,7 @@ impl FolderList {
     }
 
     /// Get the current encoding phase (for UI display logic)
+    #[allow(dead_code)]
     pub fn get_encoding_phase(&self) -> EncodingPhase {
         if let Some(ref encoder) = self.background_encoder {
             let state = encoder.get_state();
