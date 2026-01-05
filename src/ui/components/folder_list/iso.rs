@@ -75,12 +75,12 @@ impl FolderList {
             return false;
         }
 
-        // Don't generate ISO if the encoder has pending work (queue or active folders)
+        // Don't generate ISO if the encoder is actively encoding
         // This prevents race conditions where ISO is generated before re-encoding completes
-        if let Some(ref encoder) = self.background_encoder {
-            let state = encoder.get_state();
-            let guard = state.lock().unwrap();
-            if !guard.queue.is_empty() || !guard.active.is_empty() {
+        if let Some(ref encoder) = self.simple_encoder {
+            let phase = encoder.get_state().get_phase();
+            // Only generate ISO when idle or complete (not during LossyPass or LosslessPass)
+            if matches!(phase, crate::conversion::EncodingPhase::LossyPass | crate::conversion::EncodingPhase::LosslessPass) {
                 return false;
             }
         }

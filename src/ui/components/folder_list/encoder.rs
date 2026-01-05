@@ -7,8 +7,10 @@ use std::time::Duration;
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
 use crate::conversion::{
-    BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, EncodingPhase, OutputManager,
+    EncoderEvent, EncodingPhase, OutputManager,
+    SimpleEncoderHandle, start_simple_encoder, verify_ffmpeg,
 };
+use std::sync::Arc;
 use crate::core::{FolderConversionStatus, FolderId};
 
 use super::FolderList;
@@ -19,23 +21,27 @@ impl FolderList {
     /// This should be called after construction when background encoding is desired.
     /// If not called, folders will only be converted when "Burn" is clicked (legacy mode).
     /// Returns a clone of the encoder handle so it can be stored as a global.
-    pub fn enable_background_encoding(&mut self) -> Result<BackgroundEncoderHandle, String> {
-        // Create the background encoder (this spawns its own thread with Tokio runtime)
-        // IMPORTANT: Use the output_manager returned by the encoder - it's the same one
-        // used for encoding, so ISO staging will find the encoded files!
-        let (_encoder, handle, event_rx, output_manager) = BackgroundEncoder::new()?;
+    pub fn enable_background_encoding(&mut self) -> Result<SimpleEncoderHandle, String> {
+        // Create the output manager first
+        let output_manager = Arc::new(OutputManager::new()?);
 
         // Clean up old sessions from previous runs
         output_manager.cleanup_old_sessions()?;
 
+        // Get ffmpeg path
+        let ffmpeg_path = verify_ffmpeg()?;
+
+        // Create the simple encoder
+        let (handle, event_rx) = start_simple_encoder(output_manager.clone(), ffmpeg_path);
+
         // Store the handle, event receiver, and output manager
         let handle_clone = handle.clone();
-        self.background_encoder = Some(handle);
+        self.simple_encoder = Some(handle);
         self.encoder_event_rx = Some(event_rx);
-        self.output_manager = Some(output_manager);
+        self.output_manager = Some((*output_manager).clone());
 
         println!(
-            "Background encoding enabled, session: {:?}",
+            "Simple encoder enabled, session: {:?}",
             self.output_manager.as_ref().map(|m| m.session_id())
         );
 
@@ -50,16 +56,16 @@ impl FolderList {
         Self::start_encoder_event_polling(cx);
     }
 
-    /// Set the background encoder handle (for use from async context)
+    /// Set the encoder handle (for use from async context)
     #[allow(dead_code)]
-    pub fn set_background_encoder(&mut self, handle: BackgroundEncoderHandle) {
-        self.background_encoder = Some(handle);
+    pub fn set_simple_encoder(&mut self, handle: SimpleEncoderHandle) {
+        self.simple_encoder = Some(handle);
     }
 
     /// Check if background encoding is available
     #[allow(dead_code)]
-    pub fn has_background_encoder(&self) -> bool {
-        self.background_encoder.is_some()
+    pub fn has_simple_encoder(&self) -> bool {
+        self.simple_encoder.is_some()
     }
 
     /// Get the output manager if available
@@ -71,10 +77,8 @@ impl FolderList {
     /// Get the current encoding phase (for UI display logic)
     #[allow(dead_code)]
     pub fn get_encoding_phase(&self) -> EncodingPhase {
-        if let Some(ref encoder) = self.background_encoder {
-            let state = encoder.get_state();
-            let guard = state.lock().unwrap();
-            guard.encoding_phase
+        if let Some(ref encoder) = self.simple_encoder {
+            encoder.get_state().get_phase()
         } else {
             EncodingPhase::Idle
         }
@@ -84,20 +88,23 @@ impl FolderList {
     ///
     /// Returns true when:
     /// - We're in LossyPass (actively encoding lossy files), OR
-    /// - We're in Idle with lossless files pending (before encoding starts)
+    /// - We're in Idle with lossless files to encode (before encoding starts)
     ///
     /// Returns false during LosslessPass (we have the final optimized bitrate).
     pub fn is_bitrate_preliminary(&self) -> bool {
-        if let Some(ref encoder) = self.background_encoder {
-            let state = encoder.get_state();
-            let guard = state.lock().unwrap();
-            match guard.encoding_phase {
+        if let Some(ref encoder) = self.simple_encoder {
+            let phase = encoder.get_state().get_phase();
+            match phase {
                 // During LossyPass, bitrate is always preliminary
                 EncodingPhase::LossyPass => true,
-                // During Idle, preliminary only if lossless files are pending
-                EncodingPhase::Idle => !guard.lossless_pending.is_empty(),
-                // During LosslessPass, we have the final bitrate
-                EncodingPhase::LosslessPass => false,
+                // During Idle, check if any folders have lossless files
+                EncodingPhase::Idle => {
+                    let folders = encoder.get_shared_folders();
+                    let guard = folders.lock().unwrap();
+                    guard.iter().any(|f| f.has_lossless_files())
+                }
+                // During LosslessPass or Complete, we have the final bitrate
+                EncodingPhase::LosslessPass | EncodingPhase::Complete => false,
             }
         } else {
             false
@@ -107,7 +114,7 @@ impl FolderList {
     /// Update encoder's embed_album_art setting
     #[allow(dead_code)]
     pub fn set_embed_album_art(&self, embed: bool) {
-        if let Some(ref encoder) = self.background_encoder {
+        if let Some(ref encoder) = self.simple_encoder {
             println!("[FolderList] Sending embed_album_art={} to encoder", embed);
             encoder.set_embed_album_art(embed);
         } else {
@@ -117,14 +124,14 @@ impl FolderList {
 
     /// Queue a folder for background encoding (if encoder is available)
     pub(super) fn queue_folder_for_encoding(&self, folder: &crate::core::MusicFolder) {
-        if let Some(ref encoder) = self.background_encoder {
+        if let Some(ref encoder) = self.simple_encoder {
             encoder.add_folder(folder.clone());
         }
     }
 
     /// Notify encoder that a folder was removed
     pub(super) fn notify_folder_removed(&self, folder: &crate::core::MusicFolder) {
-        if let Some(ref encoder) = self.background_encoder {
+        if let Some(ref encoder) = self.simple_encoder {
             encoder.remove_folder(&folder.id);
         }
     }
@@ -132,7 +139,7 @@ impl FolderList {
     /// Notify encoder that folders were reordered
     #[allow(dead_code)]
     pub(super) fn notify_folders_reordered(&self) {
-        if let Some(ref encoder) = self.background_encoder {
+        if let Some(ref encoder) = self.simple_encoder {
             encoder.folders_reordered();
         }
     }
@@ -140,61 +147,22 @@ impl FolderList {
     /// Get the conversion status of a specific folder
     #[allow(dead_code)]
     pub fn get_folder_conversion_status(&self, folder_id: &FolderId) -> FolderConversionStatus {
-        if let Some(ref encoder) = self.background_encoder {
-            let state = encoder.get_state();
-            let guard = state.lock().unwrap();
-
-            // Check if completed
-            if let Some((status, _folder)) = guard.completed.get(folder_id) {
-                return status.clone();
-            }
-
-            // Check if active (supports multiple active folders)
-            if guard.active.contains_key(folder_id) {
-                // Get actual progress from state
-                let (files_completed, files_total) = guard
-                    .active_progress
-                    .get(folder_id)
-                    .copied()
-                    .unwrap_or((0, 0));
-                return FolderConversionStatus::Converting {
-                    files_completed,
-                    files_total,
-                };
-            }
-
-            // Check if queued
-            if guard.queue.iter().any(|(id, _)| id == folder_id) {
-                return FolderConversionStatus::NotConverted;
-            }
+        // Simple encoder tracks status via folder.conversion_status updated by events
+        if let Some(folder) = self.folders.iter().find(|f| &f.id == folder_id) {
+            folder.conversion_status.clone()
+        } else {
+            FolderConversionStatus::NotConverted
         }
-
-        FolderConversionStatus::NotConverted
     }
 
-    /// Get the list of encoded folder IDs (from background encoder state OR folder status)
+    /// Get the list of encoded folder IDs
     pub(super) fn get_encoded_folder_ids(&self) -> Vec<FolderId> {
-        let mut encoded_ids: Vec<FolderId> = Vec::new();
-
-        // Get from encoder's completed map
-        if let Some(ref encoder) = self.background_encoder {
-            let state = encoder.get_state();
-            let guard = state.lock().unwrap();
-            encoded_ids.extend(guard.completed.keys().cloned());
-        }
-
-        // Also include folders with Converted status (e.g., loaded from bundle)
-        for folder in &self.folders {
-            if matches!(
-                folder.conversion_status,
-                FolderConversionStatus::Converted { .. }
-            )
-                && !encoded_ids.contains(&folder.id) {
-                    encoded_ids.push(folder.id.clone());
-                }
-        }
-
-        encoded_ids
+        // Get folders with Converted status
+        self.folders
+            .iter()
+            .filter(|f| matches!(f.conversion_status, FolderConversionStatus::Converted { .. }))
+            .map(|f| f.id.clone())
+            .collect()
     }
 
     /// Check if all folders are ready (converted) for burning
@@ -203,28 +171,13 @@ impl FolderList {
             return false;
         }
 
-        if let Some(ref encoder) = self.background_encoder {
-            let state = encoder.get_state();
-            let guard = state.lock().unwrap();
-
-            self.folders.iter().all(|folder| {
-                // Check both encoder's completed map AND folder's own conversion status
-                // (folders loaded from bundles have Converted status but aren't in encoder)
-                guard.completed.contains_key(&folder.id)
-                    || matches!(
-                        folder.conversion_status,
-                        FolderConversionStatus::Converted { .. }
-                    )
-            })
-        } else {
-            // In legacy mode, check folder status directly
-            self.folders.iter().all(|folder| {
-                matches!(
-                    folder.conversion_status,
-                    FolderConversionStatus::Converted { .. }
-                )
-            })
-        }
+        // Check folder status directly - simple encoder updates this via events
+        self.folders.iter().all(|folder| {
+            matches!(
+                folder.conversion_status,
+                FolderConversionStatus::Converted { .. }
+            )
+        })
     }
 
     /// Poll encoder events and handle them
@@ -244,11 +197,12 @@ impl FolderList {
 
             match event {
                 EncoderEvent::FolderStarted { id, files_total } => {
-                    // Initialize progress for the new folder (0 completed out of total)
-                    if let Some(ref encoder) = self.background_encoder {
-                        let state = encoder.get_state();
-                        let mut guard = state.lock().unwrap();
-                        guard.active_progress.insert(id.clone(), (0, files_total));
+                    // Update folder to "Converting" status
+                    if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
+                        folder.conversion_status = FolderConversionStatus::Converting {
+                            files_completed: 0,
+                            files_total,
+                        };
                     }
                     println!("Encoding started: {:?} ({} files)", id, files_total);
                 }
@@ -257,13 +211,12 @@ impl FolderList {
                     files_completed,
                     files_total,
                 } => {
-                    // Update progress in encoder state for UI rendering
-                    if let Some(ref encoder) = self.background_encoder {
-                        let state = encoder.get_state();
-                        let mut guard = state.lock().unwrap();
-                        guard
-                            .active_progress
-                            .insert(id.clone(), (files_completed, files_total));
+                    // Update folder progress
+                    if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
+                        folder.conversion_status = FolderConversionStatus::Converting {
+                            files_completed,
+                            files_total,
+                        };
                     }
                     println!(
                         "Encoding progress: {:?} {}/{}",
@@ -280,14 +233,6 @@ impl FolderList {
                         "Encoding complete: {:?} -> {:?} ({} bytes, bitrate: {:?})",
                         id, output_dir, output_size, lossless_bitrate
                     );
-
-                    // Clear active progress for this folder
-                    if let Some(ref encoder) = self.background_encoder {
-                        let state = encoder.get_state();
-                        let mut guard = state.lock().unwrap();
-                        guard.active_progress.remove(&id);
-                        guard.active.remove(&id);
-                    }
 
                     // Update the folder's conversion status
                     if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
@@ -394,7 +339,7 @@ impl FolderList {
                             }
 
                             // Continue polling as long as we have a background encoder
-                            this.background_encoder.is_some()
+                            this.simple_encoder.is_some()
                         })
                         .unwrap_or(false);
 

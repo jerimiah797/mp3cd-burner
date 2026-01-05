@@ -190,6 +190,20 @@ impl OutputManager {
         Ok(())
     }
 
+    /// Delete a folder's output from the session temp directory only
+    /// Used by RecalculateBitrate to delete encoded files that need re-encoding
+    pub fn delete_folder_output_from_session(&self, folder_id: &FolderId) -> Result<(), String> {
+        let folder_dir = self.session_dir.join(folder_id.as_str());
+
+        if folder_dir.exists() {
+            fs::remove_dir_all(&folder_dir)
+                .map_err(|e| format!("Failed to delete folder output from session: {}", e))?;
+            println!("Deleted session output for folder: {}", folder_id);
+        }
+
+        Ok(())
+    }
+
     /// Copy converted files from temp session to a bundle
     ///
     /// This is called during the first save to move converted files
@@ -227,6 +241,38 @@ impl OutputManager {
     /// Returns a path like "converted/abc123..." that is relative to the bundle root.
     pub fn get_relative_output_path(&self, folder_id: &FolderId) -> String {
         format!("converted/{}", folder_id.as_str())
+    }
+
+    /// Copy pre-encoded files from a bundle to the current session
+    ///
+    /// This is called when loading a bundle profile to copy converted files
+    /// into the temp session directory. This unifies bundle folders with
+    /// newly encoded folders - all files end up in the same session directory.
+    ///
+    /// Returns the destination path (in temp session).
+    pub fn copy_from_bundle(
+        &self,
+        bundle_path: &Path,
+        folder_id: &FolderId,
+    ) -> Result<PathBuf, String> {
+        let src = bundle_path.join("converted").join(folder_id.as_str());
+        let dst = self.session_dir.join(folder_id.as_str());
+
+        if !src.exists() {
+            return Err(format!(
+                "Bundle folder not found: {:?}",
+                src
+            ));
+        }
+
+        // Copy the entire folder from bundle to temp
+        copy_dir_recursive(&src, &dst)?;
+        println!(
+            "Copied from bundle: {:?} -> {:?}",
+            src, dst
+        );
+
+        Ok(dst)
     }
 
     /// Create ISO staging directory with numbered symlinks

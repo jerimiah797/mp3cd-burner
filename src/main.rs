@@ -178,7 +178,7 @@ fn main() {
 
         // Use shared cells to pass handles out of the window creation closure
         let encoder_handle_cell: std::sync::Arc<
-            std::sync::Mutex<Option<conversion::BackgroundEncoderHandle>>,
+            std::sync::Mutex<Option<conversion::SimpleEncoderHandle>>,
         > = std::sync::Arc::new(std::sync::Mutex::new(None));
         let encoder_handle_for_closure = encoder_handle_cell.clone();
 
@@ -261,7 +261,7 @@ fn main() {
             cx.set_menus(menus);
 
             // Notify the encoder via the global handle
-            if let Some(encoder) = cx.try_global::<conversion::BackgroundEncoderHandle>() {
+            if let Some(encoder) = cx.try_global::<conversion::SimpleEncoderHandle>() {
                 encoder.set_embed_album_art(embed);
                 println!("[main.rs] Notified encoder");
             } else {

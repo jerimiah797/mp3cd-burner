@@ -192,7 +192,7 @@ impl FolderList {
         // Clear the encoder state and delete converted files
         // (Don't delete for bundle - we're using the bundle's converted files!)
         if setup.bundle_path.is_none()
-            && let Some(encoder) = &self.background_encoder {
+            && let Some(encoder) = &self.simple_encoder {
                 encoder.clear_all();
             }
 
@@ -203,7 +203,7 @@ impl FolderList {
         self.import_state.reset(folder_count);
 
         // Notify encoder that import is starting (delays encoding until complete)
-        if let Some(ref encoder) = self.background_encoder {
+        if let Some(ref encoder) = self.simple_encoder {
             encoder.import_started();
         }
 
@@ -314,7 +314,7 @@ impl FolderList {
         self.current_profile_path = None;
         self.has_unsaved_changes = false;
         // Clear the encoder state and delete converted files
-        if let Some(encoder) = &self.background_encoder {
+        if let Some(encoder) = &self.simple_encoder {
             encoder.clear_all();
         }
         // Clear bundle path so new encodes go to temp directory, not the old bundle
@@ -788,7 +788,88 @@ impl FolderList {
                                 println!("Restored ISO state from profile");
                             }
 
-                        // Calculate bitrate and queue folders needing encoding
+                        // For bundle profiles: copy converted files from bundle to temp
+                        // and register with encoder. This unifies bundle folders with
+                        // encoder-tracked folders - no more bifurcation!
+                        if let Some(ref bundle_path) = setup.bundle_path {
+                            for folder in &mut this.folders {
+                                if let FolderConversionStatus::Converted {
+                                    output_size,
+                                    lossless_bitrate,
+                                    completed_at,
+                                    ..
+                                } = &folder.conversion_status
+                                {
+                                    // Copy from bundle to temp
+                                    if let Some(ref output_manager) = this.output_manager {
+                                        match output_manager
+                                            .copy_from_bundle(bundle_path, &folder.id)
+                                        {
+                                            Ok(new_output_dir) => {
+                                                println!(
+                                                    "Copied bundle folder to temp: {}",
+                                                    folder.path.display()
+                                                );
+
+                                                // Register with encoder as already completed
+                                                if let Some(ref encoder) = this.simple_encoder {
+                                                    encoder.register_completed(
+                                                        folder.clone(),
+                                                        new_output_dir.clone(),
+                                                        *output_size,
+                                                        *lossless_bitrate,
+                                                        *completed_at,
+                                                    );
+                                                }
+
+                                                // Update folder's conversion status to point to temp
+                                                folder.conversion_status =
+                                                    FolderConversionStatus::Converted {
+                                                        output_dir: new_output_dir,
+                                                        output_size: *output_size,
+                                                        lossless_bitrate: *lossless_bitrate,
+                                                        completed_at: *completed_at,
+                                                    };
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "Failed to copy bundle folder {}: {}",
+                                                    folder.path.display(),
+                                                    e
+                                                );
+                                                // Reset to not converted so it gets re-encoded
+                                                folder.conversion_status =
+                                                    FolderConversionStatus::NotConverted;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Legacy (non-bundle) profile: register converted folders with encoder
+                            // so they're tracked in the unified system
+                            for folder in &this.folders {
+                                if let FolderConversionStatus::Converted {
+                                    output_dir,
+                                    output_size,
+                                    lossless_bitrate,
+                                    completed_at,
+                                } = &folder.conversion_status
+                                {
+                                    if let Some(ref encoder) = this.simple_encoder {
+                                        encoder.register_completed(
+                                            folder.clone(),
+                                            output_dir.clone(),
+                                            *output_size,
+                                            *lossless_bitrate,
+                                            *completed_at,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        // Queue folders needing encoding (those that aren't Converted)
                         let folders_needing_encoding: Vec<_> = this
                             .folders
                             .iter()
@@ -801,30 +882,6 @@ impl FolderList {
                             .cloned()
                             .collect();
 
-                        // Calculate preloaded size: folders that are Converted and won't be re-encoded
-                        // This is needed for pass 2 bitrate calculation
-                        let folders_needing_encoding_ids: std::collections::HashSet<_> =
-                            folders_needing_encoding.iter().map(|f| &f.id).collect();
-                        let preloaded_size: u64 = this
-                            .folders
-                            .iter()
-                            .filter(|f| !folders_needing_encoding_ids.contains(&f.id))
-                            .filter_map(|f| {
-                                if let FolderConversionStatus::Converted { output_size, .. } =
-                                    &f.conversion_status
-                                {
-                                    Some(*output_size)
-                                } else {
-                                    None
-                                }
-                            })
-                            .sum();
-
-                        if let Some(ref encoder) = this.background_encoder
-                            && preloaded_size > 0 {
-                                encoder.set_preloaded_size(preloaded_size);
-                            }
-
                         if !folders_needing_encoding.is_empty() {
                             let target_bitrate = this.calculated_bitrate();
                             println!(
@@ -833,7 +890,7 @@ impl FolderList {
                             );
 
                             // Update encoder with correct bitrate before queueing folders
-                            if let Some(ref encoder) = this.background_encoder {
+                            if let Some(ref encoder) = this.simple_encoder {
                                 encoder.recalculate_bitrate(target_bitrate);
                             }
 
@@ -868,7 +925,7 @@ impl FolderList {
                     }
 
                     // Notify encoder that import is complete (resumes encoding)
-                    if let Some(ref encoder) = this.background_encoder {
+                    if let Some(ref encoder) = this.simple_encoder {
                         encoder.import_complete();
                     }
                 });

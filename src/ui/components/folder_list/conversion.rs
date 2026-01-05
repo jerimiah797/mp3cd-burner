@@ -152,13 +152,10 @@ impl FolderList {
                 self.bitrate_recalc_pending = true;
 
                 // Trigger re-encoding at new bitrate
-                // This handles folders the encoder knows about
-                if let Some(ref encoder) = self.background_encoder {
+                // This handles all folders in the encoder's completed map (including bundle folders)
+                if let Some(ref encoder) = self.simple_encoder {
                     encoder.recalculate_bitrate(new_bitrate);
                 }
-
-                // Also check folders loaded from bundles that need re-encoding
-                self.queue_bundle_folders_for_reencoding(new_bitrate);
 
                 // Reset lossless folder statuses immediately to prevent ISO race condition
                 // (The BitrateRecalculated event will also do this, but it comes later)
@@ -235,190 +232,10 @@ impl FolderList {
         );
 
         // Send recalculation command to background encoder
-        // This handles folders the encoder knows about
-        if let Some(ref encoder) = self.background_encoder {
+        // This handles all folders in the encoder's completed map (including bundle folders)
+        if let Some(ref encoder) = self.simple_encoder {
             encoder.recalculate_bitrate(new_bitrate);
         }
-
-        // Also check folders loaded from bundles that need re-encoding
-        // These aren't in the encoder's state, so we need to queue them manually
-        self.queue_bundle_folders_for_reencoding(new_bitrate);
-    }
-
-    /// Queue bundle-loaded folders for re-encoding if their lossless_bitrate differs
-    ///
-    /// Folders loaded from bundles have `Converted` status but aren't tracked by the encoder.
-    /// When bitrate changes, we need to check if they need re-encoding and queue them.
-    pub(super) fn queue_bundle_folders_for_reencoding(&mut self, new_bitrate: u32) {
-        use crate::core::FolderConversionStatus;
-
-        let encoder = match &self.background_encoder {
-            Some(e) => e,
-            None => return,
-        };
-
-        // Find folders with Converted status that need re-encoding
-        // (they have lossless files encoded at a different bitrate)
-        let folders_to_reencode: Vec<_> = self
-            .folders
-            .iter()
-            .filter(|f| {
-                // Only re-encode if:
-                // 1. The folder has lossless files (lossless_bitrate is Some)
-                // 2. The bitrate differs from the new target
-                matches!(
-                    &f.conversion_status,
-                    FolderConversionStatus::Converted {
-                        lossless_bitrate: Some(old_bitrate),
-                        ..
-                    } if *old_bitrate != new_bitrate
-                )
-            })
-            .cloned()
-            .collect();
-
-        if folders_to_reencode.is_empty() {
-            return;
-        }
-
-        // Calculate total size being re-encoded (to subtract from preloaded_size)
-        let size_to_reencode: u64 = folders_to_reencode
-            .iter()
-            .filter_map(|f| {
-                if let FolderConversionStatus::Converted { output_size, .. } = &f.conversion_status
-                {
-                    Some(*output_size)
-                } else {
-                    None
-                }
-            })
-            .sum();
-
-        println!(
-            "Queueing {} bundle-loaded folders for re-encoding at {} kbps (subtracting {} MB from preloaded_size)",
-            folders_to_reencode.len(),
-            new_bitrate,
-            size_to_reencode / 1_000_000
-        );
-
-        // Subtract re-encoding folders from preloaded_size so bitrate calculation is correct
-        {
-            let state = encoder.get_state();
-            let mut s = state.lock().unwrap();
-            s.preloaded_size = s.preloaded_size.saturating_sub(size_to_reencode);
-            println!(
-                "Updated preloaded_size: {} MB",
-                s.preloaded_size / 1_000_000
-            );
-        }
-
-        // Reset their conversion status and queue for encoding
-        for folder in &folders_to_reencode {
-            // Reset status in our folder list
-            if let Some(f) = self.folders.iter_mut().find(|f| f.id == folder.id) {
-                f.conversion_status = FolderConversionStatus::NotConverted;
-            }
-            // Queue for encoding
-            encoder.add_folder(folder.clone());
-        }
-
-        // Invalidate ISO state since we're re-encoding
-        self.iso_state = None;
-        self.iso_generation_attempted = false;
-    }
-
-    /// Queue pre-encoded lossless folders to participate in phase transition
-    ///
-    /// When new lossy content is added to a profile with pre-encoded lossless folders,
-    /// those lossless folders need to be added to lossless_pending so the phase transition
-    /// can calculate whether they need to be re-encoded at a lower bitrate to fit.
-    ///
-    /// This is different from `queue_bundle_folders_for_reencoding` which re-encodes
-    /// folders at a known bitrate. Here, we're letting the two-pass system determine
-    /// the optimal bitrate after measuring the actual lossy sizes.
-    pub(super) fn queue_preencoded_lossless_for_phase_transition(&mut self) {
-        use crate::core::FolderConversionStatus;
-
-        let encoder = match &self.background_encoder {
-            Some(e) => e,
-            None => return,
-        };
-
-        // Find pre-encoded lossless folders (have lossless_bitrate set)
-        let preencoded_lossless: Vec<_> = self
-            .folders
-            .iter()
-            .filter(|f| {
-                matches!(
-                    &f.conversion_status,
-                    FolderConversionStatus::Converted {
-                        lossless_bitrate: Some(_),
-                        ..
-                    }
-                )
-            })
-            .cloned()
-            .collect();
-
-        if preencoded_lossless.is_empty() {
-            return;
-        }
-
-        // Check if there's any pending lossy content (folders not yet converted)
-        let has_pending_lossy = self.folders.iter().any(|f| {
-            matches!(
-                f.conversion_status,
-                FolderConversionStatus::NotConverted | FolderConversionStatus::Converting { .. }
-            ) && f.audio_files.iter().any(|af| af.is_lossy)
-        });
-
-        if !has_pending_lossy {
-            return;
-        }
-
-        // Calculate total size being moved from preloaded to lossless_pending
-        let size_to_move: u64 = preencoded_lossless
-            .iter()
-            .filter_map(|f| {
-                if let FolderConversionStatus::Converted { output_size, .. } = &f.conversion_status
-                {
-                    Some(*output_size)
-                } else {
-                    None
-                }
-            })
-            .sum();
-
-        println!(
-            "Queueing {} pre-encoded lossless folders for phase transition (moving {} MB from preloaded_size to lossless_pending)",
-            preencoded_lossless.len(),
-            size_to_move / 1_000_000
-        );
-
-        // Subtract from preloaded_size since these will be re-evaluated
-        {
-            let state = encoder.get_state();
-            let mut s = state.lock().unwrap();
-            s.preloaded_size = s.preloaded_size.saturating_sub(size_to_move);
-            println!(
-                "Updated preloaded_size: {} MB",
-                s.preloaded_size / 1_000_000
-            );
-        }
-
-        // Reset their conversion status and add to encoder as lossless-pending
-        for folder in &preencoded_lossless {
-            // Reset status in our folder list
-            if let Some(f) = self.folders.iter_mut().find(|f| f.id == folder.id) {
-                f.conversion_status = FolderConversionStatus::NotConverted;
-            }
-            // Add to encoder - it will see the lossless files and add to lossless_pending
-            encoder.add_folder(folder.clone());
-        }
-
-        // Invalidate ISO state
-        self.iso_state = None;
-        self.iso_generation_attempted = false;
     }
 
     /// Cancel any ongoing conversion
@@ -455,7 +272,7 @@ impl FolderList {
         }
 
         // Check if background encoder is available
-        let encoder_handle = match &self.background_encoder {
+        let encoder_handle = match &self.simple_encoder {
             Some(handle) => handle.clone(),
             None => {
                 eprintln!("Background encoder not available - cannot burn");

@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 
 use super::coordinator::{BurnConfig, coordinate_burn};
 use super::iso::create_iso;
-use crate::conversion::{BackgroundEncoderHandle, OutputManager};
+use crate::conversion::{EncodingPhase, OutputManager, SimpleEncoderHandle};
 use crate::core::{BurnStage, ConversionState, MusicFolder};
 
 /// Execute a full burn workflow: wait for conversion, create ISO, burn
@@ -23,7 +23,7 @@ use crate::core::{BurnStage, ConversionState, MusicFolder};
 /// Progress is reported via the ConversionState.
 pub fn execute_full_burn(
     state: ConversionState,
-    encoder_handle: BackgroundEncoderHandle,
+    encoder_handle: SimpleEncoderHandle,
     output_manager: OutputManager,
     folders: Vec<MusicFolder>,
     simulate_burn: bool,
@@ -38,18 +38,20 @@ pub fn execute_full_burn(
             return;
         }
 
-        // Check if all folders are converted
-        let encoder_state = encoder_handle.get_state();
-        let guard = encoder_state.lock().unwrap();
-        let completed_count = guard.completed.len();
-        let queue_empty = guard.queue.is_empty();
-        let active_empty = guard.active.is_empty();
-        drop(guard);
+        // Check if encoder is idle/complete (no active work)
+        let phase = encoder_handle.get_state().get_phase();
+        let is_done = matches!(phase, EncodingPhase::Complete | EncodingPhase::Idle);
+
+        // Count folders that have output (converted)
+        let completed_count = folders
+            .iter()
+            .filter(|f| output_manager.get_folder_output_size(&f.id).unwrap_or(0) > 0)
+            .count();
 
         // Update progress
         state.completed.store(completed_count, Ordering::SeqCst);
 
-        if queue_empty && active_empty {
+        if is_done && completed_count == folders.len() {
             println!("All folders converted ({} total)", completed_count);
             break;
         }

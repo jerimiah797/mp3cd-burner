@@ -8,9 +8,7 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::core::{
-    FolderConversionStatus, ImportState, MusicFolder, find_album_folders, scan_music_folder,
-};
+use crate::core::{ImportState, MusicFolder, find_album_folders, scan_music_folder};
 
 use super::FolderList;
 
@@ -71,7 +69,7 @@ impl FolderList {
         self.import_state.reset(new_paths.len());
 
         // Notify encoder that import is starting (delays encoding until complete)
-        if let Some(ref encoder) = self.background_encoder {
+        if let Some(ref encoder) = self.simple_encoder {
             encoder.import_started();
         }
 
@@ -144,19 +142,7 @@ impl FolderList {
         if index < self.folders.len() {
             let folder = self.folders.remove(index);
 
-            // If folder was preloaded as Converted, subtract its size from preloaded_size
-            if let FolderConversionStatus::Converted { output_size, .. } = &folder.conversion_status
-                && let Some(ref encoder) = self.background_encoder {
-                    let state = encoder.get_state();
-                    let mut s = state.lock().unwrap();
-                    s.preloaded_size = s.preloaded_size.saturating_sub(*output_size);
-                    println!(
-                        "Reduced preloaded size by {} MB (folder removed)",
-                        output_size / 1_000_000
-                    );
-                }
-
-            // Notify encoder if available
+            // Notify encoder if available (removes from encoder's completed map)
             self.notify_folder_removed(&folder);
             // Invalidate ISO since folder list changed
             self.iso_state = None;
@@ -288,20 +274,13 @@ impl FolderList {
                     });
                 }
 
-                // Check if we need to queue pre-encoded lossless folders for re-encoding
-                // This handles the case where lossy folders are added to a profile with
-                // pre-encoded lossless content that may need to be re-encoded at a lower bitrate
-                let _ = this.update(&mut async_cx, |this, _cx| {
-                    this.queue_preencoded_lossless_for_phase_transition();
-                });
-
                 // Calculate and set bitrate BEFORE resuming encoding
                 // This ensures all folders are accounted for in the bitrate calculation
                 let _ = this.update(&mut async_cx, |this, _cx| {
                     // Clear cached bitrate to force fresh calculation with all folders
                     this.last_calculated_bitrate = None;
                     let new_bitrate = this.calculated_bitrate();
-                    if let Some(ref encoder) = this.background_encoder {
+                    if let Some(ref encoder) = this.simple_encoder {
                         // Set the bitrate before resuming encoding
                         encoder.recalculate_bitrate(new_bitrate);
                         // Store the calculated bitrate
@@ -312,7 +291,7 @@ impl FolderList {
 
                 // Notify encoder that import is complete (resumes encoding)
                 let _ = this.update(&mut async_cx, |this, _cx| {
-                    if let Some(ref encoder) = this.background_encoder {
+                    if let Some(ref encoder) = this.simple_encoder {
                         encoder.import_complete();
                     }
                 });

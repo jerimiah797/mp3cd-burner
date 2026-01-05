@@ -18,7 +18,7 @@ use gpui::{Context, FocusHandle, ScrollHandle};
 use std::path::PathBuf;
 
 use crate::burning::IsoState;
-use crate::conversion::{BackgroundEncoderHandle, OutputManager};
+use crate::conversion::OutputManager;
 use crate::core::{ConversionState, ImportState, MusicFolder};
 use crate::profiles::ProfileLoadSetup;
 
@@ -48,8 +48,8 @@ pub struct FolderList {
     pub(crate) import_state: ImportState,
     /// Focus handle for receiving actions (None in tests)
     pub(crate) focus_handle: Option<FocusHandle>,
-    /// Background encoder handle for immediate conversion (None until initialized)
-    pub(crate) background_encoder: Option<BackgroundEncoderHandle>,
+    /// Simple encoder handle for immediate conversion (None until initialized)
+    pub(crate) simple_encoder: Option<crate::conversion::SimpleEncoderHandle>,
     /// Event receiver for background encoder progress updates (std::sync::mpsc for easy polling)
     pub(crate) encoder_event_rx: Option<std::sync::mpsc::Receiver<crate::conversion::EncoderEvent>>,
     /// Output manager for session-based directories (None until initialized)
@@ -113,7 +113,7 @@ impl FolderList {
             conversion_state: ConversionState::new(),
             import_state: ImportState::new(),
             focus_handle: Some(cx.focus_handle()),
-            background_encoder: None,
+            simple_encoder: None,
             encoder_event_rx: None,
             output_manager: None,
             iso_state: None,
@@ -149,7 +149,7 @@ impl FolderList {
             conversion_state: ConversionState::new(),
             import_state: ImportState::new(),
             focus_handle: None,
-            background_encoder: None,
+            simple_encoder: None,
             encoder_event_rx: None,
             output_manager: None,
             iso_state: None,
