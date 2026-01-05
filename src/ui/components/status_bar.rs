@@ -8,7 +8,7 @@
 
 use gpui::{div, prelude::*, SharedString};
 
-use crate::conversion::MultipassEstimate;
+use crate::conversion::{EncodingPhase, MultipassEstimate};
 use crate::core::{format_duration, BurnStage};
 use crate::ui::Theme;
 
@@ -51,6 +51,10 @@ pub struct StatusBarState {
     pub is_manual_override: bool,
     /// The effective bitrate (either calculated or manual override)
     pub effective_bitrate: u32,
+    /// Current encoding phase (for knowing when bitrate is preliminary)
+    pub encoding_phase: EncodingPhase,
+    /// Whether the bitrate is preliminary (will be recalculated after lossy encoding)
+    pub is_bitrate_preliminary: bool,
 }
 
 impl StatusBarState {
@@ -58,6 +62,13 @@ impl StatusBarState {
     pub fn bitrate_display(&self) -> String {
         match &self.bitrate_estimate {
             Some(e) if e.should_show_bitrate() => {
+                // When bitrate is preliminary (during pass 1 or lossless pending),
+                // show "Calculating..." to avoid confusing users with a low estimate
+                // that will be recalculated after lossy encoding completes.
+                if self.is_bitrate_preliminary && e.lossless_count > 0 {
+                    return "Calculating...".to_string();
+                }
+
                 if self.is_manual_override {
                     // Show the effective (overridden) bitrate with asterisk
                     format!("{} kbps*", self.effective_bitrate)

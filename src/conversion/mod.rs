@@ -9,7 +9,7 @@ mod output_manager;
 mod parallel;
 
 pub use background::{
-    BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent,
+    BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, EncodingPhase,
 };
 pub use ffmpeg::ConversionResult;
 pub use optimizer::{calculate_multipass_bitrate, MultipassEstimate};

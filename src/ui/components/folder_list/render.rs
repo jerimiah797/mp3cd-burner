@@ -102,6 +102,8 @@ impl FolderList {
             iso_has_been_burned: self.iso_has_been_burned,
             is_manual_override: self.manual_bitrate_override.is_some(),
             effective_bitrate: self.calculated_bitrate(), // Respects manual override
+            encoding_phase: self.get_encoding_phase(),
+            is_bitrate_preliminary: self.is_bitrate_preliminary(),
         }
     }
 

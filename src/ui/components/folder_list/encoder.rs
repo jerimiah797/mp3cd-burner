@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::conversion::{BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, OutputManager};
+use crate::conversion::{BackgroundEncoder, BackgroundEncoderHandle, EncoderEvent, EncodingPhase, OutputManager};
 use crate::core::{FolderConversionStatus, FolderId};
 
 use super::FolderList;
@@ -64,6 +64,41 @@ impl FolderList {
     #[allow(dead_code)]
     pub fn output_manager(&self) -> Option<&OutputManager> {
         self.output_manager.as_ref()
+    }
+
+    /// Get the current encoding phase (for UI display logic)
+    pub fn get_encoding_phase(&self) -> EncodingPhase {
+        if let Some(ref encoder) = self.background_encoder {
+            let state = encoder.get_state();
+            let guard = state.lock().unwrap();
+            guard.encoding_phase
+        } else {
+            EncodingPhase::Idle
+        }
+    }
+
+    /// Check if the bitrate is preliminary (will be recalculated after lossy encoding)
+    ///
+    /// Returns true when:
+    /// - We're in LossyPass (actively encoding lossy files), OR
+    /// - We're in Idle with lossless files pending (before encoding starts)
+    ///
+    /// Returns false during LosslessPass (we have the final optimized bitrate).
+    pub fn is_bitrate_preliminary(&self) -> bool {
+        if let Some(ref encoder) = self.background_encoder {
+            let state = encoder.get_state();
+            let guard = state.lock().unwrap();
+            match guard.encoding_phase {
+                // During LossyPass, bitrate is always preliminary
+                EncodingPhase::LossyPass => true,
+                // During Idle, preliminary only if lossless files are pending
+                EncodingPhase::Idle => !guard.lossless_pending.is_empty(),
+                // During LosslessPass, we have the final bitrate
+                EncodingPhase::LosslessPass => false,
+            }
+        } else {
+            false
+        }
     }
 
     /// Update encoder's embed_album_art setting
@@ -288,6 +323,25 @@ impl FolderList {
                         }
                     }
                     // Invalidate ISO state - output files are being regenerated
+                    self.iso_state = None;
+                    self.iso_generation_attempted = false;
+                    // Clear the pending flag now that recalculation command has been processed
+                    self.bitrate_recalc_pending = false;
+                }
+                EncoderEvent::PhaseTransition {
+                    phase,
+                    measured_lossy_size,
+                    optimal_bitrate,
+                } => {
+                    println!(
+                        "Phase transition to {:?}: measured lossy size = {} MB, optimal lossless bitrate = {} kbps",
+                        phase,
+                        measured_lossy_size / 1_000_000,
+                        optimal_bitrate
+                    );
+                    // Update the last calculated bitrate to reflect the optimized value
+                    self.last_calculated_bitrate = Some(optimal_bitrate);
+                    // Invalidate ISO (will be regenerated after pass 2 completes)
                     self.iso_state = None;
                     self.iso_generation_attempted = false;
                 }

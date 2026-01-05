@@ -86,6 +86,9 @@ pub struct FolderList {
     pub(crate) manual_bitrate_override: Option<u32>,
     /// Receiver for bitrate override dialog result
     pub(crate) pending_bitrate_rx: Option<std::sync::mpsc::Receiver<u32>>,
+    /// Flag to track when a bitrate recalculation is pending (waiting for encoder to re-encode)
+    /// This prevents ISO generation until the recalculation is complete
+    pub(crate) bitrate_recalc_pending: bool,
 }
 
 /// Action to take after volume label dialog closes
@@ -127,6 +130,7 @@ impl FolderList {
             has_unsaved_changes: false,
             manual_bitrate_override: None,
             pending_bitrate_rx: None,
+            bitrate_recalc_pending: false,
         }
     }
 
@@ -161,6 +165,7 @@ impl FolderList {
             has_unsaved_changes: false,
             manual_bitrate_override: None,
             pending_bitrate_rx: None,
+            bitrate_recalc_pending: false,
         }
     }
 }

@@ -67,6 +67,22 @@ impl FolderList {
     /// This should be called periodically to auto-generate ISO when all folders are encoded.
     /// Returns true if ISO generation was triggered.
     pub(super) fn maybe_generate_iso(&mut self, cx: &mut Context<Self>) -> bool {
+        // Don't generate ISO if a bitrate recalculation is pending
+        // (command sent but not yet processed by encoder)
+        if self.bitrate_recalc_pending {
+            return false;
+        }
+
+        // Don't generate ISO if the encoder has pending work (queue or active folders)
+        // This prevents race conditions where ISO is generated before re-encoding completes
+        if let Some(ref encoder) = self.background_encoder {
+            let state = encoder.get_state();
+            let guard = state.lock().unwrap();
+            if !guard.queue.is_empty() || !guard.active.is_empty() {
+                return false;
+            }
+        }
+
         // Don't generate ISO while profile import is in progress
         // (folders are still being loaded from bundle)
         // Also check for pending folders that haven't been drained yet

@@ -161,9 +161,12 @@ fn categorize_files(
 /// Determine the encoding decision for a single file
 ///
 /// Logic:
-/// - MP3 files: copy if bitrate <= target, otherwise convert at target
-/// - Other lossy files: if no_lossy_conversions, copy; otherwise convert at min(source, target)
+/// - MP3 files: copy if bitrate <= target + 20 threshold, otherwise convert at source
+/// - Other lossy files: if no_lossy_conversions, copy; otherwise convert at source bitrate
 /// - Lossless files: always convert at target bitrate
+///
+/// NOTE: This must match the behavior in audio/conversion.rs:determine_encoding_strategy()
+/// Lossy files are encoded at their source bitrate to preserve quality (not capped at target).
 pub fn get_encoding_decision(
     file: &AudioFileInfo,
     target_bitrate: u32,
@@ -171,12 +174,16 @@ pub fn get_encoding_decision(
 ) -> EncodingDecision {
     let is_mp3 = file.codec.to_lowercase() == "mp3";
 
+    // Copy threshold for MP3s (matches audio/conversion.rs)
+    const COPY_THRESHOLD: u32 = 20;
+
     if is_mp3 {
-        // MP3 files: copy if already at or below target bitrate
-        if file.bitrate <= target_bitrate {
+        // MP3 files: copy if within threshold of target
+        if file.bitrate <= target_bitrate + COPY_THRESHOLD {
             EncodingDecision::Copy
         } else {
-            EncodingDecision::ConvertAt(target_bitrate)
+            // High-bitrate MP3s are transcoded at source bitrate (capped at 320)
+            EncodingDecision::ConvertAt(file.bitrate.min(320))
         }
     } else if file.is_lossy {
         // Other lossy formats (AAC, OGG, etc.)
@@ -184,10 +191,9 @@ pub fn get_encoding_decision(
             // Never re-encode lossy files
             EncodingDecision::Copy
         } else {
-            // Convert at the minimum of source and target bitrate
-            // (never upconvert a lossy file)
-            let encode_bitrate = file.bitrate.min(target_bitrate);
-            EncodingDecision::ConvertAt(encode_bitrate)
+            // Convert at source bitrate to preserve quality (capped at 320 for MP3 limits)
+            // This matches audio/conversion.rs behavior
+            EncodingDecision::ConvertAt(file.bitrate.min(320))
         }
     } else {
         // Lossless files (FLAC, WAV, ALAC): always convert at target
@@ -296,9 +302,12 @@ mod tests {
 
     #[test]
     fn test_mp3_convert_decision() {
+        // MP3 at 320 kbps, target is 256 kbps
+        // 320 > 256 + 20 (threshold), so it converts
+        // Lossy files convert at SOURCE bitrate (not target) to preserve quality
         let file = make_mp3(320, 180.0);
         let decision = get_encoding_decision(&file, 256, false);
-        assert_eq!(decision, EncodingDecision::ConvertAt(256));
+        assert_eq!(decision, EncodingDecision::ConvertAt(320));
     }
 
     #[test]
@@ -316,9 +325,10 @@ mod tests {
     fn test_aac_no_lossy_mode() {
         let file = make_aac(256, 180.0);
 
-        // Without no_lossy mode, AAC converts
+        // Without no_lossy mode, AAC converts at SOURCE bitrate (not target)
+        // to preserve quality (avoid lossy-to-lossy quality degradation)
         let decision = get_encoding_decision(&file, 192, false);
-        assert_eq!(decision, EncodingDecision::ConvertAt(192));
+        assert_eq!(decision, EncodingDecision::ConvertAt(256));
 
         // With no_lossy mode, AAC copies
         let decision2 = get_encoding_decision(&file, 192, true);
@@ -366,10 +376,11 @@ mod tests {
         let size_copy = calculate_estimated_output_size(&[file.clone()], 320, false);
         assert_eq!(size_copy, file.size);
 
-        // Convert decision at 256 kbps
+        // With target 256 kbps, MP3 at 320 kbps (320 > 256 + 20 threshold)
+        // converts at SOURCE bitrate (320) to preserve quality
         let size_convert = calculate_estimated_output_size(&[file], 256, false);
-        // 256 * 180 * 125 * 1.065 = ~6.1 MB
-        let expected = (256.0 * 180.0 * 125.0 * MP3_OVERHEAD_MULTIPLIER) as u64;
+        // 320 * 180 * 125 * 1.065 = ~7.67 MB (uses source bitrate, not target)
+        let expected = (320.0 * 180.0 * 125.0 * MP3_OVERHEAD_MULTIPLIER) as u64;
         assert_eq!(size_convert, expected);
     }
 

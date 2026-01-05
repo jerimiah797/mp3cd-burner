@@ -67,10 +67,11 @@ pub fn determine_encoding_strategy(
             }
         } else if is_lossy {
             // Lossy formats (AAC, OGG, OPUS, and high-bitrate MP3s)
-            // Use smart bitrate: min(source, target) to avoid upsampling lossy audio
-            // This also handles MP3s above the copy threshold - transcode down instead of up
-            let smart_bitrate = source_bitrate.min(target_bitrate);
-            EncodingStrategy::ConvertAtSourceBitrate(smart_bitrate)
+            // Transcode at source bitrate to preserve quality
+            // Don't cap at target_bitrate - that's for lossless files only
+            // Exception: if source > 320, cap at 320 (max MP3 bitrate)
+            let capped_bitrate = source_bitrate.min(320);
+            EncodingStrategy::ConvertAtSourceBitrate(capped_bitrate)
         } else {
             // Lossless formats (FLAC, WAV, ALAC, etc.) - convert at target bitrate
             EncodingStrategy::ConvertAtTargetBitrate(target_bitrate)
@@ -216,8 +217,9 @@ mod tests {
 
     #[test]
     fn test_normal_mode_mp3_above_target() {
-        // MP3 at 320kbps, target 256kbps - transcode down using smart bitrate
-        // High-bitrate MP3s are treated like other lossy formats to use min(source, target)
+        // MP3 at 320kbps, target 256kbps - transcode at source bitrate (preserve quality)
+        // We don't cap at target_bitrate because that's for lossless files only.
+        // Transcoding lossy to lossy at a lower bitrate degrades quality.
         let strategy = determine_encoding_strategy(
             "mp3",
             320,
@@ -226,7 +228,7 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(256));
+        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(320));
     }
 
     #[test]
@@ -245,9 +247,9 @@ mod tests {
     }
 
     #[test]
-    fn test_normal_mode_aac_smart_bitrate_target_lower() {
-        // AAC at 320kbps, target 256kbps - use target bitrate (smart bitrate)
-        // We want min(source, target) = 256
+    fn test_normal_mode_aac_high_bitrate() {
+        // AAC at 320kbps, target 256kbps - transcode at source bitrate (preserve quality)
+        // We don't cap at target_bitrate because that's for lossless files only.
         let strategy = determine_encoding_strategy(
             "aac",
             320,
@@ -256,7 +258,7 @@ mod tests {
             false, // normal mode
             true,
         );
-        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(256));
+        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(320));
     }
 
     #[test]
@@ -319,7 +321,10 @@ mod tests {
 
     #[test]
     fn test_very_high_bitrate_mp3() {
-        // Very high quality MP3 - should transcode down using smart bitrate
+        // Very high quality MP3 - transcode at source bitrate (preserve quality)
+        // We don't transcode lossy files down to target because:
+        // 1. Target bitrate is calculated for lossless files
+        // 2. Lossy-to-lossy transcoding at lower bitrate degrades quality
         let strategy = determine_encoding_strategy(
             "mp3",
             320,
@@ -328,7 +333,7 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(192));
+        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(320));
     }
 
     #[test]
@@ -364,7 +369,7 @@ mod tests {
     #[test]
     fn test_mp3_above_copy_threshold() {
         // MP3 at 180kbps, target 151kbps - above 20kbps threshold, should transcode
-        // Uses smart bitrate (min of source and target) like other lossy formats
+        // But transcode at SOURCE bitrate to preserve quality (not target)
         let strategy = determine_encoding_strategy(
             "mp3",
             180,  // 180 > 151 + 20 = 171, so above threshold
@@ -373,6 +378,6 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(151));
+        assert_eq!(strategy, EncodingStrategy::ConvertAtSourceBitrate(180));
     }
 }

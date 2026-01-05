@@ -77,7 +77,20 @@ impl FolderList {
         }
 
         // Use multi-pass-aware calculation
-        Some(calculate_multipass_bitrate(&all_files))
+        let mut estimate = calculate_multipass_bitrate(&all_files);
+
+        // If we have an optimized bitrate from pass 2 (stored in last_calculated_bitrate),
+        // use that instead of the preliminary estimate. This happens after the phase
+        // transition when we've measured actual lossy sizes.
+        if let Some(optimized_bitrate) = self.last_calculated_bitrate {
+            // Only use the optimized bitrate if we're not in preliminary mode anymore
+            // (i.e., pass 2 has started or completed)
+            if !self.is_bitrate_preliminary() {
+                estimate.target_bitrate = optimized_bitrate;
+            }
+        }
+
+        Some(estimate)
     }
 
     /// Get the target bitrate for encoding
@@ -124,6 +137,9 @@ impl FolderList {
                 self.manual_bitrate_override = Some(new_bitrate);
                 self.pending_bitrate_rx = None;
 
+                // Set flag to prevent ISO generation until recalculation completes
+                self.bitrate_recalc_pending = true;
+
                 // Trigger re-encoding at new bitrate
                 // This handles folders the encoder knows about
                 if let Some(ref encoder) = self.background_encoder {
@@ -132,6 +148,21 @@ impl FolderList {
 
                 // Also check folders loaded from bundles that need re-encoding
                 self.queue_bundle_folders_for_reencoding(new_bitrate);
+
+                // Reset lossless folder statuses immediately to prevent ISO race condition
+                // (The BitrateRecalculated event will also do this, but it comes later)
+                for folder in &mut self.folders {
+                    if let crate::core::FolderConversionStatus::Converted {
+                        lossless_bitrate: Some(br),
+                        ..
+                    } = folder.conversion_status
+                    {
+                        if br != new_bitrate {
+                            folder.conversion_status =
+                                crate::core::FolderConversionStatus::NotConverted;
+                        }
+                    }
+                }
 
                 // Invalidate ISO state - output files are being regenerated
                 self.iso_state = None;
