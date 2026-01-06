@@ -15,7 +15,7 @@ MP3 CD Burner takes the hassle out of creating MP3 CDs:
 
 | Format | Type | Handling |
 |--------|------|----------|
-| MP3 | Lossy | Copied directly (or re-encoded if above target bitrate) |
+| MP3 | Lossy | Copied directly |
 | FLAC | Lossless | Converted to MP3 at calculated bitrate |
 | WAV | Lossless | Converted to MP3 at calculated bitrate |
 | AIFF | Lossless | Converted to MP3 at calculated bitrate |
@@ -61,6 +61,8 @@ Click on the bitrate display to manually override it. This lets you:
 - The asterisk (e.g., "285 kbps*") indicates a manual override
 
 When you change the bitrate, lossless files are automatically re-encoded.
+
+If the calculated bitrate produces an ISO with extra space, you can increase the bitrate and re-encode to maximize quality. Adjust until the ISO size is as close to 700 MB as desired without exceeding it.
 
 ### 5. Burn Your CD
 
@@ -137,28 +139,32 @@ Save your folder list and settings for later use.
 ### Architecture
 
 Built with [GPUI](https://gpui.rs), Zed's native Rust UI framework. The app uses:
-- **Background encoding** via a dedicated thread pool with Tokio runtime
-- **Parallel conversion** of up to 3 folders simultaneously
+- **Global file queue** - All tracks across all folders are queued together for maximum throughput
+- **Parallel encoding** - 2-8 worker threads (based on available CPU cores) pull from the shared queue
 - **FFmpeg** for all audio conversion (bundled with the app)
 - **hdiutil** for ISO creation and CD burning (macOS built-in)
 
 ### Encoding Strategy
 
-The app uses a multi-pass approach:
+The app uses a two-phase approach with intelligent file handling:
 
-1. **Lossy files first** - MP3s and other lossy formats are processed immediately (copied or transcoded at source bitrate)
-2. **Calculate remaining space** - After lossy files, determine how much CD space remains
-3. **Optimize lossless bitrate** - Calculate the optimal bitrate for lossless files to fill remaining space
-4. **Encode lossless files** - Convert FLAC/WAV/AIFF at the calculated bitrate
+**Phase 1 - Lossy files:**
+- All lossy files from all folders are queued together
+- MP3s are copied directly (preserving original quality)
+- Other lossy formats (AAC, OGG, Opus) are transcoded at their source bitrate
+
+**Phase 2 - Lossless files:**
+- After Phase 1 completes, the app measures total lossy output size
+- Calculates optimal bitrate for lossless files to maximize quality while fitting on CD
+- All lossless files (FLAC, WAV, AIFF, ALAC) are queued and encoded at the calculated bitrate
 
 This ensures maximum audio quality: lossy files keep their original quality, while lossless files get the highest bitrate that will fit.
 
+*Future: Re-encode high-bitrate MP3s when necessary to fit on CD.*
+
 ### Smart MP3 Handling
 
-MP3 files are handled intelligently:
-- **At or below target bitrate**: Copied directly (no quality loss)
-- **Above target bitrate**: Re-encoded to target (only if necessary to fit)
-- **With album art + embed enabled**: Re-encoded to embed the artwork
+MP3 files are copied directly to preserve original quality. When the "Embed Album Art" option is enabled, MP3s without embedded artwork are re-encoded to include the album's cover art.
 
 ### CD Burning
 
