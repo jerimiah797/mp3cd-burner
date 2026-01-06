@@ -534,44 +534,31 @@ fn encoding_loop(
                 None
             };
 
-            for (file_idx, file) in lossless_files.iter().enumerate() {
-                if state.is_restart_requested() {
-                    restart_needed = true;
-                    break;
-                }
+            // Encode lossless files in parallel
+            let folder_id = folder.id.clone();
+            let progress_tx_clone = progress_tx.clone();
+            let total_files = lossless_files.len();
+            let state_for_progress = state.clone();
 
-                let output_path = get_output_path(&output_dir, &file.path);
+            let (_completed, was_interrupted) = encode_files_parallel(
+                &lossless_files,
+                &output_dir,
+                lossless_bitrate,
+                album_art.as_deref(),
+                &ffmpeg_path,
+                &state,
+                move |count| {
+                    *state_for_progress.current_progress.lock().unwrap() = (count, total_files);
+                    let _ = progress_tx_clone.send(EncoderEvent::FolderProgress {
+                        id: folder_id.clone(),
+                        files_completed: count,
+                        files_total: total_files,
+                    });
+                },
+            );
 
-                // Skip if already encoded
-                if output_path.exists() {
-                    *state.current_progress.lock().unwrap() = (file_idx + 1, lossless_files.len());
-                    continue;
-                }
-
-                // Encode at calculated lossless bitrate
-                if let Err(e) = transcode_file(
-                    &ffmpeg_path,
-                    &file.path,
-                    &output_path,
-                    lossless_bitrate,
-                    album_art.as_ref().map(|s| Path::new(s.as_str())),
-                    &state,
-                ) {
-                    // Don't log if killed due to restart
-                    if !state.is_restart_requested() {
-                        eprintln!("Failed to encode {:?}: {}", file.path, e);
-                    }
-                }
-
-                *state.current_progress.lock().unwrap() = (file_idx + 1, lossless_files.len());
-                let _ = progress_tx.send(EncoderEvent::FolderProgress {
-                    id: folder.id.clone(),
-                    files_completed: file_idx + 1,
-                    files_total: lossless_files.len(),
-                });
-            }
-
-            if restart_needed {
+            if was_interrupted {
+                restart_needed = true;
                 break;
             }
 
@@ -722,11 +709,244 @@ fn transcode_file(
         Ok(())
     } else {
         // Check if we were killed (exit code will be non-zero)
-        // If restart was requested, this is expected - don't treat as error
+        // Delete partial output file to avoid corruption on re-encode
+        let _ = std::fs::remove_file(output_path);
+
         if state.is_restart_requested() {
             Err("Process terminated due to restart".to_string())
         } else {
             Err(format!("ffmpeg failed with status: {}", status))
         }
+    }
+}
+
+/// Calculate optimal worker count based on CPU cores
+fn calculate_worker_count() -> usize {
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // Use 75% of cores, clamped between 2 and 8
+    ((available as f32 * 0.75).ceil() as usize).clamp(2, 8)
+}
+
+/// Job for parallel encoding
+struct EncodeJob {
+    input_path: PathBuf,
+    output_path: PathBuf,
+    bitrate: u32,
+    album_art: Option<String>,
+}
+
+/// Encode files in parallel with PID tracking for instant termination
+///
+/// Returns (completed_count, was_interrupted)
+fn encode_files_parallel(
+    files: &[&AudioFileInfo],
+    output_dir: &Path,
+    bitrate: u32,
+    album_art: Option<&str>,
+    ffmpeg_path: &Path,
+    state: &Arc<SimpleEncoderState>,
+    progress_callback: impl Fn(usize) + Send + Sync + 'static,
+) -> (usize, bool) {
+    use std::sync::atomic::AtomicUsize;
+
+    let worker_count = calculate_worker_count();
+    let completed = Arc::new(AtomicUsize::new(0));
+    let total = files.len();
+
+    // Create job queue
+    let jobs: Vec<EncodeJob> = files
+        .iter()
+        .map(|file| EncodeJob {
+            input_path: file.path.clone(),
+            output_path: get_output_path(output_dir, &file.path),
+            bitrate,
+            album_art: album_art.map(|s| s.to_string()),
+        })
+        .collect();
+
+    // Filter to only jobs that need encoding (output doesn't exist)
+    let pending_jobs: Vec<EncodeJob> = jobs
+        .into_iter()
+        .filter(|job| !job.output_path.exists())
+        .collect();
+
+    // Count already-complete files
+    let already_done = total - pending_jobs.len();
+    completed.store(already_done, Ordering::SeqCst);
+
+    if pending_jobs.is_empty() {
+        return (total, false);
+    }
+
+    println!(
+        "Parallel encoding: {} files with {} workers ({} already done)",
+        pending_jobs.len(),
+        worker_count,
+        already_done
+    );
+
+    // Create work channel
+    let (job_tx, job_rx) = std::sync::mpsc::channel::<EncodeJob>();
+    let job_rx = Arc::new(Mutex::new(job_rx));
+
+    // Spawn worker threads
+    let mut handles = Vec::new();
+    let ffmpeg_path = ffmpeg_path.to_path_buf();
+    let progress_callback = Arc::new(progress_callback);
+
+    for worker_id in 0..worker_count {
+        let job_rx = job_rx.clone();
+        let state = state.clone();
+        let completed = completed.clone();
+        let ffmpeg_path = ffmpeg_path.clone();
+        let progress_callback = progress_callback.clone();
+
+        let handle = thread::spawn(move || {
+            loop {
+                // Check for restart before taking a job
+                if state.is_restart_requested() {
+                    break;
+                }
+
+                // Try to get a job
+                let job = {
+                    let rx = job_rx.lock().unwrap();
+                    rx.try_recv().ok()
+                };
+
+                let job = match job {
+                    Some(j) => j,
+                    None => {
+                        // No more jobs, check if channel is disconnected
+                        thread::sleep(Duration::from_millis(10));
+                        let rx = job_rx.lock().unwrap();
+                        match rx.try_recv() {
+                            Ok(j) => j,
+                            Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                        }
+                    }
+                };
+
+                // Encode the file
+                let result = transcode_file_internal(
+                    &ffmpeg_path,
+                    &job.input_path,
+                    &job.output_path,
+                    job.bitrate,
+                    job.album_art.as_ref().map(|s| Path::new(s.as_str())),
+                    &state,
+                );
+
+                if let Err(e) = result {
+                    if !state.is_restart_requested() {
+                        eprintln!("[Worker {}] Failed: {:?} - {}", worker_id, job.input_path, e);
+                    }
+                }
+
+                // Update progress
+                let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                progress_callback(count);
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    // Send all jobs to workers
+    for job in pending_jobs {
+        if state.is_restart_requested() {
+            break;
+        }
+        let _ = job_tx.send(job);
+    }
+
+    // Drop sender to signal workers to finish
+    drop(job_tx);
+
+    // Wait for all workers to complete
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let final_count = completed.load(Ordering::SeqCst);
+    let was_interrupted = state.is_restart_requested();
+
+    (final_count, was_interrupted)
+}
+
+/// Internal transcode function that takes state by reference (for parallel use)
+fn transcode_file_internal(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+    output_path: &Path,
+    bitrate: u32,
+    album_art_path: Option<&Path>,
+    state: &SimpleEncoderState,
+) -> Result<(), String> {
+    // Create output directory if needed
+    if let Some(parent) = output_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create output dir: {}", e))?;
+        }
+    }
+
+    let bitrate_str = format!("{}k", bitrate);
+
+    let mut cmd = Command::new(ffmpeg_path);
+    cmd.arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-vn")
+        .arg("-codec:a")
+        .arg("libmp3lame")
+        .arg("-b:a")
+        .arg(&bitrate_str)
+        .arg("-map_metadata")
+        .arg("0")
+        .arg("-id3v2_version")
+        .arg("3");
+
+    if let Some(art_path) = album_art_path {
+        if art_path.exists() {
+            cmd.arg("-i")
+                .arg(art_path)
+                .arg("-map")
+                .arg("0:a")
+                .arg("-map")
+                .arg("1:v")
+                .arg("-c:v")
+                .arg("copy")
+                .arg("-metadata:s:v")
+                .arg("title=Album cover")
+                .arg("-metadata:s:v")
+                .arg("comment=Cover (front)");
+        }
+    }
+
+    cmd.arg(output_path);
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+    let pid = child.id();
+
+    state.register_pid(pid);
+    let status = child.wait().map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
+    state.unregister_pid(pid);
+
+    if status.success() {
+        Ok(())
+    } else if state.is_restart_requested() {
+        // Process was killed - delete partial output file to avoid corruption
+        let _ = std::fs::remove_file(output_path);
+        Err("Process terminated due to restart".to_string())
+    } else {
+        // Process failed normally - also delete partial output
+        let _ = std::fs::remove_file(output_path);
+        Err(format!("ffmpeg failed with status: {}", status))
     }
 }
