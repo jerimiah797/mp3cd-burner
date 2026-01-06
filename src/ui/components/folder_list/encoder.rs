@@ -333,10 +333,9 @@ impl FolderList {
                                 println!("Auto-ISO generation triggered");
                             }
 
-                            // Refresh UI if we had events or updates
-                            if had_events || label_updated || bitrate_updated {
-                                cx.notify();
-                            }
+                            // Always notify UI to ensure refresh (even without events,
+                            // conversion_state progress may have changed from burn workflow)
+                            cx.notify();
 
                             // Continue polling as long as we have a background encoder
                             this.simple_encoder.is_some()
