@@ -3,8 +3,9 @@
 //! Core principle: Folder list is source of truth. Encoding is stateless and restartable.
 //! When anything changes → restart fresh. Use file existence to skip done work.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -35,24 +36,59 @@ pub struct SimpleEncoderState {
     pub current_progress: Mutex<(usize, usize)>, // (completed, total)
     /// Manual bitrate override (None = auto-calculate)
     pub manual_bitrate: Mutex<Option<u32>>,
+    /// PIDs of currently running ffmpeg processes (for instant termination)
+    running_pids: Mutex<HashSet<u32>>,
 }
 
 impl SimpleEncoderState {
     pub fn new() -> Self {
         Self {
             phase: Mutex::new(EncodingPhase::Idle),
-            lossless_bitrate: AtomicU32::new(320),
+            lossless_bitrate: AtomicU32::new(0), // 0 = not yet calculated
             restart_requested: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             embed_album_art: AtomicBool::new(false),
             current_folder: Mutex::new(None),
             current_progress: Mutex::new((0, 0)),
             manual_bitrate: Mutex::new(None),
+            running_pids: Mutex::new(HashSet::new()),
         }
     }
 
     pub fn request_restart(&self) {
         self.restart_requested.store(true, Ordering::SeqCst);
+        // Kill any running ffmpeg processes for instant response
+        self.kill_running_processes();
+    }
+
+    /// Register a running ffmpeg process PID
+    pub fn register_pid(&self, pid: u32) {
+        self.running_pids.lock().unwrap().insert(pid);
+    }
+
+    /// Unregister a ffmpeg process PID (when it completes)
+    pub fn unregister_pid(&self, pid: u32) {
+        self.running_pids.lock().unwrap().remove(&pid);
+    }
+
+    /// Kill all running ffmpeg processes (for instant restart)
+    pub fn kill_running_processes(&self) {
+        let pids: Vec<u32> = self.running_pids.lock().unwrap().iter().copied().collect();
+        for pid in pids {
+            #[cfg(unix)]
+            unsafe {
+                // SIGKILL for immediate termination
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-Unix, we can't easily kill by PID
+                // The process will complete and we'll restart after
+                let _ = pid;
+            }
+        }
+        // Clear the set (processes are dead or will be soon)
+        self.running_pids.lock().unwrap().clear();
     }
 
     pub fn is_restart_requested(&self) -> bool {
@@ -372,8 +408,12 @@ fn encoding_loop(
                     &output_path,
                     bitrate,
                     album_art.as_ref().map(|s| Path::new(s.as_str())),
+                    &state,
                 ) {
-                    eprintln!("Failed to encode {:?}: {}", file.path, e);
+                    // Don't log if killed due to restart
+                    if !state.is_restart_requested() {
+                        eprintln!("Failed to encode {:?}: {}", file.path, e);
+                    }
                 }
 
                 *state.current_progress.lock().unwrap() = (file_idx + 1, lossy_files.len());
@@ -430,10 +470,25 @@ fn encoding_loop(
             lossless_bitrate
         );
 
-        // If bitrate changed, delete old lossless outputs
-        if old_bitrate != lossless_bitrate {
+        // If bitrate changed, delete old lossless outputs and notify UI
+        if old_bitrate != 0 && old_bitrate != lossless_bitrate {
+            // old_bitrate == 0 means this is the first calculation (no previous encoding)
             println!("Bitrate changed {} -> {}, deleting old lossless outputs", old_bitrate, lossless_bitrate);
             delete_lossless_outputs(&output_manager, &folders);
+
+            // Collect folders with lossless files that need re-encoding
+            let reencode_needed: Vec<FolderId> = folders
+                .iter()
+                .filter(|f| f.audio_files.iter().any(|a| !a.is_lossy))
+                .map(|f| f.id.clone())
+                .collect();
+
+            if !reencode_needed.is_empty() {
+                let _ = progress_tx.send(EncoderEvent::BitrateRecalculated {
+                    new_bitrate: lossless_bitrate,
+                    reencode_needed,
+                });
+            }
         }
 
         // === PHASE 2: Lossless files ===
@@ -500,8 +555,12 @@ fn encoding_loop(
                     &output_path,
                     lossless_bitrate,
                     album_art.as_ref().map(|s| Path::new(s.as_str())),
+                    &state,
                 ) {
-                    eprintln!("Failed to encode {:?}: {}", file.path, e);
+                    // Don't log if killed due to restart
+                    if !state.is_restart_requested() {
+                        eprintln!("Failed to encode {:?}: {}", file.path, e);
+                    }
                 }
 
                 *state.current_progress.lock().unwrap() = (file_idx + 1, lossless_files.len());
@@ -589,13 +648,14 @@ fn delete_lossless_outputs(output_manager: &OutputManager, folders: &[MusicFolde
     }
 }
 
-/// Simple synchronous file transcoding using ffmpeg
+/// Simple synchronous file transcoding using ffmpeg with PID tracking for instant termination
 fn transcode_file(
     ffmpeg_path: &Path,
     input_path: &Path,
     output_path: &Path,
     bitrate: u32,
     album_art_path: Option<&Path>,
+    state: &SimpleEncoderState,
 ) -> Result<(), String> {
     // Create output directory if needed
     if let Some(parent) = output_path.parent() {
@@ -641,12 +701,32 @@ fn transcode_file(
 
     cmd.arg(output_path);
 
-    let output = cmd.output().map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
+    // Suppress ffmpeg output
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
 
-    if output.status.success() {
+    // Spawn the process so we can track its PID
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+    let pid = child.id();
+
+    // Register PID for instant termination capability
+    state.register_pid(pid);
+
+    // Wait for completion (or termination via SIGKILL)
+    let status = child.wait().map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
+
+    // Unregister PID
+    state.unregister_pid(pid);
+
+    if status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("ffmpeg failed: {}", stderr))
+        // Check if we were killed (exit code will be non-zero)
+        // If restart was requested, this is expected - don't treat as error
+        if state.is_restart_requested() {
+            Err("Process terminated due to restart".to_string())
+        } else {
+            Err(format!("ffmpeg failed with status: {}", status))
+        }
     }
 }
