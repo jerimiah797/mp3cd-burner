@@ -31,6 +31,9 @@ pub struct MusicFolder {
     pub audio_files: Vec<AudioFileInfo>,
     /// Current conversion status for background encoding
     pub conversion_status: FolderConversionStatus,
+    /// Whether the source files are accessible (false if loaded from bundle with missing source)
+    /// When false, the folder can still be burned but cannot be re-encoded at a different bitrate.
+    pub source_available: bool,
 }
 
 impl MusicFolder {
@@ -132,6 +135,7 @@ impl MusicFolder {
             year: None,
             audio_files: Vec::new(),
             conversion_status: FolderConversionStatus::default(),
+            source_available: true,
         }
     }
 
@@ -151,6 +155,7 @@ impl MusicFolder {
             year: None,
             audio_files: Vec::new(),
             conversion_status: FolderConversionStatus::default(),
+            source_available: true,
         }
     }
 }
@@ -206,7 +211,40 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
         year,
         audio_files,
         conversion_status: FolderConversionStatus::default(),
+        source_available: true, // Scanned from source, so it's available
     })
+}
+
+/// Create a MusicFolder from saved profile metadata (when source is unavailable)
+///
+/// This is used when loading a bundle profile where the source folder is missing.
+/// The folder can still be burned but cannot be re-encoded.
+pub fn create_folder_from_metadata(
+    folder_id: String,
+    path: PathBuf,
+    file_count: u32,
+    total_size: u64,
+    total_duration: f64,
+    album_name: Option<String>,
+    artist_name: Option<String>,
+    year: Option<String>,
+    album_art: Option<String>,
+    conversion_status: FolderConversionStatus,
+) -> MusicFolder {
+    MusicFolder {
+        id: FolderId(folder_id),
+        path,
+        file_count,
+        total_size,
+        total_duration,
+        album_art,
+        album_name,
+        artist_name,
+        year,
+        audio_files: Vec::new(), // No source files to scan
+        conversion_status,
+        source_available: false, // Created from metadata, source not available
+    }
 }
 
 /// Find all "album folders" under a given path

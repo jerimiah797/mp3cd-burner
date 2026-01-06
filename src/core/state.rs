@@ -458,6 +458,8 @@ pub struct ImportState {
     pub total: Arc<AtomicUsize>,
     /// Scanned folders waiting to be added to the list
     pub scanned_folders: Arc<Mutex<Vec<MusicFolder>>>,
+    /// Folder paths that failed to load (for error reporting)
+    pub failed_paths: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl ImportState {
@@ -467,6 +469,7 @@ impl ImportState {
             completed: Arc::new(AtomicUsize::new(0)),
             total: Arc::new(AtomicUsize::new(0)),
             scanned_folders: Arc::new(Mutex::new(Vec::new())),
+            failed_paths: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -475,6 +478,7 @@ impl ImportState {
         self.completed.store(0, Ordering::SeqCst);
         self.total.store(total, Ordering::SeqCst);
         self.scanned_folders.lock().unwrap().clear();
+        self.failed_paths.lock().unwrap().clear();
     }
 
     pub fn finish(&self) {
@@ -496,6 +500,17 @@ impl ImportState {
     pub fn push_folder(&self, folder: MusicFolder) {
         self.scanned_folders.lock().unwrap().push(folder);
         self.completed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Record a failed folder path
+    pub fn push_failed(&self, path: PathBuf) {
+        self.failed_paths.lock().unwrap().push(path);
+        self.completed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Get all failed paths
+    pub fn get_failed_paths(&self) -> Vec<PathBuf> {
+        self.failed_paths.lock().unwrap().clone()
     }
 
     /// Drain all scanned folders from the queue

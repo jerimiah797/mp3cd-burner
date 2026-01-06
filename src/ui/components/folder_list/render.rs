@@ -12,6 +12,8 @@ use crate::actions::{NewProfile, OpenProfile, SaveProfile, SetVolumeLabel};
 use crate::core::{BurnStage, DisplaySettings, FolderConversionStatus, WindowState};
 use crate::ui::Theme;
 
+use gpui::PromptLevel;
+
 use super::{FolderList, PendingBurnAction};
 use crate::ui::components::folder_item::{DraggedFolder, FolderItemProps, render_folder_item};
 use crate::ui::components::status_bar::{
@@ -305,6 +307,27 @@ impl FolderList {
                 }
             }))
     }
+
+    /// Show any pending error dialog
+    ///
+    /// This is called from the render loop to display error messages
+    /// like failed folder loads.
+    pub(super) fn show_pending_error_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((title, message)) = self.pending_error_message.take() {
+            let _future = window.prompt(
+                PromptLevel::Warning,
+                &title,
+                Some(&message),
+                &["OK"],
+                cx,
+            );
+            // We don't need to wait for the response - just showing the dialog
+        }
+    }
 }
 
 impl Render for FolderList {
@@ -349,6 +372,9 @@ impl Render for FolderList {
 
         // Check for pending burn action after volume label dialog closes
         self.check_pending_burn_action(window, cx);
+
+        // Show pending error messages (e.g., failed folder loads)
+        self.show_pending_error_dialog(window, cx);
 
         // Update window title to include volume label
         let title = if self.volume_label == "Untitled MP3CD" || self.volume_label.is_empty() {

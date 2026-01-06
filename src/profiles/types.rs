@@ -74,10 +74,39 @@ pub struct SavedFolderState {
 
     /// Number of files encoded
     pub file_count: usize,
+
+    // === Display metadata (v2.1+) - allows loading without source ===
+    /// Album name from audio file metadata
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_name: Option<String>,
+
+    /// Artist name from audio file metadata
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist_name: Option<String>,
+
+    /// Release year from audio file metadata
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<String>,
+
+    /// Total duration of all audio files in seconds
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_duration: Option<f64>,
+
+    /// Album art as base64-encoded image data
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_art: Option<String>,
+
+    /// Total size of source files in bytes (for display)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_size: Option<u64>,
+
+    /// When this folder was converted (Unix timestamp)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u64>,
 }
 
 impl SavedFolderState {
-    /// Create a new SavedFolderState
+    /// Create a new SavedFolderState with basic fields (for backwards compat)
     pub fn new(
         folder_id: String,
         output_dir: String,
@@ -93,12 +122,59 @@ impl SavedFolderState {
             output_size,
             source_mtime,
             file_count,
+            // Display metadata defaults
+            album_name: None,
+            artist_name: None,
+            year: None,
+            total_duration: None,
+            album_art: None,
+            source_size: None,
+            completed_at: None,
+        }
+    }
+
+    /// Create a SavedFolderState with full display metadata
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_metadata(
+        folder_id: String,
+        output_dir: String,
+        lossless_bitrate: Option<u32>,
+        output_size: u64,
+        source_mtime: u64,
+        file_count: usize,
+        album_name: Option<String>,
+        artist_name: Option<String>,
+        year: Option<String>,
+        total_duration: Option<f64>,
+        album_art: Option<String>,
+        source_size: Option<u64>,
+        completed_at: Option<u64>,
+    ) -> Self {
+        Self {
+            folder_id,
+            output_dir,
+            lossless_bitrate,
+            output_size,
+            source_mtime,
+            file_count,
+            album_name,
+            artist_name,
+            year,
+            total_duration,
+            album_art,
+            source_size,
+            completed_at,
         }
     }
 
     /// Check if the source folder has been modified since encoding
     pub fn source_modified(&self, current_mtime: u64) -> bool {
         current_mtime != self.source_mtime
+    }
+
+    /// Check if this state has display metadata (v2.1+ format)
+    pub fn has_display_metadata(&self) -> bool {
+        self.total_duration.is_some()
     }
 }
 

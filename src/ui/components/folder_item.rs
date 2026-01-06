@@ -267,6 +267,11 @@ pub fn render_folder_item<V: 'static>(
             }
         }
 
+        // Add warning for folders without source
+        if !folder.source_available {
+            parts.push("⚠️ Source unavailable".to_string());
+        }
+
         if parts.is_empty() {
             // If nothing to show, use empty string (folder name is always visible)
             String::new()
@@ -274,6 +279,9 @@ pub fn render_folder_item<V: 'static>(
             parts.join(", ")
         }
     };
+
+    // Check if source is unavailable (affects styling)
+    let source_unavailable = !folder.source_available;
 
     let drag_info = DraggedFolder::new(
         index,
@@ -297,6 +305,9 @@ pub fn render_folder_item<V: 'static>(
     let bg_queued = theme.bg_queued;
     let bg_queued_hover = theme.bg_queued_hover;
     let progress_line = theme.progress_line;
+    let bg_warning = theme.bg_warning;
+    let bg_warning_hover = theme.bg_warning_hover;
+    let warning = theme.warning;
 
     // Determine if folder is queued for transcoding (not yet converted)
     let needs_transcoding = matches!(
@@ -329,18 +340,28 @@ pub fn render_folder_item<V: 'static>(
         .flex_col()
         .bg(if is_drop_target {
             accent
+        } else if source_unavailable {
+            bg_warning
         } else if needs_transcoding {
             bg_queued
         } else {
             bg_card
         })
         .border_1()
-        .border_color(if is_drop_target { accent } else { border_color })
+        .border_color(if is_drop_target {
+            accent
+        } else if source_unavailable {
+            warning
+        } else {
+            border_color
+        })
         .rounded_md()
         .overflow_hidden() // Clip progress line to rounded corners
         .cursor_grab()
         .hover(|s| {
-            s.bg(if needs_transcoding {
+            s.bg(if source_unavailable {
+                bg_warning_hover
+            } else if needs_transcoding {
                 bg_queued_hover
             } else {
                 bg_hover

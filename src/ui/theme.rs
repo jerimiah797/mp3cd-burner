@@ -31,6 +31,12 @@ pub struct Theme {
     pub bg_queued_hover: Hsla,
     /// Progress line color (brighter than queued background)
     pub progress_line: Hsla,
+    /// Warning/caution color (amber/orange)
+    pub warning: Hsla,
+    /// Background for folders with warnings (source unavailable)
+    pub bg_warning: Hsla,
+    /// Hover background for folders with warnings
+    pub bg_warning_hover: Hsla,
 }
 
 impl Theme {
@@ -50,6 +56,9 @@ impl Theme {
             bg_queued: rgb(0x3a2525).into(),       // Dark red tint
             bg_queued_hover: rgb(0x452a2a).into(), // Slightly lighter
             progress_line: rgb(0x6b3a3a).into(),   // Brighter red for progress
+            warning: rgb(0xf59e0b).into(),         // Amber
+            bg_warning: rgb(0x3a3525).into(),      // Dark amber tint
+            bg_warning_hover: rgb(0x453a2a).into(), // Slightly lighter
         }
     }
 
@@ -69,6 +78,9 @@ impl Theme {
             bg_queued: rgb(0xfce8e8).into(), // Light pink/red tint
             bg_queued_hover: rgb(0xf8d4d4).into(), // Slightly darker on hover
             progress_line: rgb(0xe57373).into(), // Brighter red for progress
+            warning: rgb(0xf59e0b).into(),       // Amber
+            bg_warning: rgb(0xfef3cd).into(),    // Light amber tint
+            bg_warning_hover: rgb(0xfde68a).into(), // Slightly darker on hover
         }
     }
 

@@ -91,6 +91,8 @@ pub struct FolderList {
     /// Flag to track when a bitrate recalculation is pending (waiting for encoder to re-encode)
     /// This prevents ISO generation until the recalculation is complete
     pub(crate) bitrate_recalc_pending: bool,
+    /// Pending error message to show to user (e.g., failed folder loads)
+    pub(crate) pending_error_message: Option<(String, String)>, // (title, message)
 }
 
 /// Action to take after volume label dialog closes
@@ -134,6 +136,7 @@ impl FolderList {
             manual_bitrate_override: None,
             pending_bitrate_rx: None,
             bitrate_recalc_pending: false,
+            pending_error_message: None,
         }
     }
 
@@ -170,6 +173,7 @@ impl FolderList {
             manual_bitrate_override: None,
             pending_bitrate_rx: None,
             bitrate_recalc_pending: false,
+            pending_error_message: None,
         }
     }
 }

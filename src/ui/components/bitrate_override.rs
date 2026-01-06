@@ -25,15 +25,23 @@ pub struct BitrateOverrideDialog {
     focus_handle: FocusHandle,
     /// Callback when Apply is pressed (sends new bitrate)
     on_confirm: Option<Box<dyn Fn(u32) + 'static>>,
+    /// Warning message (e.g., about folders with unavailable source)
+    warning_message: Option<String>,
 }
 
 impl BitrateOverrideDialog {
-    pub fn new(cx: &mut Context<Self>, current_bitrate: u32, calculated_bitrate: u32) -> Self {
+    pub fn new(
+        cx: &mut Context<Self>,
+        current_bitrate: u32,
+        calculated_bitrate: u32,
+        warning_message: Option<String>,
+    ) -> Self {
         Self {
             text: current_bitrate.to_string(),
             calculated_bitrate,
             focus_handle: cx.focus_handle(),
             on_confirm: None,
+            warning_message,
         }
     }
 
@@ -50,12 +58,34 @@ impl BitrateOverrideDialog {
     where
         F: Fn(u32) + 'static,
     {
-        let bounds = Bounds::centered(None, size(px(320.), px(200.)), cx);
+        Self::open_with_warning(cx, current_bitrate, calculated_bitrate, None, on_confirm)
+    }
+
+    /// Open the Bitrate Override Dialog window with an optional warning
+    ///
+    /// Use this when there are folders with unavailable source that can't be re-encoded.
+    pub fn open_with_warning<F>(
+        cx: &mut gpui::App,
+        current_bitrate: u32,
+        calculated_bitrate: u32,
+        warning_message: Option<String>,
+        on_confirm: F,
+    ) -> gpui::WindowHandle<Self>
+    where
+        F: Fn(u32) + 'static,
+    {
+        // Adjust height if there's a warning
+        let height = if warning_message.is_some() {
+            px(250.)
+        } else {
+            px(200.)
+        };
+        let bounds = Bounds::centered(None, size(px(320.), height), cx);
 
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(320.), px(200.))),
+                window_min_size: Some(size(px(320.), height)),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("Override Bitrate".into()),
                     appears_transparent: false,
@@ -65,8 +95,12 @@ impl BitrateOverrideDialog {
             },
             |_window, cx| {
                 cx.new(|cx| {
-                    let mut dialog =
-                        BitrateOverrideDialog::new(cx, current_bitrate, calculated_bitrate);
+                    let mut dialog = BitrateOverrideDialog::new(
+                        cx,
+                        current_bitrate,
+                        calculated_bitrate,
+                        warning_message,
+                    );
                     dialog.on_confirm = Some(Box::new(on_confirm));
                     dialog
                 })
@@ -160,6 +194,7 @@ impl Render for BitrateOverrideDialog {
         let text_display = self.text.clone();
         let is_valid = self.is_valid();
         let calculated = self.calculated_bitrate;
+        let warning = self.warning_message.clone();
 
         // Focus the dialog on render
         if !self.focus_handle.is_focused(window) {
@@ -178,6 +213,18 @@ impl Render for BitrateOverrideDialog {
             .bg(theme.bg)
             .p_4()
             .gap_3()
+            // Warning message (if any)
+            .when_some(warning, |el, msg| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .p_2()
+                        .bg(theme.bg_warning)
+                        .rounded_md()
+                        .child(format!("⚠️ {}", msg)),
+                )
+            })
             // Calculated bitrate reference
             .child(
                 div()

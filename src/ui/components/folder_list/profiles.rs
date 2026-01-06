@@ -3,7 +3,6 @@
 //! Handles save/load profiles, volume label dialog, and profile import polling.
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{
@@ -134,6 +133,19 @@ impl FolderList {
         })
     }
 
+    /// Check if any folders have missing source files
+    ///
+    /// Returns true if any folder was loaded from a bundle but the original
+    /// source files are not accessible. These folders cannot be re-encoded.
+    pub fn has_source_unavailable_folders(&self) -> bool {
+        self.folders.iter().any(|f| !f.source_available)
+    }
+
+    /// Get count of folders with unavailable source
+    pub fn source_unavailable_count(&self) -> usize {
+        self.folders.iter().filter(|f| !f.source_available).count()
+    }
+
     /// Load a profile and restore its state
     ///
     /// This will:
@@ -167,6 +179,7 @@ impl FolderList {
         self.iso_state = None;
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
+        self.last_calculated_bitrate = None; // Force fresh calculation on load
 
         // Remember the profile path and mark as saved (no unsaved changes after load)
         self.current_profile_path = Some(path.to_path_buf());
@@ -183,18 +196,16 @@ impl FolderList {
 
         // DON'T set bundle_path when loading - new encodes should always go to temp.
         // The bundle is a read-only snapshot until the user explicitly saves.
-        // Existing converted folders already have their output_dir pointing to the
-        // bundle files, which is fine for reading. But new/modified folders go to temp.
+        // Bundle files will be copied to temp during import, so we always clean first.
         if let Some(output_manager) = &mut self.output_manager {
             output_manager.set_bundle_path(None);
         }
 
         // Clear the encoder state and delete converted files
-        // (Don't delete for bundle - we're using the bundle's converted files!)
-        if setup.bundle_path.is_none()
-            && let Some(encoder) = &self.simple_encoder {
-                encoder.clear_all();
-            }
+        // Always clear temp, even for bundles - bundle files get copied to temp anyway
+        if let Some(encoder) = &self.simple_encoder {
+            encoder.clear_all();
+        }
 
         // Store the setup for the polling callback
         self.pending_profile_load = Some(setup.clone());
@@ -210,11 +221,15 @@ impl FolderList {
         // Clone state for background thread
         let state = self.import_state.clone();
         let folder_paths = setup.folder_paths.clone();
+        let folder_states = setup.folder_states.clone();
+        let bundle_path = setup.bundle_path.clone();
 
         // Spawn background thread for scanning
         std::thread::spawn(move || {
             for path in folder_paths {
                 println!("Scanning: {}", path.display());
+                let path_str = path.to_string_lossy().to_string();
+
                 match scan_music_folder(&path) {
                     Ok(folder) => {
                         println!(
@@ -227,8 +242,36 @@ impl FolderList {
                     }
                     Err(e) => {
                         eprintln!("Failed to scan folder {}: {}", path.display(), e);
-                        // Still increment completed so we know when done
-                        state.completed.fetch_add(1, Ordering::SeqCst);
+
+                        // For bundle profiles with saved metadata, create folder from metadata
+                        if bundle_path.is_some()
+                            && let Some(saved) = folder_states.get(&path_str)
+                            && saved.has_display_metadata()
+                        {
+                            println!(
+                                "Creating folder from saved metadata (source unavailable): {}",
+                                path.display()
+                            );
+
+                            // Create a MusicFolder from the saved metadata
+                            let folder = crate::core::create_folder_from_metadata(
+                                saved.folder_id.clone(),
+                                path.clone(),
+                                saved.file_count as u32,
+                                saved.source_size.unwrap_or(0),
+                                saved.total_duration.unwrap_or(0.0),
+                                saved.album_name.clone(),
+                                saved.artist_name.clone(),
+                                saved.year.clone(),
+                                saved.album_art.clone(),
+                                // Will be updated later during conversion status restoration
+                                crate::core::FolderConversionStatus::NotConverted,
+                            );
+                            state.push_folder(folder);
+                        } else {
+                            // Can't recover - record as failed for error reporting
+                            state.push_failed(path.clone());
+                        }
                     }
                 }
             }
@@ -684,35 +727,48 @@ impl FolderList {
                                 // Check if this folder has valid saved state
                                 let folder_path_str = folder.path.to_string_lossy().to_string();
 
-                                if let Some(ref setup) = this.pending_profile_load
-                                    && setup.validation.valid_folders.contains(&folder_path_str) {
-                                        // Restore conversion status from saved state
-                                        if let Some(saved) =
-                                            setup.folder_states.get(&folder_path_str)
-                                        {
-                                            // Resolve output_dir path - for bundles it's relative
-                                            let output_dir =
-                                                if let Some(ref bundle_path) = setup.bundle_path {
-                                                    // Bundle format: resolve relative path
-                                                    bundle_path.join(&saved.output_dir)
-                                                } else {
-                                                    // Legacy format: path is already absolute
-                                                    std::path::PathBuf::from(&saved.output_dir)
-                                                };
+                                // Restore conversion status if:
+                                // 1. Source is available and folder is valid (not modified)
+                                // 2. Source is unavailable (created from metadata) - restore anyway
+                                let should_restore = if let Some(ref setup) = this.pending_profile_load {
+                                    setup.validation.valid_folders.contains(&folder_path_str)
+                                        || !folder.source_available
+                                } else {
+                                    false
+                                };
 
-                                            folder.conversion_status =
-                                                FolderConversionStatus::Converted {
-                                                    output_dir,
-                                                    lossless_bitrate: saved.lossless_bitrate,
-                                                    output_size: saved.output_size,
-                                                    completed_at: 0,
-                                                };
-                                            println!(
-                                                "Restored conversion status for: {}",
-                                                folder_path_str
-                                            );
-                                        }
+                                if should_restore
+                                    && let Some(ref setup) = this.pending_profile_load
+                                    && let Some(saved) = setup.folder_states.get(&folder_path_str)
+                                {
+                                    // Resolve output_dir path - for bundles it's relative
+                                    let output_dir = if let Some(ref bundle_path) = setup.bundle_path {
+                                        // Bundle format: resolve relative path
+                                        bundle_path.join(&saved.output_dir)
+                                    } else {
+                                        // Legacy format: path is already absolute
+                                        std::path::PathBuf::from(&saved.output_dir)
+                                    };
+
+                                    folder.conversion_status = FolderConversionStatus::Converted {
+                                        output_dir,
+                                        lossless_bitrate: saved.lossless_bitrate,
+                                        output_size: saved.output_size,
+                                        completed_at: saved.completed_at.unwrap_or(0),
+                                    };
+
+                                    if folder.source_available {
+                                        println!(
+                                            "Restored conversion status for: {}",
+                                            folder_path_str
+                                        );
+                                    } else {
+                                        println!(
+                                            "Restored conversion status (source unavailable): {}",
+                                            folder_path_str
+                                        );
                                     }
+                                }
 
                                 this.folders.push(folder);
                             }
@@ -738,33 +794,48 @@ impl FolderList {
                             // Check if this folder has valid saved state
                             let folder_path_str = folder.path.to_string_lossy().to_string();
 
-                            if let Some(ref setup) = this.pending_profile_load
-                                && setup.validation.valid_folders.contains(&folder_path_str) {
-                                    // Restore conversion status from saved state
-                                    if let Some(saved) = setup.folder_states.get(&folder_path_str) {
-                                        // Resolve output_dir path - for bundles it's relative
-                                        let output_dir =
-                                            if let Some(ref bundle_path) = setup.bundle_path {
-                                                // Bundle format: resolve relative path
-                                                bundle_path.join(&saved.output_dir)
-                                            } else {
-                                                // Legacy format: path is already absolute
-                                                std::path::PathBuf::from(&saved.output_dir)
-                                            };
+                            // Restore conversion status if:
+                            // 1. Source is available and folder is valid (not modified)
+                            // 2. Source is unavailable (created from metadata) - restore anyway
+                            let should_restore = if let Some(ref setup) = this.pending_profile_load {
+                                setup.validation.valid_folders.contains(&folder_path_str)
+                                    || !folder.source_available
+                            } else {
+                                false
+                            };
 
-                                        folder.conversion_status =
-                                            FolderConversionStatus::Converted {
-                                                output_dir,
-                                                lossless_bitrate: saved.lossless_bitrate,
-                                                output_size: saved.output_size,
-                                                completed_at: 0,
-                                            };
-                                        println!(
-                                            "Restored conversion status for: {}",
-                                            folder_path_str
-                                        );
-                                    }
+                            if should_restore
+                                && let Some(ref setup) = this.pending_profile_load
+                                && let Some(saved) = setup.folder_states.get(&folder_path_str)
+                            {
+                                // Resolve output_dir path - for bundles it's relative
+                                let output_dir = if let Some(ref bundle_path) = setup.bundle_path {
+                                    // Bundle format: resolve relative path
+                                    bundle_path.join(&saved.output_dir)
+                                } else {
+                                    // Legacy format: path is already absolute
+                                    std::path::PathBuf::from(&saved.output_dir)
+                                };
+
+                                folder.conversion_status = FolderConversionStatus::Converted {
+                                    output_dir,
+                                    lossless_bitrate: saved.lossless_bitrate,
+                                    output_size: saved.output_size,
+                                    completed_at: saved.completed_at.unwrap_or(0),
+                                };
+
+                                if folder.source_available {
+                                    println!(
+                                        "Restored conversion status for: {}",
+                                        folder_path_str
+                                    );
+                                } else {
+                                    println!(
+                                        "Restored conversion status (source unavailable): {}",
+                                        folder_path_str
+                                    );
                                 }
+                            }
 
                             this.folders.push(folder);
                         }
@@ -772,12 +843,63 @@ impl FolderList {
                 }
 
                 // Import complete - finalize profile loading
+                let failed_paths = state.get_failed_paths();
                 let _ = this.update(&mut async_cx, |this, _cx| {
                     if let Some(setup) = this.pending_profile_load.take() {
                         println!(
                             "Profile import complete: {} folders loaded",
                             this.folders.len()
                         );
+
+                        // Check for failed folders and prepare error message
+                        if !failed_paths.is_empty() {
+                            // Extract unique volume/path roots
+                            let unique_roots: std::collections::HashSet<String> = failed_paths
+                                .iter()
+                                .filter_map(|p| {
+                                    // Get first two path components (e.g., /Volumes/MediaDrive)
+                                    let components: Vec<_> = p.components().take(3).collect();
+                                    if components.len() >= 3 {
+                                        Some(
+                                            components
+                                                .iter()
+                                                .map(|c| c.as_os_str().to_string_lossy())
+                                                .collect::<Vec<_>>()
+                                                .join("/"),
+                                        )
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+
+                            let message = if unique_roots.len() == 1 {
+                                let root = unique_roots.iter().next().unwrap();
+                                format!(
+                                    "{} folder{} could not be loaded because the source files are not accessible.\n\n\
+                                    Please connect or mount: {}\n\n\
+                                    Then reload the profile to access these folders.",
+                                    failed_paths.len(),
+                                    if failed_paths.len() == 1 { "" } else { "s" },
+                                    root
+                                )
+                            } else {
+                                let roots: Vec<_> = unique_roots.into_iter().collect();
+                                format!(
+                                    "{} folder{} could not be loaded because the source files are not accessible.\n\n\
+                                    Please connect or mount these locations:\n• {}\n\n\
+                                    Then reload the profile to access these folders.",
+                                    failed_paths.len(),
+                                    if failed_paths.len() == 1 { "" } else { "s" },
+                                    roots.join("\n• ")
+                                )
+                            };
+
+                            this.pending_error_message = Some((
+                                "Could Not Load All Folders".to_string(),
+                                message,
+                            ));
+                        }
 
                         // Restore ISO state if valid
                         if let Some(iso_path) = setup.iso_path
@@ -837,9 +959,21 @@ impl FolderList {
                                                     folder.path.display(),
                                                     e
                                                 );
-                                                // Reset to not converted so it gets re-encoded
-                                                folder.conversion_status =
-                                                    FolderConversionStatus::NotConverted;
+                                                // Only reset to NotConverted if source is available
+                                                // for re-encoding. Otherwise this folder is lost.
+                                                if folder.source_available {
+                                                    folder.conversion_status =
+                                                        FolderConversionStatus::NotConverted;
+                                                } else {
+                                                    eprintln!(
+                                                        "WARNING: Folder {} has no source files and bundle copy failed - folder will be removed",
+                                                        folder.path.display()
+                                                    );
+                                                    // Keep as NotConverted - it will be filtered out
+                                                    // since it can't be encoded or burned
+                                                    folder.conversion_status =
+                                                        FolderConversionStatus::NotConverted;
+                                                }
                                             }
                                         }
                                     }
@@ -869,7 +1003,7 @@ impl FolderList {
                             }
                         }
 
-                        // Queue folders needing encoding (those that aren't Converted)
+                        // Queue folders needing encoding (those that aren't Converted AND have source)
                         let folders_needing_encoding: Vec<_> = this
                             .folders
                             .iter()
@@ -877,21 +1011,42 @@ impl FolderList {
                                 !matches!(
                                     f.conversion_status,
                                     FolderConversionStatus::Converted { .. }
-                                )
+                                ) && f.source_available
                             })
                             .cloned()
                             .collect();
 
-                        if !folders_needing_encoding.is_empty() {
-                            let target_bitrate = this.calculated_bitrate();
-                            println!(
-                                "Profile loaded - calculated bitrate: {} kbps",
-                                target_bitrate
-                            );
+                        // Remove folders that can't be encoded or burned
+                        // (no source and no converted files)
+                        let folders_to_remove: Vec<_> = this
+                            .folders
+                            .iter()
+                            .filter(|f| {
+                                !f.source_available
+                                    && !matches!(
+                                        f.conversion_status,
+                                        FolderConversionStatus::Converted { .. }
+                                    )
+                            })
+                            .map(|f| f.path.clone())
+                            .collect();
 
-                            // Update encoder with correct bitrate before queueing folders
+                        if !folders_to_remove.is_empty() {
+                            println!(
+                                "Removing {} folders with no source and no converted files",
+                                folders_to_remove.len()
+                            );
+                            this.folders
+                                .retain(|f| !folders_to_remove.contains(&f.path));
+                        }
+
+                        if !folders_needing_encoding.is_empty() {
+                            // Don't lock in a preliminary bitrate estimate - let the encoder
+                            // calculate the actual optimal bitrate after measuring lossy sizes.
+                            // The preliminary estimate uses conservative margins that may be too tight.
                             if let Some(ref encoder) = this.simple_encoder {
-                                encoder.recalculate_bitrate(target_bitrate);
+                                // Pass 0 to set auto-calculate mode (no manual override)
+                                encoder.recalculate_bitrate(0);
                             }
 
                             // Queue folders needing encoding
@@ -899,8 +1054,10 @@ impl FolderList {
                                 this.queue_folder_for_encoding(&folder);
                             }
 
-                            this.last_folder_change = Some(std::time::Instant::now());
-                            this.last_calculated_bitrate = Some(target_bitrate);
+                            // DON'T set last_folder_change here - we want the encoder to
+                            // auto-calculate bitrate after measuring actual lossy sizes.
+                            // Setting last_folder_change would trigger check_debounced_bitrate_recalculation()
+                            // which would override with the preliminary estimate.
                         } else {
                             // All folders already encoded - restore lossless_bitrate from saved state
                             // Find any folder with a lossless_bitrate and use that
@@ -924,8 +1081,12 @@ impl FolderList {
                         }
                     }
 
-                    // Notify encoder that import is complete (resumes encoding)
+                    // Sync manual bitrate override to encoder (if set in profile)
                     if let Some(ref encoder) = this.simple_encoder {
+                        if let Some(override_bitrate) = this.manual_bitrate_override {
+                            encoder.recalculate_bitrate(override_bitrate);
+                        }
+                        // Notify encoder that import is complete (resumes encoding)
                         encoder.import_complete();
                     }
                 });

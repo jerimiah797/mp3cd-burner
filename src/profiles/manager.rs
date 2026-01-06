@@ -132,7 +132,7 @@ pub fn create_profile(
                 output_dir,
                 lossless_bitrate,
                 output_size,
-                ..
+                completed_at,
             } = &folder.conversion_status
             {
                 // Get source folder mtime
@@ -150,13 +150,27 @@ pub fn create_profile(
                     output_dir.to_string_lossy().to_string()
                 };
 
-                let saved_state = SavedFolderState::new(
+                // Convert completed_at to Option for saving
+                let completed_at_opt = if *completed_at > 0 {
+                    Some(*completed_at)
+                } else {
+                    None
+                };
+
+                let saved_state = SavedFolderState::with_metadata(
                     folder.id.0.clone(),
                     output_dir_str,
                     *lossless_bitrate,
                     *output_size,
                     source_mtime,
                     folder.file_count as usize,
+                    folder.album_name.clone(),
+                    folder.artist_name.clone(),
+                    folder.year.clone(),
+                    Some(folder.total_duration),
+                    folder.album_art.clone(),
+                    Some(folder.total_size),
+                    completed_at_opt,
                 );
                 folder_states.insert(folder.path.to_string_lossy().to_string(), saved_state);
             }

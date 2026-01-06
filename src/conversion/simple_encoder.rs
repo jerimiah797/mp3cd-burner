@@ -235,9 +235,14 @@ impl SimpleEncoderHandle {
         self.restart();
     }
 
-    /// Recalculate bitrate (compatibility - restarts to recalculate)
-    pub fn recalculate_bitrate(&self, _target: u32) {
-        // The simple encoder calculates bitrate fresh on each pass
+    /// Recalculate bitrate with optional manual override
+    pub fn recalculate_bitrate(&self, target: u32) {
+        // Set manual bitrate override (0 means auto-calculate)
+        if target == 0 {
+            *self.state.manual_bitrate.lock().unwrap() = None;
+        } else {
+            *self.state.manual_bitrate.lock().unwrap() = Some(target);
+        }
         self.restart();
     }
 
@@ -497,8 +502,10 @@ fn calculate_optimal_bitrate(lossy_size: u64, lossless_duration: f64) -> u32 {
         return 320;
     }
 
-    let remaining_space = ((CD_CAPACITY as f64 * SAFETY_MARGIN) as u64).saturating_sub(lossy_size);
+    let usable_capacity = (CD_CAPACITY as f64 * SAFETY_MARGIN) as u64;
+    let remaining_space = usable_capacity.saturating_sub(lossy_size);
     let bitrate = ((remaining_space * 8) as f64 / lossless_duration / 1000.0) as u32;
+
     bitrate.clamp(64, 320)
 }
 

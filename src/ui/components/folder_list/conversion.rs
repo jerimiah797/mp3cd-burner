@@ -127,10 +127,24 @@ impl FolderList {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pending_bitrate_rx = Some(rx);
 
-        BitrateOverrideDialog::open(
+        // Check for source-unavailable folders and create warning
+        let warning_message = if self.has_source_unavailable_folders() {
+            let count = self.source_unavailable_count();
+            Some(format!(
+                "{} folder{} with missing source files will keep {} current bitrate and cannot be re-encoded.",
+                count,
+                if count == 1 { "" } else { "s" },
+                if count == 1 { "its" } else { "their" }
+            ))
+        } else {
+            None
+        };
+
+        BitrateOverrideDialog::open_with_warning(
             cx,
             current_bitrate,
             calculated_bitrate,
+            warning_message,
             move |new_bitrate| {
                 let _ = tx.send(new_bitrate);
             },
