@@ -117,6 +117,7 @@ impl SimpleEncoderHandle {
     }
 
     /// Set manual bitrate override
+    #[allow(dead_code)]
     pub fn set_manual_bitrate(&self, bitrate: Option<u32>) {
         *self.state.manual_bitrate.lock().unwrap() = bitrate;
         self.restart();
@@ -145,11 +146,13 @@ impl SimpleEncoderHandle {
     }
 
     /// Get output manager
+    #[allow(dead_code)]
     pub fn get_output_manager(&self) -> Arc<OutputManager> {
         self.output_manager.clone()
     }
 
     /// Update the shared folder list (called by FolderList when folders change)
+    #[allow(dead_code)]
     pub fn update_folders(&self, folders: Vec<MusicFolder>) {
         *self.shared_folders.lock().unwrap() = folders;
     }

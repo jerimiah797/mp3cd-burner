@@ -316,13 +316,13 @@ impl FolderList {
                     let should_continue = this
                         .update(&mut async_cx, |this, cx| {
                             // Poll any encoder events
-                            let had_events = this.poll_encoder_events();
+                            let _had_events = this.poll_encoder_events();
 
                             // Poll for volume label updates from the dialog
-                            let label_updated = this.poll_volume_label();
+                            let _label_updated = this.poll_volume_label();
 
                             // Poll for bitrate override dialog result
-                            let bitrate_updated = this.poll_bitrate_override();
+                            let _bitrate_updated = this.poll_bitrate_override();
 
                             // Check for debounced bitrate recalculation
                             this.check_debounced_bitrate_recalculation();
