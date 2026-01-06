@@ -364,10 +364,13 @@ impl OutputManager {
 
     /// Clean up the session (delete all output)
     pub fn cleanup(&self) -> Result<(), String> {
+        println!("Cleanup requested for session: {} at {:?}", self.session_id, self.session_dir);
         if self.session_dir.exists() {
             fs::remove_dir_all(&self.session_dir)
-                .map_err(|e| format!("Failed to clean up session: {}", e))?;
+                .map_err(|e| format!("Failed to clean up session {}: {}", self.session_id, e))?;
             println!("Cleaned up session: {}", self.session_id);
+        } else {
+            println!("Session directory does not exist, nothing to clean: {}", self.session_id);
         }
         Ok(())
     }

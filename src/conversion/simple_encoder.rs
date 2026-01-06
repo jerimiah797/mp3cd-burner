@@ -11,6 +11,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::audio::{determine_encoding_strategy, EncodingStrategy};
 use crate::core::{AudioFileInfo, FolderId, MusicFolder};
 use super::background::EncoderEvent;
 use super::output_manager::OutputManager;
@@ -167,13 +168,24 @@ impl SimpleEncoderHandle {
 
     /// Clear all state (for New profile)
     pub fn clear(&self) {
+        // First, stop any running encoding processes
+        self.state.request_restart(); // This sets restart flag AND kills running ffmpeg processes
+
+        // Wait for processes to actually terminate
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Update state (but DON'T clear restart flag - let encoding loop see it)
         self.state.set_phase(EncodingPhase::Idle);
-        self.state.clear_restart();
         *self.state.current_folder.lock().unwrap() = None;
         *self.state.current_progress.lock().unwrap() = (0, 0);
         *self.state.manual_bitrate.lock().unwrap() = None;
-        // Also clean up output files
-        let _ = self.output_manager.cleanup();
+        // Reset lossless bitrate so we don't compare against stale value
+        self.state.lossless_bitrate.store(0, Ordering::SeqCst);
+
+        // Clean up output files
+        if let Err(e) = self.output_manager.cleanup() {
+            eprintln!("Warning: Failed to cleanup output files: {}", e);
+        }
     }
 
     /// Get state for UI reading
@@ -231,9 +243,11 @@ impl SimpleEncoderHandle {
 
     /// Clear all state (compatibility - alias for clear())
     pub fn clear_all(&self) {
-        self.clear();
-        // Also clear the shared folders
+        // IMPORTANT: Clear folders FIRST so encoding loop sees empty list
+        // and doesn't restart encoding after we clean up files
         self.shared_folders.lock().unwrap().clear();
+        // Now clear state and delete files
+        self.clear();
     }
 
     /// Import started (compatibility - alias for pause())
@@ -342,7 +356,7 @@ fn encoding_loop(
 
         println!("Starting encoding: {} folders", folders.len());
 
-        // === PHASE 1: Lossy files ===
+        // === PHASE 1: Lossy files (global parallel encoding with smart strategies) ===
         state.set_phase(EncodingPhase::LossyPass);
         let _ = progress_tx.send(EncoderEvent::PhaseTransition {
             phase: EncodingPhase::LossyPass,
@@ -350,94 +364,18 @@ fn encoding_loop(
             optimal_bitrate: 320,
         });
 
-        let mut restart_needed = false;
-        for (_folder_idx, folder) in folders.iter().enumerate() {
-            if state.is_restart_requested() {
-                restart_needed = true;
-                break;
-            }
+        let embed_art = state.embed_album_art.load(Ordering::SeqCst);
+        let was_interrupted = encode_all_lossy_parallel(
+            &folders,
+            320, // Target bitrate (used for strategy decisions)
+            &ffmpeg_path,
+            &output_manager,
+            &state,
+            embed_art,
+            &progress_tx,
+        );
 
-            let lossy_files: Vec<&AudioFileInfo> =
-                folder.audio_files.iter().filter(|f| f.is_lossy).collect();
-
-            if lossy_files.is_empty() {
-                continue;
-            }
-
-            let _ = progress_tx.send(EncoderEvent::FolderStarted {
-                id: folder.id.clone(),
-                files_total: lossy_files.len(),
-            });
-
-            *state.current_folder.lock().unwrap() = Some(folder.id.clone());
-            *state.current_progress.lock().unwrap() = (0, lossy_files.len());
-
-            let output_dir = match output_manager.get_folder_output_dir(&folder.id) {
-                Ok(dir) => dir,
-                Err(e) => {
-                    eprintln!("Failed to get output dir for {:?}: {}", folder.id, e);
-                    continue;
-                }
-            };
-            let embed_art = state.embed_album_art.load(Ordering::SeqCst);
-            let album_art = if embed_art {
-                folder.album_art.clone()
-            } else {
-                None
-            };
-
-            for (file_idx, file) in lossy_files.iter().enumerate() {
-                if state.is_restart_requested() {
-                    restart_needed = true;
-                    break;
-                }
-
-                let output_path = get_output_path(&output_dir, &file.path);
-
-                // Skip if already encoded
-                if output_path.exists() {
-                    *state.current_progress.lock().unwrap() = (file_idx + 1, lossy_files.len());
-                    continue;
-                }
-
-                // Encode at source bitrate
-                let bitrate = file.bitrate;
-                if let Err(e) = transcode_file(
-                    &ffmpeg_path,
-                    &file.path,
-                    &output_path,
-                    bitrate,
-                    album_art.as_ref().map(|s| Path::new(s.as_str())),
-                    &state,
-                ) {
-                    // Don't log if killed due to restart
-                    if !state.is_restart_requested() {
-                        eprintln!("Failed to encode {:?}: {}", file.path, e);
-                    }
-                }
-
-                *state.current_progress.lock().unwrap() = (file_idx + 1, lossy_files.len());
-                let _ = progress_tx.send(EncoderEvent::FolderProgress {
-                    id: folder.id.clone(),
-                    files_completed: file_idx + 1,
-                    files_total: lossy_files.len(),
-                });
-            }
-
-            if restart_needed {
-                break;
-            }
-
-            let output_size = output_manager.get_folder_output_size(&folder.id).unwrap_or(0);
-            let _ = progress_tx.send(EncoderEvent::FolderCompleted {
-                id: folder.id.clone(),
-                output_dir: output_dir.clone(),
-                output_size,
-                lossless_bitrate: None, // Lossy pass, no lossless bitrate
-            });
-        }
-
-        if restart_needed {
+        if was_interrupted {
             println!("Restart requested during lossy pass");
             continue;
         }
@@ -574,91 +512,6 @@ fn delete_lossless_outputs(output_manager: &OutputManager, folders: &[MusicFolde
     }
 }
 
-/// Simple synchronous file transcoding using ffmpeg with PID tracking for instant termination
-fn transcode_file(
-    ffmpeg_path: &Path,
-    input_path: &Path,
-    output_path: &Path,
-    bitrate: u32,
-    album_art_path: Option<&Path>,
-    state: &SimpleEncoderState,
-) -> Result<(), String> {
-    // Create output directory if needed
-    if let Some(parent) = output_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create output dir: {}", e))?;
-        }
-    }
-
-    let bitrate_str = format!("{}k", bitrate);
-
-    let mut cmd = Command::new(ffmpeg_path);
-    cmd.arg("-y") // Overwrite output
-        .arg("-i")
-        .arg(input_path)
-        .arg("-vn") // No video
-        .arg("-codec:a")
-        .arg("libmp3lame")
-        .arg("-b:a")
-        .arg(&bitrate_str)
-        .arg("-map_metadata")
-        .arg("0") // Copy metadata
-        .arg("-id3v2_version")
-        .arg("3");
-
-    // Add album art if provided
-    if let Some(art_path) = album_art_path {
-        if art_path.exists() {
-            cmd.arg("-i")
-                .arg(art_path)
-                .arg("-map")
-                .arg("0:a")
-                .arg("-map")
-                .arg("1:v")
-                .arg("-c:v")
-                .arg("copy")
-                .arg("-metadata:s:v")
-                .arg("title=Album cover")
-                .arg("-metadata:s:v")
-                .arg("comment=Cover (front)");
-        }
-    }
-
-    cmd.arg(output_path);
-
-    // Suppress ffmpeg output
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::piped());
-
-    // Spawn the process so we can track its PID
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
-    let pid = child.id();
-
-    // Register PID for instant termination capability
-    state.register_pid(pid);
-
-    // Wait for completion (or termination via SIGKILL)
-    let status = child.wait().map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
-
-    // Unregister PID
-    state.unregister_pid(pid);
-
-    if status.success() {
-        Ok(())
-    } else {
-        // Check if we were killed (exit code will be non-zero)
-        // Delete partial output file to avoid corruption on re-encode
-        let _ = std::fs::remove_file(output_path);
-
-        if state.is_restart_requested() {
-            Err("Process terminated due to restart".to_string())
-        } else {
-            Err(format!("ffmpeg failed with status: {}", status))
-        }
-    }
-}
-
 /// Calculate optimal worker count based on CPU cores
 fn calculate_worker_count() -> usize {
     let available = std::thread::available_parallelism()
@@ -666,14 +519,6 @@ fn calculate_worker_count() -> usize {
         .unwrap_or(4);
     // Use 75% of cores, clamped between 2 and 8
     ((available as f32 * 0.75).ceil() as usize).clamp(2, 8)
-}
-
-/// Job for parallel encoding (single folder)
-struct EncodeJob {
-    input_path: PathBuf,
-    output_path: PathBuf,
-    bitrate: u32,
-    album_art: Option<String>,
 }
 
 /// Job for global parallel encoding (across all folders)
@@ -687,150 +532,17 @@ struct GlobalEncodeJob {
 
 /// Folder context for global encoding
 struct FolderContext {
-    id: FolderId,
     output_dir: PathBuf,
     total_files: usize,
-    album_art: Option<String>,
 }
 
-/// Encode files in parallel with PID tracking for instant termination
-///
-/// Returns (completed_count, was_interrupted)
-fn encode_files_parallel(
-    files: &[&AudioFileInfo],
-    output_dir: &Path,
-    bitrate: u32,
-    album_art: Option<&str>,
-    ffmpeg_path: &Path,
-    state: &Arc<SimpleEncoderState>,
-    progress_callback: impl Fn(usize) + Send + Sync + 'static,
-) -> (usize, bool) {
-    use std::sync::atomic::AtomicUsize;
-
-    let worker_count = calculate_worker_count();
-    let completed = Arc::new(AtomicUsize::new(0));
-    let total = files.len();
-
-    // Create job queue
-    let jobs: Vec<EncodeJob> = files
-        .iter()
-        .map(|file| EncodeJob {
-            input_path: file.path.clone(),
-            output_path: get_output_path(output_dir, &file.path),
-            bitrate,
-            album_art: album_art.map(|s| s.to_string()),
-        })
-        .collect();
-
-    // Filter to only jobs that need encoding (output doesn't exist)
-    let pending_jobs: Vec<EncodeJob> = jobs
-        .into_iter()
-        .filter(|job| !job.output_path.exists())
-        .collect();
-
-    // Count already-complete files
-    let already_done = total - pending_jobs.len();
-    completed.store(already_done, Ordering::SeqCst);
-
-    if pending_jobs.is_empty() {
-        return (total, false);
-    }
-
-    println!(
-        "Parallel encoding: {} files with {} workers ({} already done)",
-        pending_jobs.len(),
-        worker_count,
-        already_done
-    );
-
-    // Create work channel
-    let (job_tx, job_rx) = std::sync::mpsc::channel::<EncodeJob>();
-    let job_rx = Arc::new(Mutex::new(job_rx));
-
-    // Spawn worker threads
-    let mut handles = Vec::new();
-    let ffmpeg_path = ffmpeg_path.to_path_buf();
-    let progress_callback = Arc::new(progress_callback);
-
-    for worker_id in 0..worker_count {
-        let job_rx = job_rx.clone();
-        let state = state.clone();
-        let completed = completed.clone();
-        let ffmpeg_path = ffmpeg_path.clone();
-        let progress_callback = progress_callback.clone();
-
-        let handle = thread::spawn(move || {
-            loop {
-                // Check for restart before taking a job
-                if state.is_restart_requested() {
-                    break;
-                }
-
-                // Try to get a job
-                let job = {
-                    let rx = job_rx.lock().unwrap();
-                    rx.try_recv().ok()
-                };
-
-                let job = match job {
-                    Some(j) => j,
-                    None => {
-                        // No more jobs, check if channel is disconnected
-                        thread::sleep(Duration::from_millis(10));
-                        let rx = job_rx.lock().unwrap();
-                        match rx.try_recv() {
-                            Ok(j) => j,
-                            Err(std::sync::mpsc::TryRecvError::Empty) => continue,
-                            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                        }
-                    }
-                };
-
-                // Encode the file
-                let result = transcode_file_internal(
-                    &ffmpeg_path,
-                    &job.input_path,
-                    &job.output_path,
-                    job.bitrate,
-                    job.album_art.as_ref().map(|s| Path::new(s.as_str())),
-                    &state,
-                );
-
-                if let Err(e) = result {
-                    if !state.is_restart_requested() {
-                        eprintln!("[Worker {}] Failed: {:?} - {}", worker_id, job.input_path, e);
-                    }
-                }
-
-                // Update progress
-                let count = completed.fetch_add(1, Ordering::SeqCst) + 1;
-                progress_callback(count);
-            }
-        });
-
-        handles.push(handle);
-    }
-
-    // Send all jobs to workers
-    for job in pending_jobs {
-        if state.is_restart_requested() {
-            break;
-        }
-        let _ = job_tx.send(job);
-    }
-
-    // Drop sender to signal workers to finish
-    drop(job_tx);
-
-    // Wait for all workers to complete
-    for handle in handles {
-        let _ = handle.join();
-    }
-
-    let final_count = completed.load(Ordering::SeqCst);
-    let was_interrupted = state.is_restart_requested();
-
-    (final_count, was_interrupted)
+/// Job for lossy encoding with smart strategy (Copy/Transcode)
+struct LossyEncodeJob {
+    folder_id: FolderId,
+    input_path: PathBuf,
+    output_path: PathBuf,
+    strategy: EncodingStrategy,
+    album_art: Option<String>,
 }
 
 /// Encode ALL lossless files from ALL folders in a single parallel pool
@@ -884,10 +596,8 @@ fn encode_all_lossless_parallel(
         folder_contexts.insert(
             folder.id.clone(),
             FolderContext {
-                id: folder.id.clone(),
                 output_dir: output_dir.clone(),
                 total_files: lossless_files.len(),
-                album_art: album_art.clone(),
             },
         );
 
@@ -921,19 +631,27 @@ fn encode_all_lossless_parallel(
             id: folder.id.clone(),
             files_total: lossless_files.len(),
         });
-    }
 
-    if all_jobs.is_empty() {
-        // All files already encoded - send completion events
-        for (folder_id, ctx) in &folder_contexts {
-            let output_size = output_manager.get_folder_output_size(folder_id).unwrap_or(0);
+        // Check if this folder is already complete (all files existed)
+        let completed_count = folder_completed
+            .get(&folder.id)
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(0);
+
+        if completed_count >= lossless_files.len() {
+            // Send completion event immediately for this folder
+            let output_size = output_manager.get_folder_output_size(&folder.id).unwrap_or(0);
             let _ = progress_tx.send(EncoderEvent::FolderCompleted {
-                id: folder_id.clone(),
-                output_dir: ctx.output_dir.clone(),
+                id: folder.id.clone(),
+                output_dir: output_dir.clone(),
                 output_size,
                 lossless_bitrate: Some(bitrate),
             });
         }
+    }
+
+    if all_jobs.is_empty() {
+        // All folders were already complete
         return false;
     }
 
@@ -1075,6 +793,336 @@ fn encode_all_lossless_parallel(
     }
 
     state.is_restart_requested()
+}
+
+/// Encode ALL lossy files from ALL folders in a single parallel pool
+///
+/// Uses smart encoding strategies:
+/// - MP3s near target bitrate: Copy (no re-encoding)
+/// - Other lossy (AAC, OGG): Transcode at source bitrate
+///
+/// Returns true if interrupted by restart
+fn encode_all_lossy_parallel(
+    folders: &[MusicFolder],
+    target_bitrate: u32,
+    ffmpeg_path: &Path,
+    output_manager: &OutputManager,
+    state: &Arc<SimpleEncoderState>,
+    embed_album_art: bool,
+    progress_tx: &mpsc::Sender<EncoderEvent>,
+) -> bool {
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicUsize;
+
+    let worker_count = calculate_worker_count();
+
+    // Build folder contexts and collect all jobs
+    let mut folder_contexts: HashMap<FolderId, FolderContext> = HashMap::new();
+    let mut all_jobs: Vec<LossyEncodeJob> = Vec::new();
+    let mut folder_completed: HashMap<FolderId, Arc<AtomicUsize>> = HashMap::new();
+
+    for folder in folders {
+        let lossy_files: Vec<&AudioFileInfo> =
+            folder.audio_files.iter().filter(|f| f.is_lossy).collect();
+
+        if lossy_files.is_empty() {
+            continue;
+        }
+
+        let output_dir = match output_manager.get_folder_output_dir(&folder.id) {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to get output dir for {:?}: {}", folder.id, e);
+                continue;
+            }
+        };
+
+        let album_art = if embed_album_art {
+            folder.album_art.clone()
+        } else {
+            None
+        };
+
+        // Store folder context
+        folder_contexts.insert(
+            folder.id.clone(),
+            FolderContext {
+                output_dir: output_dir.clone(),
+                total_files: lossy_files.len(),
+            },
+        );
+
+        // Initialize completed counter for this folder
+        folder_completed.insert(folder.id.clone(), Arc::new(AtomicUsize::new(0)));
+
+        // Create jobs for all files in this folder with smart strategies
+        for file in &lossy_files {
+            let output_path = get_output_path(&output_dir, &file.path);
+
+            // Skip already-encoded files
+            if output_path.exists() {
+                folder_completed
+                    .get(&folder.id)
+                    .unwrap()
+                    .fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
+
+            // Determine encoding strategy for this file
+            let strategy = determine_encoding_strategy(
+                &file.codec,
+                file.bitrate,
+                target_bitrate,
+                file.is_lossy,
+                false, // no_lossy_mode - we're not implementing this yet
+                embed_album_art,
+            );
+
+            all_jobs.push(LossyEncodeJob {
+                folder_id: folder.id.clone(),
+                input_path: file.path.clone(),
+                output_path,
+                strategy,
+                album_art: album_art.clone(),
+            });
+        }
+
+        // Send FolderStarted event
+        let _ = progress_tx.send(EncoderEvent::FolderStarted {
+            id: folder.id.clone(),
+            files_total: lossy_files.len(),
+        });
+
+        // Check if this folder is already complete (all files existed)
+        let completed_count = folder_completed
+            .get(&folder.id)
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(0);
+
+        if completed_count >= lossy_files.len() {
+            // Send completion event immediately for this folder
+            let output_size = output_manager.get_folder_output_size(&folder.id).unwrap_or(0);
+            let _ = progress_tx.send(EncoderEvent::FolderCompleted {
+                id: folder.id.clone(),
+                output_dir: output_dir.clone(),
+                output_size,
+                lossless_bitrate: None,
+            });
+        }
+    }
+
+    if all_jobs.is_empty() {
+        // All folders were already complete
+        return false;
+    }
+
+    // Count strategies for logging
+    let copy_count = all_jobs.iter().filter(|j| matches!(j.strategy, EncodingStrategy::Copy | EncodingStrategy::CopyWithoutArt)).count();
+    let transcode_count = all_jobs.len() - copy_count;
+
+    println!(
+        "Global parallel lossy encoding: {} files ({} copy, {} transcode) across {} folders with {} workers",
+        all_jobs.len(),
+        copy_count,
+        transcode_count,
+        folder_contexts.len(),
+        worker_count
+    );
+
+    // Create work channel
+    let (job_tx, job_rx) = std::sync::mpsc::channel::<LossyEncodeJob>();
+    let job_rx = Arc::new(Mutex::new(job_rx));
+
+    // Shared state for tracking folder completion
+    let folder_completed = Arc::new(folder_completed);
+    let folder_contexts = Arc::new(folder_contexts);
+
+    // Track which folders have been marked complete
+    let folders_finished: Arc<Mutex<HashSet<FolderId>>> = Arc::new(Mutex::new(HashSet::new()));
+
+    // Spawn worker threads
+    let mut handles = Vec::new();
+    let ffmpeg_path = ffmpeg_path.to_path_buf();
+
+    for _worker_id in 0..worker_count {
+        let job_rx = job_rx.clone();
+        let state = state.clone();
+        let ffmpeg_path = ffmpeg_path.clone();
+        let folder_completed = folder_completed.clone();
+        let folder_contexts = folder_contexts.clone();
+        let folders_finished = folders_finished.clone();
+        let progress_tx = progress_tx.clone();
+
+        let handle = thread::spawn(move || {
+            loop {
+                if state.is_restart_requested() {
+                    break;
+                }
+
+                // Try to get a job
+                let job = {
+                    let rx = job_rx.lock().unwrap();
+                    rx.try_recv().ok()
+                };
+
+                let job = match job {
+                    Some(j) => j,
+                    None => {
+                        thread::sleep(Duration::from_millis(10));
+                        let rx = job_rx.lock().unwrap();
+                        match rx.try_recv() {
+                            Ok(j) => j,
+                            Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                        }
+                    }
+                };
+
+                let folder_id = job.folder_id.clone();
+
+                // Execute the encoding strategy
+                let result = execute_encoding_strategy(
+                    &ffmpeg_path,
+                    &job.input_path,
+                    &job.output_path,
+                    &job.strategy,
+                    job.album_art.as_ref().map(|s| Path::new(s.as_str())),
+                    &state,
+                );
+
+                if let Err(e) = result {
+                    if !state.is_restart_requested() {
+                        eprintln!("Failed to encode {:?}: {}", job.input_path, e);
+                    }
+                }
+
+                // Update folder progress
+                if let Some(counter) = folder_completed.get(&folder_id) {
+                    let completed = counter.fetch_add(1, Ordering::SeqCst) + 1;
+
+                    if let Some(ctx) = folder_contexts.get(&folder_id) {
+                        // Send progress event
+                        let _ = progress_tx.send(EncoderEvent::FolderProgress {
+                            id: folder_id.clone(),
+                            files_completed: completed,
+                            files_total: ctx.total_files,
+                        });
+
+                        // Check if folder is complete
+                        if completed >= ctx.total_files {
+                            let mut finished = folders_finished.lock().unwrap();
+                            if !finished.contains(&folder_id) {
+                                finished.insert(folder_id.clone());
+
+                                // Calculate output size
+                                let output_size = std::fs::read_dir(&ctx.output_dir)
+                                    .map(|entries| {
+                                        entries
+                                            .filter_map(|e| e.ok())
+                                            .filter_map(|e| e.metadata().ok())
+                                            .map(|m| m.len())
+                                            .sum()
+                                    })
+                                    .unwrap_or(0);
+
+                                let _ = progress_tx.send(EncoderEvent::FolderCompleted {
+                                    id: folder_id.clone(),
+                                    output_dir: ctx.output_dir.clone(),
+                                    output_size,
+                                    lossless_bitrate: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    // Send all jobs to workers
+    for job in all_jobs {
+        if state.is_restart_requested() {
+            break;
+        }
+        let _ = job_tx.send(job);
+    }
+
+    // Drop sender to signal workers to finish
+    drop(job_tx);
+
+    // Wait for all workers to complete
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    state.is_restart_requested()
+}
+
+/// Execute an encoding strategy (Copy, CopyWithoutArt, or Transcode)
+fn execute_encoding_strategy(
+    ffmpeg_path: &Path,
+    input_path: &Path,
+    output_path: &Path,
+    strategy: &EncodingStrategy,
+    album_art_path: Option<&Path>,
+    state: &SimpleEncoderState,
+) -> Result<(), String> {
+    // Create output directory if needed
+    if let Some(parent) = output_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create output dir: {}", e))?;
+        }
+    }
+
+    match strategy {
+        EncodingStrategy::Copy => {
+            // Direct file copy - preserves everything including album art
+            std::fs::copy(input_path, output_path)
+                .map_err(|e| format!("Failed to copy file: {}", e))?;
+            Ok(())
+        }
+        EncodingStrategy::CopyWithoutArt => {
+            // Use ffmpeg to copy audio stream without album art
+            let mut cmd = Command::new(ffmpeg_path);
+            cmd.arg("-y")
+                .arg("-i")
+                .arg(input_path)
+                .arg("-vn") // Strip video/album art
+                .arg("-codec:a")
+                .arg("copy") // Copy audio stream as-is
+                .arg("-map_metadata")
+                .arg("0")
+                .arg(output_path);
+
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::piped());
+
+            let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+            let pid = child.id();
+
+            state.register_pid(pid);
+            let status = child.wait().map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
+            state.unregister_pid(pid);
+
+            if status.success() {
+                Ok(())
+            } else {
+                let _ = std::fs::remove_file(output_path);
+                if state.is_restart_requested() {
+                    Err("Process terminated due to restart".to_string())
+                } else {
+                    Err(format!("ffmpeg copy failed with status: {}", status))
+                }
+            }
+        }
+        EncodingStrategy::ConvertAtSourceBitrate(bitrate) | EncodingStrategy::ConvertAtTargetBitrate(bitrate) => {
+            // Transcode using the internal function
+            transcode_file_internal(ffmpeg_path, input_path, output_path, *bitrate, album_art_path, state)
+        }
+    }
 }
 
 /// Internal transcode function that takes state by reference (for parallel use)
