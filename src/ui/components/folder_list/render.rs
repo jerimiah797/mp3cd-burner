@@ -328,6 +328,23 @@ impl FolderList {
             // We don't need to wait for the response - just showing the dialog
         }
     }
+
+    pub(super) fn show_pending_info_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((title, message)) = self.pending_info_message.take() {
+            let _future = window.prompt(
+                PromptLevel::Info,
+                &title,
+                Some(&message),
+                &["OK"],
+                cx,
+            );
+            // We don't need to wait for the response - just showing the dialog
+        }
+    }
 }
 
 impl Render for FolderList {
@@ -366,6 +383,10 @@ impl Render for FolderList {
                 focus_handle.focus(window);
             }
         }
+
+        // Show any pending dialogs
+        self.show_pending_error_dialog(window, cx);
+        self.show_pending_info_dialog(window, cx);
 
         // Check for files opened via Finder (double-click on .mp3cd files)
         self.poll_pending_open_files(cx);

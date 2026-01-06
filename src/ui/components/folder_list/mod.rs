@@ -93,6 +93,8 @@ pub struct FolderList {
     pub(crate) bitrate_recalc_pending: bool,
     /// Pending error message to show to user (e.g., failed folder loads)
     pub(crate) pending_error_message: Option<(String, String)>, // (title, message)
+    /// Pending info message to show to user (e.g., bundle loaded without source)
+    pub(crate) pending_info_message: Option<(String, String)>, // (title, message)
 }
 
 /// Action to take after volume label dialog closes
@@ -137,6 +139,7 @@ impl FolderList {
             pending_bitrate_rx: None,
             bitrate_recalc_pending: false,
             pending_error_message: None,
+            pending_info_message: None,
         }
     }
 
@@ -174,6 +177,7 @@ impl FolderList {
             pending_bitrate_rx: None,
             bitrate_recalc_pending: false,
             pending_error_message: None,
+            pending_info_message: None,
         }
     }
 }

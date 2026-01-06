@@ -1081,6 +1081,37 @@ impl FolderList {
                         }
                     }
 
+                    // Check if we have folders loaded from bundle without source
+                    let source_unavailable_count = this
+                        .folders
+                        .iter()
+                        .filter(|f| {
+                            !f.source_available
+                                && matches!(
+                                    f.conversion_status,
+                                    FolderConversionStatus::Converted { .. }
+                                )
+                        })
+                        .count();
+
+                    if source_unavailable_count > 0 {
+                        let folder_word = if source_unavailable_count == 1 {
+                            "folder"
+                        } else {
+                            "folders"
+                        };
+                        this.pending_info_message = Some((
+                            "Source Files Not Available".to_string(),
+                            format!(
+                                "{} {} loaded from saved converted files.\n\n\
+                                You can still burn a CD, but cannot re-encode at a different bitrate \
+                                without reconnecting the source volume.",
+                                source_unavailable_count,
+                                folder_word
+                            ),
+                        ));
+                    }
+
                     // Sync manual bitrate override to encoder (if set in profile)
                     if let Some(ref encoder) = this.simple_encoder {
                         if let Some(override_bitrate) = this.manual_bitrate_override {
