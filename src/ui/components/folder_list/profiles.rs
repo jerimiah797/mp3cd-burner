@@ -753,37 +753,23 @@ impl FolderList {
                                 // Check if this folder has valid saved state
                                 let folder_path_str = folder.path.to_string_lossy().to_string();
 
-                                // Restore conversion status if:
+                                // Restore conversion status only if:
                                 // 1. Source is available and folder is valid (not modified)
                                 // 2. Source is unavailable (created from metadata) - restore anyway
-                                let should_restore = if let Some(ref setup) = this.pending_profile_load {
+                                let should_restore_conversion = if let Some(ref setup) = this.pending_profile_load {
                                     setup.validation.valid_folders.contains(&folder_path_str)
                                         || !folder.source_available
                                 } else {
                                     false
                                 };
 
-                                if should_restore
-                                    && let Some(ref setup) = this.pending_profile_load
+                                // Always restore folder preferences (exclusions, track order)
+                                // regardless of whether conversion status can be restored
+                                if let Some(ref setup) = this.pending_profile_load
                                     && let Some(saved) = setup.folder_states.get(&folder_path_str)
                                 {
-                                    // Resolve output_dir path - for bundles it's relative
-                                    let output_dir = if let Some(ref bundle_path) = setup.bundle_path {
-                                        // Bundle format: resolve relative path
-                                        bundle_path.join(&saved.output_dir)
-                                    } else {
-                                        // Legacy format: path is already absolute
-                                        std::path::PathBuf::from(&saved.output_dir)
-                                    };
-
-                                    folder.conversion_status = FolderConversionStatus::Converted {
-                                        output_dir,
-                                        lossless_bitrate: saved.lossless_bitrate,
-                                        output_size: saved.output_size,
-                                        completed_at: saved.completed_at.unwrap_or(0),
-                                    };
-
                                     // Restore folder kind (exclusions and track order)
+                                    // These are user preferences and should always be restored
                                     match &saved.kind {
                                         SavedFolderKind::Album {
                                             excluded_tracks,
@@ -794,6 +780,12 @@ impl FolderList {
                                                 .map(|p| PathBuf::from(p))
                                                 .collect();
                                             folder.track_order = track_order.clone();
+                                            if track_order.is_some() {
+                                                println!(
+                                                    "Restored track order for: {}",
+                                                    folder_path_str
+                                                );
+                                            }
                                         }
                                         SavedFolderKind::Mixtape { name, .. } => {
                                             folder.kind =
@@ -801,16 +793,35 @@ impl FolderList {
                                         }
                                     }
 
-                                    if folder.source_available {
-                                        println!(
-                                            "Restored conversion status for: {}",
-                                            folder_path_str
-                                        );
-                                    } else {
-                                        println!(
-                                            "Restored conversion status (source unavailable): {}",
-                                            folder_path_str
-                                        );
+                                    // Restore conversion status if valid
+                                    if should_restore_conversion {
+                                        // Resolve output_dir path - for bundles it's relative
+                                        let output_dir = if let Some(ref bundle_path) = setup.bundle_path {
+                                            // Bundle format: resolve relative path
+                                            bundle_path.join(&saved.output_dir)
+                                        } else {
+                                            // Legacy format: path is already absolute
+                                            std::path::PathBuf::from(&saved.output_dir)
+                                        };
+
+                                        folder.conversion_status = FolderConversionStatus::Converted {
+                                            output_dir,
+                                            lossless_bitrate: saved.lossless_bitrate,
+                                            output_size: saved.output_size,
+                                            completed_at: saved.completed_at.unwrap_or(0),
+                                        };
+
+                                        if folder.source_available {
+                                            println!(
+                                                "Restored conversion status for: {}",
+                                                folder_path_str
+                                            );
+                                        } else {
+                                            println!(
+                                                "Restored conversion status (source unavailable): {}",
+                                                folder_path_str
+                                            );
+                                        }
                                     }
                                 }
 
