@@ -357,14 +357,19 @@ impl FolderList {
         let tracks: Vec<TrackEntry> = folder
             .audio_files
             .iter()
-            .map(|f| TrackEntry {
-                file_info: f.clone(),
-                album_art: if is_mixtape {
-                    crate::audio::get_album_art(&f.path)
-                } else {
-                    folder.album_art.clone()
-                },
-                included: !folder.excluded_tracks.contains(&f.path),
+            .map(|f| {
+                let track_meta = crate::audio::get_track_metadata(&f.path);
+                TrackEntry {
+                    file_info: f.clone(),
+                    album_art: if is_mixtape {
+                        crate::audio::get_album_art(&f.path)
+                    } else {
+                        folder.album_art.clone()
+                    },
+                    included: !folder.excluded_tracks.contains(&f.path),
+                    title: track_meta.title,
+                    artist: track_meta.artist,
+                }
             })
             .collect();
 

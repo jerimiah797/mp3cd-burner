@@ -208,6 +208,13 @@ pub struct AlbumMetadata {
     pub year: Option<String>,
 }
 
+/// Track metadata extracted from audio files
+#[derive(Debug, Clone, Default)]
+pub struct TrackMetadata {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+}
+
 /// Extract album metadata (album name, artist, year) from an audio file
 pub fn get_album_metadata(path: &Path) -> AlbumMetadata {
     let mut metadata = AlbumMetadata::default();
@@ -273,6 +280,63 @@ pub fn get_album_metadata(path: &Path) -> AlbumMetadata {
         && let Some(current) = metadata_rev.current() {
             extract_tags(&mut metadata, current.tags());
         }
+
+    // Also check format metadata (some formats store tags here)
+    if let Some(current) = probed.format.metadata().current() {
+        extract_tags(&mut metadata, current.tags());
+    }
+
+    metadata
+}
+
+/// Extract track metadata (title, artist) from an audio file
+pub fn get_track_metadata(path: &Path) -> TrackMetadata {
+    let mut metadata = TrackMetadata::default();
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return metadata,
+    };
+
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension() {
+        hint.with_extension(&ext.to_string_lossy());
+    }
+
+    let format_opts = FormatOptions::default();
+    let metadata_opts = MetadataOptions::default();
+
+    let mut probed =
+        match symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts) {
+            Ok(p) => p,
+            Err(_) => return metadata,
+        };
+
+    // Helper to extract tags from a metadata revision
+    let extract_tags = |metadata: &mut TrackMetadata, tags: &[symphonia::core::meta::Tag]| {
+        for tag in tags {
+            match tag.std_key {
+                Some(StandardTagKey::TrackTitle) => {
+                    metadata.title = Some(tag.value.to_string());
+                }
+                Some(StandardTagKey::Artist) => {
+                    if metadata.artist.is_none() {
+                        metadata.artist = Some(tag.value.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // Check container metadata first
+    if let Some(metadata_rev) = probed.metadata.get()
+        && let Some(current) = metadata_rev.current()
+    {
+        extract_tags(&mut metadata, current.tags());
+    }
 
     // Also check format metadata (some formats store tags here)
     if let Some(current) = probed.format.metadata().current() {

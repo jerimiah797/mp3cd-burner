@@ -6,7 +6,7 @@ use gpui::{
 };
 use std::path::{Path, PathBuf};
 
-use crate::core::{FolderConversionStatus, FolderKind, MusicFolder, format_size};
+use crate::core::{FolderConversionStatus, FolderKind, MusicFolder, format_size, get_mixtape_default_art};
 use crate::ui::Theme;
 
 /// Data carried during a drag operation for internal reordering
@@ -22,6 +22,8 @@ pub struct DraggedFolder {
     pub file_count: u32,
     /// Total size of files
     pub total_size: u64,
+    /// Whether this is a mixtape folder
+    pub is_mixtape: bool,
     /// Current drag position (for rendering the drag preview)
     position: Point<Pixels>,
 }
@@ -33,6 +35,7 @@ impl DraggedFolder {
         album_art: Option<String>,
         file_count: u32,
         total_size: u64,
+        is_mixtape: bool,
     ) -> Self {
         Self {
             index,
@@ -40,6 +43,7 @@ impl DraggedFolder {
             album_art,
             file_count,
             total_size,
+            is_mixtape,
             position: Point::default(),
         }
     }
@@ -107,7 +111,18 @@ impl Render for DraggedFolder {
                                         .object_fit(gpui::ObjectFit::Cover),
                                 )
                             })
-                            .when(self.album_art.is_none(), |el| {
+                            .when(self.album_art.is_none() && self.is_mixtape, |el| {
+                                if let Some(mixtape_art) = get_mixtape_default_art() {
+                                    el.child(
+                                        img(mixtape_art.as_path())
+                                            .size_full()
+                                            .object_fit(gpui::ObjectFit::Cover),
+                                    )
+                                } else {
+                                    el.child(div().text_xl().child("🎵"))
+                                }
+                            })
+                            .when(self.album_art.is_none() && !self.is_mixtape, |el| {
                                 el.child(div().text_xl().child("📁"))
                             }),
                     )
@@ -317,6 +332,7 @@ pub fn render_folder_item<V: 'static>(
         folder.album_art.clone(),
         folder.file_count,
         folder.total_size,
+        is_mixtape,
     );
     let album_art_path = folder.album_art.clone();
 
@@ -433,7 +449,15 @@ pub fn render_folder_item<V: 'static>(
                             )
                         })
                         .when(folder.album_art.is_none() && is_mixtape, |el| {
-                            el.child(div().text_xl().child("🎵"))
+                            if let Some(mixtape_art) = get_mixtape_default_art() {
+                                el.child(
+                                    img(mixtape_art.as_path())
+                                        .size_full()
+                                        .object_fit(gpui::ObjectFit::Cover),
+                                )
+                            } else {
+                                el.child(div().text_xl().child("🎵"))
+                            }
                         })
                         .when(folder.album_art.is_none() && !is_mixtape, |el| {
                             el.child(div().text_xl().child("📁"))
@@ -504,18 +528,19 @@ mod tests {
     #[test]
     fn test_dragged_folder_creation() {
         let path = PathBuf::from("/Users/test/Music/Album");
-        let dragged = DraggedFolder::new(0, path.clone(), None, 10, 50_000_000);
+        let dragged = DraggedFolder::new(0, path.clone(), None, 10, 50_000_000, false);
 
         assert_eq!(dragged.index, 0);
         assert_eq!(dragged.path, path);
         assert_eq!(dragged.file_count, 10);
         assert_eq!(dragged.total_size, 50_000_000);
+        assert!(!dragged.is_mixtape);
     }
 
     #[test]
     fn test_dragged_folder_with_position() {
         let path = PathBuf::from("/Users/test/Music/Album");
-        let dragged = DraggedFolder::new(0, path, Some("/art.jpg".to_string()), 5, 25_000_000)
+        let dragged = DraggedFolder::new(0, path, Some("/art.jpg".to_string()), 5, 25_000_000, true)
             .with_position(Point {
                 x: px(100.),
                 y: px(200.),
@@ -523,5 +548,6 @@ mod tests {
 
         assert_eq!(dragged.position.x, px(100.));
         assert_eq!(dragged.position.y, px(200.));
+        assert!(dragged.is_mixtape);
     }
 }

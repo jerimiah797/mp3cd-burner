@@ -12,7 +12,7 @@ use gpui::{
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use crate::audio::{get_album_art, get_audio_metadata, is_audio_file};
+use crate::audio::{get_album_art, get_audio_metadata, get_track_metadata, is_audio_file};
 use crate::core::{AudioFileInfo, FolderId, FolderKind, format_duration};
 use crate::ui::Theme;
 
@@ -25,6 +25,10 @@ pub struct TrackEntry {
     pub album_art: Option<String>,
     /// Whether this track is included (for albums - excluded tracks are dimmed)
     pub included: bool,
+    /// Track title from ID3 tags
+    pub title: Option<String>,
+    /// Artist name from ID3 tags
+    pub artist: Option<String>,
 }
 
 /// Data carried during a drag operation for track reordering
@@ -233,13 +237,31 @@ impl TrackEditorWindow {
     }
 
     /// Get the display name for a track
+    /// Shows "Title / Artist" if metadata is available, otherwise falls back to filename
     fn track_display_name(&self, track: &TrackEntry) -> String {
-        track
-            .file_info
-            .path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Unknown".to_string())
+        match (&track.title, &track.artist) {
+            (Some(title), Some(artist)) => format!("{} / {}", title, artist),
+            (Some(title), None) => title.clone(),
+            (None, Some(artist)) => {
+                // Have artist but no title - show filename / artist
+                let filename = track
+                    .file_info
+                    .path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                format!("{} / {}", filename, artist)
+            }
+            (None, None) => {
+                // No metadata - fall back to filename
+                track
+                    .file_info
+                    .path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Unknown".to_string())
+            }
+        }
     }
 
     /// Handle key press
@@ -383,6 +405,7 @@ impl TrackEditorWindow {
         if let Ok((duration, bitrate, codec, is_lossy)) = get_audio_metadata(path) {
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             let album_art = get_album_art(path);
+            let track_meta = get_track_metadata(path);
 
             let file_info = AudioFileInfo {
                 path: path.to_path_buf(),
@@ -397,6 +420,8 @@ impl TrackEditorWindow {
                 file_info,
                 album_art,
                 included: true,
+                title: track_meta.title,
+                artist: track_meta.artist,
             });
         }
     }
