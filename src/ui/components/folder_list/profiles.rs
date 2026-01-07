@@ -98,6 +98,14 @@ impl FolderList {
                     .collect();
 
                 if !converted_folder_ids.is_empty() && !output_manager.is_bundle_mode() {
+                    // If path exists as a file (old metadata-only profile), remove it first
+                    // so we can create a bundle directory in its place
+                    if path.is_file() {
+                        std::fs::remove_file(path)
+                            .map_err(|e| format!("Failed to remove existing profile file: {}", e))?;
+                        println!("Removed existing metadata-only profile to create bundle");
+                    }
+
                     // Copy converted files from temp to bundle
                     output_manager.copy_to_bundle(path, &converted_folder_ids)?;
                 }

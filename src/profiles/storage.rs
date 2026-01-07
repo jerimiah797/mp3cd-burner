@@ -41,6 +41,14 @@ pub fn save_profile(profile: &BurnProfile, path: &Path) -> Result<(), String> {
     let is_bundle_path = path.extension().is_some_and(|ext| ext == "mp3cd");
 
     if is_bundle_path && profile.version.starts_with("2.") {
+        // If path exists as a file (old metadata-only profile), remove it first
+        // so we can create a bundle directory in its place
+        if path.is_file() {
+            fs::remove_file(path)
+                .map_err(|e| format!("Failed to remove existing profile file: {}", e))?;
+            println!("Removed existing metadata-only profile to create bundle");
+        }
+
         // Create bundle directory structure
         fs::create_dir_all(path)
             .map_err(|e| format!("Failed to create bundle directory: {}", e))?;

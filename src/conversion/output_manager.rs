@@ -214,6 +214,14 @@ impl OutputManager {
         folder_ids: &[FolderId],
     ) -> Result<(), String> {
         let converted_dir = bundle_path.join("converted");
+
+        // Clean up existing converted directory to ensure fresh copy
+        if converted_dir.exists() {
+            fs::remove_dir_all(&converted_dir)
+                .map_err(|e| format!("Failed to clean existing converted directory: {}", e))?;
+            println!("Cleaned existing converted directory in bundle");
+        }
+
         fs::create_dir_all(&converted_dir)
             .map_err(|e| format!("Failed to create converted directory in bundle: {}", e))?;
 
