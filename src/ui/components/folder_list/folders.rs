@@ -351,12 +351,19 @@ impl FolderList {
         }
 
         // Build track entries from folder data
+        // For albums: share the folder's album art
+        // For mixtapes: extract album art from each individual track
+        let is_mixtape = folder.is_mixtape();
         let tracks: Vec<TrackEntry> = folder
             .audio_files
             .iter()
             .map(|f| TrackEntry {
                 file_info: f.clone(),
-                album_art: folder.album_art.clone(), // Albums share art, mixtapes have per-track art
+                album_art: if is_mixtape {
+                    crate::audio::get_album_art(&f.path)
+                } else {
+                    folder.album_art.clone()
+                },
                 included: !folder.excluded_tracks.contains(&f.path),
             })
             .collect();

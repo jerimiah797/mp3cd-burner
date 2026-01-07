@@ -36,14 +36,17 @@ pub struct DraggedTrack {
     pub name: String,
     /// Current drag position
     position: Point<Pixels>,
+    /// Source window title (to avoid rendering in wrong windows)
+    source_window_title: String,
 }
 
 impl DraggedTrack {
-    pub fn new(index: usize, name: String) -> Self {
+    pub fn new(index: usize, name: String, window_title: String) -> Self {
         Self {
             index,
             name,
             position: Point::default(),
+            source_window_title: window_title,
         }
     }
 
@@ -55,6 +58,12 @@ impl DraggedTrack {
 
 impl Render for DraggedTrack {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Only render in the window that matches our source window title
+        // This prevents the drag preview from appearing in other windows
+        if window.window_title() != self.source_window_title {
+            return div().into_any_element();
+        }
+
         let theme = Theme::from_appearance(window.appearance());
         let viewport = window.viewport_size();
         let width = viewport.width - px(48.);
@@ -85,6 +94,7 @@ impl Render for DraggedTrack {
                             .child(self.name.clone()),
                     ),
             )
+            .into_any_element()
     }
 }
 
@@ -521,6 +531,7 @@ impl TrackEditorWindow {
         track_index: usize,
         track: &TrackEntry,
         theme: &Theme,
+        window_title: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let name = self.track_display_name(track);
@@ -532,7 +543,7 @@ impl TrackEditorWindow {
         let is_mixtape = self.is_mixtape();
         let album_art = track.album_art.clone();
 
-        let drag_info = DraggedTrack::new(display_index, name.clone());
+        let drag_info = DraggedTrack::new(display_index, name.clone(), window_title.to_string());
 
         let bg_color = if is_drop_target {
             theme.accent
@@ -694,6 +705,7 @@ impl TrackEditorWindow {
 impl Render for TrackEditorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::from_appearance(window.appearance());
+        let window_title = window.window_title();
         let is_mixtape = self.is_mixtape();
         let name = self.name.clone();
         let editing_name = self.editing_name;
@@ -932,6 +944,7 @@ impl Render for TrackEditorWindow {
                                     track_index,
                                     track,
                                     &theme,
+                                    &window_title,
                                     cx,
                                 )
                                 .into_any_element()
@@ -1010,17 +1023,20 @@ mod tests {
 
     #[test]
     fn test_dragged_track_creation() {
-        let dragged = DraggedTrack::new(0, "Test Track".to_string());
+        let dragged =
+            DraggedTrack::new(0, "Test Track".to_string(), "Mixtape Editor".to_string());
         assert_eq!(dragged.index, 0);
         assert_eq!(dragged.name, "Test Track");
+        assert_eq!(dragged.source_window_title, "Mixtape Editor");
     }
 
     #[test]
     fn test_dragged_track_with_position() {
-        let dragged = DraggedTrack::new(1, "Track".to_string()).with_position(Point {
-            x: px(100.),
-            y: px(200.),
-        });
+        let dragged = DraggedTrack::new(1, "Track".to_string(), "Test Window".to_string())
+            .with_position(Point {
+                x: px(100.),
+                y: px(200.),
+            });
         assert_eq!(dragged.position.x, px(100.));
         assert_eq!(dragged.position.y, px(200.));
     }

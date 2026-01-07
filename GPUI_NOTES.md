@@ -473,6 +473,73 @@ cx.bind_keys([
 
 ---
 
+## Multi-Window Drag Preview Rendering
+
+**The Problem:** When implementing drag-and-drop in a multi-window app, GPUI renders the drag preview in **all windows**, not just the source window. This causes visual artifacts - a "ghost" drag handle appears in other windows at an incorrect position.
+
+**Example Scenario:** A track editor window allows reordering tracks via drag. When dragging, a duplicate drag preview appears in the main window, positioned incorrectly and not following the cursor.
+
+**The Cause:** GPUI's drag system creates a preview entity via the `on_drag` callback:
+```rust
+.on_drag(drag_info, |info: &DraggedTrack, position, _, cx| {
+    cx.new(|_| info.clone().with_position(position))
+})
+```
+
+This preview entity's `Render` implementation is called for each window, causing the preview to appear everywhere.
+
+**The Solution:** Store a window identifier in the drag payload and skip rendering in non-matching windows. Window title works well:
+
+```rust
+#[derive(Clone)]
+pub struct DraggedTrack {
+    pub index: usize,
+    pub name: String,
+    position: Point<Pixels>,
+    source_window_title: String,  // Store source window identifier
+}
+
+impl DraggedTrack {
+    pub fn new(index: usize, name: String, window_title: String) -> Self {
+        Self {
+            index,
+            name,
+            position: Point::default(),
+            source_window_title: window_title,
+        }
+    }
+}
+
+impl Render for DraggedTrack {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Only render in the window that matches our source window title
+        if window.window_title() != self.source_window_title {
+            return div().into_any_element();
+        }
+
+        // ... actual preview rendering
+    }
+}
+```
+
+When creating the drag info, capture the current window title:
+```rust
+let window_title = window.window_title();  // In render() where window is available
+let drag_info = DraggedTrack::new(index, name, window_title);
+```
+
+**Why Window Title?**
+- `window.window_title()` returns the current window's title as a `String`
+- Window titles are semantically distinct (e.g., "Mixtape Editor" vs "MP3 CD Burner")
+- More robust than viewport size (which can match if windows are resized)
+- Simple string comparison in the render path
+
+**Alternative Approaches (Less Robust):**
+1. **Viewport size comparison** - Works but fails if windows are the same size
+2. **Position bounds checking** - Complex and error-prone
+
+---
+
 ## Menu Items Greyed Out Until Focused
 
 **The Problem:** Menu items that dispatch actions to a view (like New, Open, Save) appear greyed out until the user clicks inside the window, even though the window is visible and active.
