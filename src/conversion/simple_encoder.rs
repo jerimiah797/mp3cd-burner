@@ -484,20 +484,15 @@ fn encoding_loop(
 
 /// Get output path for a source file
 ///
-/// If track_number is Some, the output filename will be prefixed with a 2-digit number
-/// (e.g., "01-OriginalName.mp3"). This is used for mixtapes and albums with custom track order.
-fn get_output_path(output_dir: &Path, source_path: &Path, track_number: Option<usize>) -> PathBuf {
+/// Output files are named after the source file stem with .mp3 extension.
+/// Numbered prefixes for track ordering are applied during ISO staging.
+fn get_output_path(output_dir: &Path, source_path: &Path) -> PathBuf {
     let stem = source_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
 
-    let filename = match track_number {
-        Some(n) => format!("{:02}-{}.mp3", n + 1, stem),
-        None => format!("{}.mp3", stem),
-    };
-
-    output_dir.join(filename)
+    output_dir.join(format!("{}.mp3", stem))
 }
 
 /// Measure total size of lossy file outputs
@@ -638,15 +633,10 @@ fn encode_all_lossless_parallel(
         // Initialize completed counter for this folder
         folder_completed.insert(folder.id.clone(), Arc::new(AtomicUsize::new(0)));
 
-        // Determine if we need numbered prefixes:
-        // - Mixtapes: always numbered (user-curated playlist)
-        // - Albums: only if custom track order is set (user reordered)
-        let use_numbered_prefix = folder.is_mixtape() || folder.track_order.is_some();
-
         // Create jobs for all files in this folder
-        for (original_idx, file) in &lossless_files {
-            let track_number = if use_numbered_prefix { Some(*original_idx) } else { None };
-            let output_path = get_output_path(&output_dir, &file.path, track_number);
+        // Note: Numbered prefixes are applied during ISO staging, not here
+        for (_original_idx, file) in &lossless_files {
+            let output_path = get_output_path(&output_dir, &file.path);
 
             // Skip already-encoded files
             if output_path.exists() {
@@ -906,15 +896,10 @@ fn encode_all_lossy_parallel(
         // Initialize completed counter for this folder
         folder_completed.insert(folder.id.clone(), Arc::new(AtomicUsize::new(0)));
 
-        // Determine if we need numbered prefixes:
-        // - Mixtapes: always numbered (user-curated playlist)
-        // - Albums: only if custom track order is set (user reordered)
-        let use_numbered_prefix = folder.is_mixtape() || folder.track_order.is_some();
-
         // Create jobs for all files in this folder with smart strategies
-        for (original_idx, file) in &lossy_files {
-            let track_number = if use_numbered_prefix { Some(*original_idx) } else { None };
-            let output_path = get_output_path(&output_dir, &file.path, track_number);
+        // Note: Numbered prefixes are applied during ISO staging, not here
+        for (_original_idx, file) in &lossy_files {
+            let output_path = get_output_path(&output_dir, &file.path);
 
             // Skip already-encoded files
             if output_path.exists() {

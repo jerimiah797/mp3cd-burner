@@ -132,6 +132,25 @@ impl MusicFolder {
         }
     }
 
+    /// Returns a display name for this folder
+    ///
+    /// For mixtapes: returns the mixtape name
+    /// For albums: returns album_name if available, otherwise folder name
+    pub fn display_name(&self) -> String {
+        match &self.kind {
+            FolderKind::Mixtape { name } => name.clone(),
+            FolderKind::Album => self
+                .album_name
+                .clone()
+                .unwrap_or_else(|| {
+                    self.path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Unknown".to_string())
+                }),
+        }
+    }
+
     /// Sets the mixtape name (only works for mixtape folders)
     pub fn set_mixtape_name(&mut self, new_name: String) {
         if let FolderKind::Mixtape { name } = &mut self.kind {

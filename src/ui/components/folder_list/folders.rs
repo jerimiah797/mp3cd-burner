@@ -437,6 +437,9 @@ impl FolderList {
     }
 
     /// Handle track order change from editor
+    ///
+    /// Track reordering only requires regenerating the ISO staging (which applies
+    /// numbered prefixes). No re-encoding is needed since output files are stable.
     fn handle_track_order_changed(&mut self, folder_id: &FolderId, order: Vec<usize>) {
         // Find index first to avoid borrow conflicts
         let idx = match self.folders.iter().position(|f| &f.id == folder_id) {
@@ -447,20 +450,11 @@ impl FolderList {
         println!("Track order changed for folder: {:?}", order);
         self.folders[idx].set_track_order(order);
 
-        // Delete old output files (they have wrong numbered prefixes)
-        if let Some(ref output_manager) = self.output_manager {
-            let _ = output_manager.delete_folder_output_from_session(folder_id);
-        }
-
-        // Mark folder for re-encoding
-        self.folders[idx].conversion_status = crate::core::FolderConversionStatus::NotConverted;
-        // Invalidate ISO
+        // Invalidate ISO so it gets regenerated with new track order
+        // No need to re-encode - numbered prefixes are applied during ISO staging
         self.iso_state = None;
         self.iso_generation_attempted = false;
         self.has_unsaved_changes = true;
-        // Re-queue for encoding (clone to avoid borrow conflict)
-        let folder_clone = self.folders[idx].clone();
-        self.queue_folder_for_encoding(&folder_clone);
     }
 
     /// Handle track exclusion change from editor

@@ -114,11 +114,16 @@ pub fn create_iso(source_dir: &Path, volume_label: &str) -> Result<IsoResult, St
     }
 }
 
-/// Check if a directory contains any symlinks (at the top level)
+/// Check if a directory contains any symlinks (recursively)
 fn contains_symlinks(dir: &Path) -> bool {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
-            if entry.path().is_symlink() {
+            let path = entry.path();
+            if path.is_symlink() {
+                return true;
+            }
+            // Check subdirectories recursively
+            if path.is_dir() && contains_symlinks(&path) {
                 return true;
             }
         }

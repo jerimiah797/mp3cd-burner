@@ -277,8 +277,9 @@ impl OutputManager {
 
     /// Create ISO staging directory with numbered symlinks
     ///
-    /// This creates a staging directory with numbered folders that symlink
-    /// to the actual output folders. This allows reordering without re-encoding.
+    /// This creates a staging directory with numbered folders containing
+    /// symlinks to the actual output files. Track ordering and numbered prefixes
+    /// are applied here, allowing reordering without re-encoding.
     ///
     /// Note: Staging is always in the temp session directory (not in bundle),
     /// but symlinks point to converted files which may be in a bundle.
@@ -296,12 +297,10 @@ impl OutputManager {
         fs::create_dir_all(&staging_dir)
             .map_err(|e| format!("Failed to create staging directory: {}", e))?;
 
-        // Create numbered symlinks to each folder's output
+        // Create numbered folders with symlinks to individual tracks
         for (index, folder) in folders.iter().enumerate() {
             // Get source directory from folder's conversion status if available,
             // otherwise fall back to session directory.
-            // This handles folders loaded from bundles (which have output_dir set)
-            // as well as newly encoded folders (which are in the session directory).
             let source_dir = match &folder.conversion_status {
                 crate::core::FolderConversionStatus::Converted { output_dir, .. } => {
                     output_dir.clone()
@@ -320,37 +319,70 @@ impl OutputManager {
                 ));
             }
 
-            // Create a numbered folder name with the album name
-            let album_name = folder
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Unknown");
-
-            // Sanitize album name for filesystem
-            let safe_name = sanitize_filename(album_name);
+            // Create a numbered folder name with the album/mixtape name
+            let display_name = folder.display_name();
+            let safe_name = sanitize_filename(&display_name);
             let numbered_name = format!("{:02}-{}", index + 1, safe_name);
-            let symlink_path = staging_dir.join(&numbered_name);
+            let folder_staging_path = staging_dir.join(&numbered_name);
 
-            // Create symlink
-            #[cfg(unix)]
-            {
-                std::os::unix::fs::symlink(&source_dir, &symlink_path).map_err(|e| {
-                    format!(
-                        "Failed to create symlink for {}: {}",
-                        folder.path.display(),
-                        e
-                    )
-                })?;
+            fs::create_dir_all(&folder_staging_path)
+                .map_err(|e| format!("Failed to create staging folder: {}", e))?;
+
+            // Determine if we need numbered prefixes for tracks:
+            // - Mixtapes: always numbered (user-curated playlist)
+            // - Albums: only if custom track order is set (user reordered)
+            let use_numbered_prefix = folder.is_mixtape() || folder.track_order.is_some();
+
+            // Get active tracks in order (respects exclusions and custom order)
+            let active_tracks = folder.active_tracks();
+
+            // Create symlinks for each track with optional numbered prefix
+            for (track_idx, track) in active_tracks.iter().enumerate() {
+                let stem = track
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+
+                // Source file in output directory (encoded without number prefix)
+                let source_file = source_dir.join(format!("{}.mp3", stem));
+
+                // Destination filename with optional numbered prefix
+                let dest_filename = if use_numbered_prefix {
+                    format!("{:02}-{}.mp3", track_idx + 1, stem)
+                } else {
+                    format!("{}.mp3", stem)
+                };
+                let dest_path = folder_staging_path.join(&dest_filename);
+
+                if source_file.exists() {
+                    #[cfg(unix)]
+                    {
+                        std::os::unix::fs::symlink(&source_file, &dest_path).map_err(|e| {
+                            format!("Failed to create symlink for {}: {}", stem, e)
+                        })?;
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        fs::copy(&source_file, &dest_path).map_err(|e| {
+                            format!("Failed to copy file for {}: {}", stem, e)
+                        })?;
+                    }
+                } else {
+                    println!(
+                        "Warning: Source file not found during staging: {}",
+                        source_file.display()
+                    );
+                }
             }
 
-            #[cfg(not(unix))]
-            {
-                // On non-Unix, copy the directory instead
-                copy_dir_recursive(&source_dir, &symlink_path)?;
-            }
-
-            println!("Staged: {} -> {:?}", numbered_name, source_dir);
+            println!(
+                "Staged: {} ({} tracks, numbered: {})",
+                numbered_name,
+                active_tracks.len(),
+                use_numbered_prefix
+            );
         }
 
         Ok(staging_dir)
