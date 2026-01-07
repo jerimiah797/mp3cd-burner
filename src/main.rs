@@ -12,8 +12,8 @@ mod profiles;
 mod ui;
 
 use actions::{
-    About, NewProfile, OpenDisplaySettings, OpenOutputDir, OpenProfile, Quit, SaveProfile,
-    SetVolumeLabel, ToggleEmbedAlbumArt, ToggleSimulateBurn, push_pending_file,
+    About, NewMixtape, NewProfile, OpenDisplaySettings, OpenOutputDir, OpenProfile, Quit,
+    SaveProfile, SetVolumeLabel, ToggleEmbedAlbumArt, ToggleSimulateBurn, push_pending_file,
 };
 use core::{AppSettings, DisplaySettings, WindowState};
 use gpui::{
@@ -70,6 +70,7 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
             name: "File".into(),
             items: vec![
                 MenuItem::action("New", NewProfile),
+                MenuItem::action("New Mixtape", NewMixtape),
                 MenuItem::action("Open Burn Profile...", OpenProfile),
                 MenuItem::separator(),
                 MenuItem::action("Save Burn Profile...", SaveProfile),
@@ -159,6 +160,7 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-n", NewProfile, None),
+            KeyBinding::new("cmd-shift-n", NewMixtape, None),
             KeyBinding::new("cmd-o", OpenProfile, None),
             KeyBinding::new("cmd-s", SaveProfile, None),
         ]);

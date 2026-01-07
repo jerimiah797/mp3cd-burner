@@ -6,7 +6,7 @@ use gpui::{
 };
 use std::path::{Path, PathBuf};
 
-use crate::core::{FolderConversionStatus, MusicFolder, format_size};
+use crate::core::{FolderConversionStatus, FolderKind, MusicFolder, format_size};
 use crate::ui::Theme;
 
 /// Data carried during a drag operation for internal reordering
@@ -161,6 +161,7 @@ pub fn render_folder_item<V: 'static>(
     cx: &mut Context<V>,
     on_drop: impl Fn(&mut V, usize, usize) + 'static + Clone,
     on_remove: impl Fn(&mut V, usize) + 'static + Clone,
+    on_edit: impl Fn(&mut V, usize) + 'static + Clone,
 ) -> impl IntoElement {
     let FolderItemProps {
         index,
@@ -175,34 +176,47 @@ pub fn render_folder_item<V: 'static>(
         show_final_bitrate,
     } = props;
 
-    // Build display name from album metadata, falling back to folder name
+    // Build display name from album metadata, mixtape name, or folder name
     let folder_name = {
-        let raw_folder_name = folder
-            .path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
+        // For mixtapes, use the mixtape name
+        if let FolderKind::Mixtape { ref name } = folder.kind {
+            name.clone()
+        } else {
+            let raw_folder_name = folder
+                .path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
 
-        // Try to build a nice display name from metadata
-        match (&folder.album_name, &folder.year, &folder.artist_name) {
-            // Album (Year) - Artist
-            (Some(album), Some(year), Some(artist)) => {
-                format!("{} ({}) - {}", album, year, artist)
+            // Try to build a nice display name from metadata
+            match (&folder.album_name, &folder.year, &folder.artist_name) {
+                // Album (Year) - Artist
+                (Some(album), Some(year), Some(artist)) => {
+                    format!("{} ({}) - {}", album, year, artist)
+                }
+                // Album (Year)
+                (Some(album), Some(year), None) => {
+                    format!("{} ({})", album, year)
+                }
+                // Album - Artist
+                (Some(album), None, Some(artist)) => {
+                    format!("{} - {}", album, artist)
+                }
+                // Just Album
+                (Some(album), None, None) => album.clone(),
+                // Fall back to folder name
+                _ => raw_folder_name,
             }
-            // Album (Year)
-            (Some(album), Some(year), None) => {
-                format!("{} ({})", album, year)
-            }
-            // Album - Artist
-            (Some(album), None, Some(artist)) => {
-                format!("{} - {}", album, artist)
-            }
-            // Just Album
-            (Some(album), None, None) => album.clone(),
-            // Fall back to folder name
-            _ => raw_folder_name,
         }
     };
+
+    // Check if this is a mixtape (for icon and track count display)
+    let is_mixtape = matches!(folder.kind, FolderKind::Mixtape { .. });
+
+    // Calculate active track count (respects exclusions)
+    let active_track_count = folder.active_tracks().len();
+    let total_track_count = folder.audio_files.len();
+    let has_exclusions = active_track_count < total_track_count;
 
     // Format metadata for display based on display settings
     // Build up parts conditionally, then join them
@@ -232,7 +246,14 @@ pub fn render_folder_item<V: 'static>(
                 ..
             } => {
                 if show_file_count {
-                    parts.push(format!("{} files", folder.file_count));
+                    // Show track count with exclusion info
+                    if is_mixtape {
+                        parts.push(format!("{} tracks", active_track_count));
+                    } else if has_exclusions {
+                        parts.push(format!("{} of {} tracks", active_track_count, total_track_count));
+                    } else {
+                        parts.push(format!("{} files", folder.file_count));
+                    }
                 }
                 if show_original_size {
                     parts.push(format_size(folder.total_size));
@@ -259,7 +280,14 @@ pub fn render_folder_item<V: 'static>(
             }
             _ => {
                 if show_file_count {
-                    parts.push(format!("{} files", folder.file_count));
+                    // Show track count with exclusion info
+                    if is_mixtape {
+                        parts.push(format!("{} tracks", active_track_count));
+                    } else if has_exclusions {
+                        parts.push(format!("{} of {} tracks", active_track_count, total_track_count));
+                    } else {
+                        parts.push(format!("{} files", folder.file_count));
+                    }
                 }
                 if show_original_size {
                     parts.push(format_size(folder.total_size));
@@ -387,7 +415,7 @@ pub fn render_folder_item<V: 'static>(
                 .items_center()
                 .gap_3()
                 .px_3()
-                // Album art or folder icon
+                // Album art or folder/mixtape icon
                 .child(
                     div()
                         .size_12()
@@ -404,7 +432,10 @@ pub fn render_folder_item<V: 'static>(
                                     .object_fit(gpui::ObjectFit::Cover),
                             )
                         })
-                        .when(folder.album_art.is_none(), |el| {
+                        .when(folder.album_art.is_none() && is_mixtape, |el| {
+                            el.child(div().text_xl().child("🎵"))
+                        })
+                        .when(folder.album_art.is_none() && !is_mixtape, |el| {
                             el.child(div().text_xl().child("📁"))
                         }),
                 )
@@ -424,6 +455,20 @@ pub fn render_folder_item<V: 'static>(
                                 .child(folder_name),
                         )
                         .child(div().text_xs().text_color(text_muted).child(file_info)),
+                )
+                // Edit button (pencil icon)
+                .child(
+                    div()
+                        .id(SharedString::from(format!("edit-{}", index)))
+                        .px_2()
+                        .py_1()
+                        .text_color(text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(accent))
+                        .on_click(cx.listener(move |view, _event, _window, _cx| {
+                            on_edit(view, index);
+                        }))
+                        .child("✎"),
                 )
                 // Remove button
                 .child(

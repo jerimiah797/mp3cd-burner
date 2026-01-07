@@ -14,7 +14,7 @@ use crate::core::folder_state::{FolderConversionStatus, FolderId};
 /// Represents metadata about a music folder
 #[derive(Debug, Clone)]
 pub struct MusicFolder {
-    /// Unique identifier for this folder (based on path + mtime)
+    /// Unique identifier for this folder (based on path + mtime, or UUID for mixtapes)
     pub id: FolderId,
     pub path: PathBuf,
     pub file_count: u32,
@@ -34,6 +34,12 @@ pub struct MusicFolder {
     /// Whether the source files are accessible (false if loaded from bundle with missing source)
     /// When false, the folder can still be burned but cannot be re-encoded at a different bitrate.
     pub source_available: bool,
+    /// The kind of folder (Album or Mixtape)
+    pub kind: FolderKind,
+    /// Tracks excluded from the burn (by path)
+    pub excluded_tracks: Vec<PathBuf>,
+    /// Custom track order (indices into audio_files). None means original order.
+    pub track_order: Option<Vec<usize>>,
 }
 
 impl MusicFolder {
@@ -112,6 +118,95 @@ impl MusicFolder {
             format!("{}-{}k", min, max)
         }
     }
+
+    /// Returns true if this folder is a mixtape
+    pub fn is_mixtape(&self) -> bool {
+        matches!(self.kind, FolderKind::Mixtape { .. })
+    }
+
+    /// Returns the mixtape name if this is a mixtape, None otherwise
+    pub fn mixtape_name(&self) -> Option<&str> {
+        match &self.kind {
+            FolderKind::Mixtape { name } => Some(name),
+            FolderKind::Album => None,
+        }
+    }
+
+    /// Sets the mixtape name (only works for mixtape folders)
+    pub fn set_mixtape_name(&mut self, new_name: String) {
+        if let FolderKind::Mixtape { name } = &mut self.kind {
+            *name = new_name;
+        }
+    }
+
+    /// Returns tracks to encode in order (respects track_order and excludes excluded_tracks)
+    pub fn active_tracks(&self) -> Vec<&AudioFileInfo> {
+        let ordered: Vec<&AudioFileInfo> = match &self.track_order {
+            Some(order) => order
+                .iter()
+                .filter_map(|&i| self.audio_files.get(i))
+                .collect(),
+            None => self.audio_files.iter().collect(),
+        };
+        ordered
+            .into_iter()
+            .filter(|f| !self.excluded_tracks.contains(&f.path))
+            .collect()
+    }
+
+    /// Exclude a track from the burn
+    pub fn exclude_track(&mut self, path: &Path) {
+        if !self.excluded_tracks.contains(&path.to_path_buf()) {
+            self.excluded_tracks.push(path.to_path_buf());
+        }
+    }
+
+    /// Re-include a previously excluded track
+    pub fn include_track(&mut self, path: &Path) {
+        self.excluded_tracks.retain(|p| p != path);
+    }
+
+    /// Set a custom track order (indices into audio_files)
+    pub fn set_track_order(&mut self, order: Vec<usize>) {
+        self.track_order = Some(order);
+    }
+
+    /// Reset to original track order
+    pub fn reset_track_order(&mut self) {
+        self.track_order = None;
+    }
+
+    /// Recalculate file_count, total_size, and total_duration from audio_files
+    pub fn recalculate_totals(&mut self) {
+        self.file_count = self.audio_files.len() as u32;
+        self.total_size = self.audio_files.iter().map(|f| f.size).sum();
+        self.total_duration = self.audio_files.iter().map(|f| f.duration).sum();
+    }
+
+    /// Create a new empty mixtape folder
+    pub fn new_mixtape(name: String, audio_files: Vec<AudioFileInfo>) -> Self {
+        let file_count = audio_files.len() as u32;
+        let total_size: u64 = audio_files.iter().map(|f| f.size).sum();
+        let total_duration: f64 = audio_files.iter().map(|f| f.duration).sum();
+
+        Self {
+            id: FolderId::new_mixtape(),
+            path: PathBuf::new(), // Mixtapes don't have a path
+            file_count,
+            total_size,
+            total_duration,
+            album_art: None,
+            album_name: None,
+            artist_name: None,
+            year: None,
+            audio_files,
+            conversion_status: FolderConversionStatus::default(),
+            source_available: true,
+            kind: FolderKind::Mixtape { name },
+            excluded_tracks: Vec::new(),
+            track_order: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +231,9 @@ impl MusicFolder {
             audio_files: Vec::new(),
             conversion_status: FolderConversionStatus::default(),
             source_available: true,
+            kind: FolderKind::Album,
+            excluded_tracks: Vec::new(),
+            track_order: None,
         }
     }
 
@@ -156,6 +254,9 @@ impl MusicFolder {
             audio_files: Vec::new(),
             conversion_status: FolderConversionStatus::default(),
             source_available: true,
+            kind: FolderKind::Album,
+            excluded_tracks: Vec::new(),
+            track_order: None,
         }
     }
 }
@@ -169,6 +270,16 @@ pub struct AudioFileInfo {
     pub size: u64,
     pub codec: String,
     pub is_lossy: bool,
+}
+
+/// The kind of folder - either a scanned album or a user-created mixtape
+#[derive(Debug, Clone, Default)]
+pub enum FolderKind {
+    /// A folder scanned from the filesystem (traditional album)
+    #[default]
+    Album,
+    /// A user-created mixtape/playlist with a custom name
+    Mixtape { name: String },
 }
 
 /// Scan a music folder and get basic metadata
@@ -212,6 +323,9 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
         audio_files,
         conversion_status: FolderConversionStatus::default(),
         source_available: true, // Scanned from source, so it's available
+        kind: FolderKind::Album,
+        excluded_tracks: Vec::new(),
+        track_order: None,
     })
 }
 
@@ -230,6 +344,9 @@ pub fn create_folder_from_metadata(
     year: Option<String>,
     album_art: Option<String>,
     conversion_status: FolderConversionStatus,
+    kind: Option<FolderKind>,
+    excluded_tracks: Option<Vec<PathBuf>>,
+    track_order: Option<Vec<usize>>,
 ) -> MusicFolder {
     MusicFolder {
         id: FolderId(folder_id),
@@ -244,6 +361,9 @@ pub fn create_folder_from_metadata(
         audio_files: Vec::new(), // No source files to scan
         conversion_status,
         source_available: false, // Created from metadata, source not available
+        kind: kind.unwrap_or(FolderKind::Album),
+        excluded_tracks: excluded_tracks.unwrap_or_default(),
+        track_order,
     }
 }
 
@@ -389,6 +509,44 @@ pub fn get_audio_files(path: &Path) -> Result<Vec<AudioFileInfo>, String> {
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     Ok(files)
+}
+
+/// Scan a single audio file and return its metadata
+///
+/// This is used when adding individual files to a mixtape.
+pub fn scan_audio_file(path: &Path) -> Result<AudioFileInfo, String> {
+    if !path.is_file() {
+        return Err(format!("Path is not a file: {}", path.display()));
+    }
+
+    if !is_audio_file(path) {
+        return Err(format!("Not an audio file: {}", path.display()));
+    }
+
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("Failed to get file metadata: {}", e))?;
+
+    let (duration, bitrate, codec, is_lossy) = get_audio_metadata(path)
+        .unwrap_or_else(|_| {
+            // Fallback: estimate based on file size (assume 320kbps MP3)
+            let estimated_duration = (metadata.len() * 8) as f64 / (320.0 * 1000.0);
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("mp3")
+                .to_lowercase();
+            let is_lossy_ext = matches!(ext.as_str(), "mp3" | "aac" | "ogg" | "opus" | "m4a");
+            (estimated_duration, 320, ext, is_lossy_ext)
+        });
+
+    Ok(AudioFileInfo {
+        path: path.to_path_buf(),
+        duration,
+        bitrate,
+        size: metadata.len(),
+        codec,
+        is_lossy,
+    })
 }
 
 /// Calculate the total duration of a list of audio files

@@ -212,10 +212,16 @@ impl SimpleEncoderHandle {
 
     // === Compatibility methods for BackgroundEncoderHandle API ===
 
-    /// Add a folder (compatibility - updates shared folders and restarts)
+    /// Add or update a folder (updates shared folders and restarts)
+    ///
+    /// If a folder with the same ID exists, it is replaced with the new one.
+    /// This allows updating exclusions, track order, etc.
     pub fn add_folder(&self, folder: MusicFolder) {
         let mut guard = self.shared_folders.lock().unwrap();
-        if !guard.iter().any(|f| f.id == folder.id) {
+        // Replace existing folder with same ID, or add new
+        if let Some(existing) = guard.iter_mut().find(|f| f.id == folder.id) {
+            *existing = folder;
+        } else {
             guard.push(folder);
         }
         drop(guard);
@@ -387,9 +393,10 @@ fn encoding_loop(
 
         // === MEASURE & CALCULATE BITRATE ===
         let lossy_size = measure_total_lossy_size(&output_manager, &folders);
+        // Use active_tracks() to respect exclusions and custom order
         let lossless_duration: f64 = folders
             .iter()
-            .flat_map(|f| &f.audio_files)
+            .flat_map(|f| f.active_tracks())
             .filter(|f| !f.is_lossy)
             .map(|f| f.duration)
             .sum();
@@ -419,10 +426,10 @@ fn encoding_loop(
             println!("Bitrate changed {} -> {}, deleting old lossless outputs", old_bitrate, lossless_bitrate);
             delete_lossless_outputs(&output_manager, &folders);
 
-            // Collect folders with lossless files that need re-encoding
+            // Collect folders with active lossless files that need re-encoding
             let reencode_needed: Vec<FolderId> = folders
                 .iter()
-                .filter(|f| f.audio_files.iter().any(|a| !a.is_lossy))
+                .filter(|f| f.active_tracks().iter().any(|a| !a.is_lossy))
                 .map(|f| f.id.clone())
                 .collect();
 
@@ -476,19 +483,28 @@ fn encoding_loop(
 }
 
 /// Get output path for a source file
-fn get_output_path(output_dir: &Path, source_path: &Path) -> PathBuf {
+///
+/// If track_number is Some, the output filename will be prefixed with a 2-digit number
+/// (e.g., "01-OriginalName.mp3"). This is used for mixtapes and albums with custom track order.
+fn get_output_path(output_dir: &Path, source_path: &Path, track_number: Option<usize>) -> PathBuf {
     let stem = source_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
-    output_dir.join(format!("{}.mp3", stem))
+
+    let filename = match track_number {
+        Some(n) => format!("{:02}-{}.mp3", n + 1, stem),
+        None => format!("{}.mp3", stem),
+    };
+
+    output_dir.join(filename)
 }
 
 /// Measure total size of lossy file outputs
 fn measure_total_lossy_size(output_manager: &OutputManager, folders: &[MusicFolder]) -> u64 {
     folders
         .iter()
-        .filter(|f| f.audio_files.iter().any(|af| af.is_lossy))
+        .filter(|f| f.active_tracks().iter().any(|af| af.is_lossy))
         .map(|f| output_manager.get_folder_output_size(&f.id).unwrap_or(0))
         .sum()
 }
@@ -512,8 +528,8 @@ fn calculate_optimal_bitrate(lossy_size: u64, lossless_duration: f64) -> u32 {
 /// Delete lossless-sourced outputs (when bitrate changes)
 fn delete_lossless_outputs(output_manager: &OutputManager, folders: &[MusicFolder]) {
     for folder in folders {
-        // Only delete if folder has lossless files
-        if folder.audio_files.iter().any(|f| !f.is_lossy) {
+        // Only delete if folder has active lossless files (respects exclusions)
+        if folder.active_tracks().iter().any(|f| !f.is_lossy) {
             let _ = output_manager.delete_folder_output_from_session(&folder.id);
         }
     }
@@ -578,8 +594,19 @@ fn encode_all_lossless_parallel(
     let mut folder_completed: HashMap<FolderId, Arc<AtomicUsize>> = HashMap::new();
 
     for folder in folders {
-        let lossless_files: Vec<&AudioFileInfo> =
-            folder.audio_files.iter().filter(|f| !f.is_lossy).collect();
+        // Get all active tracks with their original indices (for correct numbering)
+        let all_tracks: Vec<(usize, &AudioFileInfo)> = folder
+            .active_tracks()
+            .into_iter()
+            .enumerate()
+            .collect();
+
+        // Filter to lossless files, keeping original index
+        let lossless_files: Vec<(usize, &AudioFileInfo)> = all_tracks
+            .iter()
+            .filter(|(_, f)| !f.is_lossy)
+            .cloned()
+            .collect();
 
         if lossless_files.is_empty() {
             continue;
@@ -611,9 +638,15 @@ fn encode_all_lossless_parallel(
         // Initialize completed counter for this folder
         folder_completed.insert(folder.id.clone(), Arc::new(AtomicUsize::new(0)));
 
+        // Determine if we need numbered prefixes:
+        // - Mixtapes: always numbered (user-curated playlist)
+        // - Albums: only if custom track order is set (user reordered)
+        let use_numbered_prefix = folder.is_mixtape() || folder.track_order.is_some();
+
         // Create jobs for all files in this folder
-        for file in &lossless_files {
-            let output_path = get_output_path(&output_dir, &file.path);
+        for (original_idx, file) in &lossless_files {
+            let track_number = if use_numbered_prefix { Some(*original_idx) } else { None };
+            let output_path = get_output_path(&output_dir, &file.path, track_number);
 
             // Skip already-encoded files
             if output_path.exists() {
@@ -829,8 +862,19 @@ fn encode_all_lossy_parallel(
     let mut folder_completed: HashMap<FolderId, Arc<AtomicUsize>> = HashMap::new();
 
     for folder in folders {
-        let lossy_files: Vec<&AudioFileInfo> =
-            folder.audio_files.iter().filter(|f| f.is_lossy).collect();
+        // Get all active tracks with their original indices (for correct numbering)
+        let all_tracks: Vec<(usize, &AudioFileInfo)> = folder
+            .active_tracks()
+            .into_iter()
+            .enumerate()
+            .collect();
+
+        // Filter to lossy files, keeping original index
+        let lossy_files: Vec<(usize, &AudioFileInfo)> = all_tracks
+            .iter()
+            .filter(|(_, f)| f.is_lossy)
+            .cloned()
+            .collect();
 
         if lossy_files.is_empty() {
             continue;
@@ -862,9 +906,15 @@ fn encode_all_lossy_parallel(
         // Initialize completed counter for this folder
         folder_completed.insert(folder.id.clone(), Arc::new(AtomicUsize::new(0)));
 
+        // Determine if we need numbered prefixes:
+        // - Mixtapes: always numbered (user-curated playlist)
+        // - Albums: only if custom track order is set (user reordered)
+        let use_numbered_prefix = folder.is_mixtape() || folder.track_order.is_some();
+
         // Create jobs for all files in this folder with smart strategies
-        for file in &lossy_files {
-            let output_path = get_output_path(&output_dir, &file.path);
+        for (original_idx, file) in &lossy_files {
+            let track_number = if use_numbered_prefix { Some(*original_idx) } else { None };
+            let output_path = get_output_path(&output_dir, &file.path, track_number);
 
             // Skip already-encoded files
             if output_path.exists() {

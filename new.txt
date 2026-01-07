@@ -1,0 +1,50 @@
+ Completed Features
+
+  Track Editor Window
+
+  - New window component (track_editor.rs) for editing tracks in both albums and mixtapes
+  - Albums: View tracks, exclude via checkbox, drag reorder, reset order button
+  - Mixtapes: Edit name, drag reorder, external file drop to add tracks
+  - Edit button (✎) on all folder items to open the editor
+
+  Mixtape Folder Support
+
+  - FolderKind enum (Album vs Mixtape) in MusicFolder
+  - Auto-create mixtape when dropping audio files on main window
+  - "New Mixtape" menu item (File > New Mixtape, Cmd+Shift+N)
+  - Mixtape icon (🎵) and name display in folder list
+  - Track count shows exclusions (e.g., "8 of 10 tracks")
+
+  Encoder Integration
+
+  - Uses active_tracks() which respects exclusions and custom track order
+  - Re-encodes when track order or exclusions change
+
+  Profile Persistence
+
+  - SavedFolderKind stores exclusions/order for albums, name/tracks for mixtapes
+  - Profile save/load properly restores folder kind and settings
+
+  Manual Testing Checklist
+
+  Run cargo run and test:
+
+  1. Track Editor for Albums:
+    - Drop an album folder
+    - Click ✎ to open editor
+    - Exclude tracks via checkbox
+    - Drag to reorder tracks
+    - Click "Reset Order" to restore original order
+    - Verify folder item shows "X of Y tracks"
+  2. Auto-Create Mixtape:
+    - Drag individual audio files onto main window
+    - Verify a "My Mixtape" appears with 🎵 icon
+    - Track editor should open automatically
+  3. New Mixtape Menu:
+    - File > New Mixtape (or Cmd+Shift+N)
+    - Verify empty mixtape created with editor open
+  4. Profile Save/Load:
+    - Make exclusions/reordering on an album
+    - Save profile, reload it
+    - Verify exclusions and order are restored
+

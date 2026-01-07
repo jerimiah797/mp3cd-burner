@@ -8,10 +8,13 @@ use std::path::{Path, PathBuf};
 use super::storage::{
     add_to_recent_profiles, is_bundle, load_profile, save_profile, validate_conversion_state,
 };
-use super::types::{BurnProfile, BurnSettings, ConversionStateValidation, SavedFolderState};
+use super::types::{
+    BurnProfile, BurnSettings, ConversionStateValidation, SavedFolderKind, SavedFolderState,
+    SavedMixtapeTrack,
+};
 use crate::burning::IsoState;
 use crate::conversion::OutputManager;
-use crate::core::{FolderConversionStatus, MusicFolder};
+use crate::core::{FolderConversionStatus, FolderKind, MusicFolder};
 
 /// Setup info for loading a profile asynchronously
 ///
@@ -157,6 +160,34 @@ pub fn create_profile(
                     None
                 };
 
+                // Build SavedFolderKind based on folder type
+                let saved_kind = match &folder.kind {
+                    FolderKind::Album => SavedFolderKind::Album {
+                        excluded_tracks: folder
+                            .excluded_tracks
+                            .iter()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .collect(),
+                        track_order: folder.track_order.clone(),
+                    },
+                    FolderKind::Mixtape { name } => SavedFolderKind::Mixtape {
+                        name: name.clone(),
+                        tracks: folder
+                            .audio_files
+                            .iter()
+                            .map(|f| SavedMixtapeTrack {
+                                source_path: f.path.to_string_lossy().to_string(),
+                                duration: f.duration,
+                                bitrate: f.bitrate,
+                                size: f.size,
+                                codec: f.codec.clone(),
+                                is_lossy: f.is_lossy,
+                                album_art_base64: None, // TODO: per-track album art
+                            })
+                            .collect(),
+                    },
+                };
+
                 let saved_state = SavedFolderState::with_metadata(
                     folder.id.0.clone(),
                     output_dir_str,
@@ -171,6 +202,7 @@ pub fn create_profile(
                     folder.album_art.clone(),
                     Some(folder.total_size),
                     completed_at_opt,
+                    Some(saved_kind),
                 );
                 folder_states.insert(folder.path.to_string_lossy().to_string(), saved_state);
             }

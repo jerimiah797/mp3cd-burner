@@ -23,10 +23,13 @@ pub struct BitrateOverrideDialog {
     calculated_bitrate: u32,
     /// Focus handle for keyboard input
     focus_handle: FocusHandle,
-    /// Callback when Apply is pressed (sends new bitrate)
-    on_confirm: Option<Box<dyn Fn(u32) + 'static>>,
+    /// Callback when Apply/Use Automatic is pressed
+    /// Some(bitrate) = set custom bitrate, None = reset to automatic
+    on_confirm: Option<Box<dyn Fn(Option<u32>) + 'static>>,
     /// Warning message (e.g., about folders with unavailable source)
     warning_message: Option<String>,
+    /// Whether a custom bitrate is currently set (to enable "Use Automatic" button)
+    has_custom_bitrate: bool,
 }
 
 impl BitrateOverrideDialog {
@@ -35,6 +38,7 @@ impl BitrateOverrideDialog {
         current_bitrate: u32,
         calculated_bitrate: u32,
         warning_message: Option<String>,
+        has_custom_bitrate: bool,
     ) -> Self {
         Self {
             text: current_bitrate.to_string(),
@@ -42,23 +46,27 @@ impl BitrateOverrideDialog {
             focus_handle: cx.focus_handle(),
             on_confirm: None,
             warning_message,
+            has_custom_bitrate,
         }
     }
 
     /// Open the Bitrate Override Dialog window
     ///
-    /// The callback will be called with the new bitrate when Apply is pressed.
+    /// The callback will be called with:
+    /// - Some(bitrate) when Apply is pressed
+    /// - None when "Use Automatic" is pressed
     /// Returns the window handle.
     pub fn open<F>(
         cx: &mut gpui::App,
         current_bitrate: u32,
         calculated_bitrate: u32,
+        has_custom_bitrate: bool,
         on_confirm: F,
     ) -> gpui::WindowHandle<Self>
     where
-        F: Fn(u32) + 'static,
+        F: Fn(Option<u32>) + 'static,
     {
-        Self::open_with_warning(cx, current_bitrate, calculated_bitrate, None, on_confirm)
+        Self::open_with_warning(cx, current_bitrate, calculated_bitrate, None, has_custom_bitrate, on_confirm)
     }
 
     /// Open the Bitrate Override Dialog window with an optional warning
@@ -69,14 +77,15 @@ impl BitrateOverrideDialog {
         current_bitrate: u32,
         calculated_bitrate: u32,
         warning_message: Option<String>,
+        has_custom_bitrate: bool,
         on_confirm: F,
     ) -> gpui::WindowHandle<Self>
     where
-        F: Fn(u32) + 'static,
+        F: Fn(Option<u32>) + 'static,
     {
-        // Adjust height if there's a warning
-        let height = if warning_message.is_some() {
-            px(250.)
+        // Adjust height if there's a warning or custom bitrate is set
+        let height = if warning_message.is_some() || has_custom_bitrate {
+            px(260.)
         } else {
             px(200.)
         };
@@ -100,6 +109,7 @@ impl BitrateOverrideDialog {
                         current_bitrate,
                         calculated_bitrate,
                         warning_message,
+                        has_custom_bitrate,
                     );
                     dialog.on_confirm = Some(Box::new(on_confirm));
                     dialog
@@ -178,8 +188,15 @@ impl BitrateOverrideDialog {
         if let Some(bitrate) = self.parse_bitrate()
             && (MIN_BITRATE..=MAX_BITRATE).contains(&bitrate)
                 && let Some(ref on_confirm) = self.on_confirm {
-                    on_confirm(bitrate);
+                    on_confirm(Some(bitrate));
                 }
+        window.remove_window();
+    }
+
+    fn use_automatic(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+        if let Some(ref on_confirm) = self.on_confirm {
+            on_confirm(None);
+        }
         window.remove_window();
     }
 
@@ -274,6 +291,29 @@ impl Render for BitrateOverrideDialog {
                     .text_color(theme.text_muted)
                     .child(format!("Valid range: {}-{} kbps", MIN_BITRATE, MAX_BITRATE)),
             )
+            // "Use Automatic" button (only shown when custom bitrate is set)
+            .when(self.has_custom_bitrate, |el| {
+                el.child(
+                    div()
+                        .id(SharedString::from("use-auto-btn"))
+                        .w_full()
+                        .px_4()
+                        .py_2()
+                        .bg(theme.bg_card)
+                        .text_color(theme.accent)
+                        .text_sm()
+                        .text_center()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme.accent)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.bg_card_hover))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.use_automatic(window, cx);
+                        }))
+                        .child(format!("Use Automatic ({} kbps)", calculated)),
+                )
+            })
             // Buttons
             .child(
                 div()

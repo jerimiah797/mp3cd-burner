@@ -8,9 +8,13 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::core::{ImportState, MusicFolder, find_album_folders, scan_music_folder};
+use crate::audio::is_audio_file;
+use crate::core::{
+    FolderId, ImportState, MusicFolder, find_album_folders, scan_audio_file, scan_music_folder,
+};
+use crate::ui::components::{TrackEditorUpdate, TrackEditorWindow, TrackEntry};
 
-use super::FolderList;
+use super::{FolderList, PendingTrackEditorOpen};
 
 impl FolderList {
     /// Returns the number of folders in the list
@@ -137,6 +141,107 @@ impl FolderList {
             }
     }
 
+    /// Handle external drop from Finder
+    ///
+    /// Separates audio files from directories:
+    /// - Directories are scanned as album folders
+    /// - Audio files are combined into a new mixtape
+    pub fn handle_external_drop(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        // Separate paths into directories and audio files
+        let directories: Vec<PathBuf> = paths.iter()
+            .filter(|p| p.is_dir())
+            .cloned()
+            .collect();
+
+        let audio_files: Vec<PathBuf> = paths.iter()
+            .filter(|p| p.is_file() && is_audio_file(p))
+            .cloned()
+            .collect();
+
+        // Handle directories as album folders
+        if !directories.is_empty() {
+            self.add_external_folders(&directories, cx);
+        }
+
+        // Create mixtape if audio files were dropped
+        if !audio_files.is_empty() {
+            self.create_mixtape_from_files(&audio_files, cx);
+        }
+    }
+
+    /// Create a new mixtape from dropped audio files
+    fn create_mixtape_from_files(&mut self, paths: &[PathBuf], _cx: &mut Context<Self>) {
+        // Scan each audio file
+        let mut audio_files = Vec::new();
+        for path in paths {
+            match scan_audio_file(path) {
+                Ok(info) => {
+                    println!("Scanned audio file: {:?}", path.file_name());
+                    audio_files.push(info);
+                }
+                Err(e) => {
+                    eprintln!("Failed to scan audio file {}: {}", path.display(), e);
+                }
+            }
+        }
+
+        if audio_files.is_empty() {
+            println!("No valid audio files found");
+            return;
+        }
+
+        // Create the mixtape folder
+        let mixtape = MusicFolder::new_mixtape("My Mixtape".to_string(), audio_files);
+        println!(
+            "Created mixtape with {} tracks, {} bytes",
+            mixtape.file_count, mixtape.total_size
+        );
+
+        // Queue for encoding
+        self.queue_folder_for_encoding(&mixtape);
+
+        // Add to folder list
+        self.folders.push(mixtape);
+
+        // Invalidate ISO
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
+        self.iso_has_been_burned = false;
+
+        // Clear manual bitrate override
+        self.manual_bitrate_override = None;
+
+        // Mark unsaved changes
+        self.has_unsaved_changes = true;
+
+        // Record change time
+        self.last_folder_change = Some(std::time::Instant::now());
+
+        // Open track editor for the new mixtape
+        let mixtape_idx = self.folders.len() - 1;
+        self.open_track_editor(mixtape_idx);
+    }
+
+    /// Add a new empty mixtape and open the track editor
+    pub fn add_new_mixtape(&mut self, _cx: &mut Context<Self>) {
+        let mixtape = MusicFolder::new_mixtape("My Mixtape".to_string(), Vec::new());
+        println!("Created new empty mixtape");
+
+        // Add to folder list
+        self.folders.push(mixtape);
+
+        // Invalidate ISO
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
+
+        // Mark unsaved changes
+        self.has_unsaved_changes = true;
+
+        // Open track editor for the new mixtape
+        let mixtape_idx = self.folders.len() - 1;
+        self.open_track_editor(mixtape_idx);
+    }
+
     /// Remove a folder by index
     pub fn remove_folder(&mut self, index: usize) {
         if index < self.folders.len() {
@@ -212,6 +317,250 @@ impl FolderList {
     /// Calculate total duration across all folders (in seconds)
     pub fn total_duration(&self) -> f64 {
         self.folders.iter().map(|f| f.total_duration).sum()
+    }
+
+    /// Open the track editor for a folder at the given index
+    ///
+    /// This opens a new window for editing tracks in the folder.
+    /// For albums: allows excluding tracks and reordering.
+    /// For mixtapes: allows adding, removing, and reordering tracks.
+    pub fn open_track_editor(&mut self, index: usize) {
+        if index >= self.folders.len() {
+            return;
+        }
+
+        // Check if already editing this folder
+        if self.editing_folder_index == Some(index) {
+            println!("Track editor already open for folder {}", index);
+            return;
+        }
+
+        let folder = &self.folders[index];
+        println!(
+            "Opening track editor for folder {}: {} ({} tracks)",
+            index,
+            folder.path.display(),
+            folder.audio_files.len()
+        );
+
+        // Set up the channel if not already created
+        if self.track_editor_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.track_editor_tx = Some(tx);
+            self.track_editor_rx = Some(rx);
+        }
+
+        // Build track entries from folder data
+        let tracks: Vec<TrackEntry> = folder
+            .audio_files
+            .iter()
+            .map(|f| TrackEntry {
+                file_info: f.clone(),
+                album_art: folder.album_art.clone(), // Albums share art, mixtapes have per-track art
+                included: !folder.excluded_tracks.contains(&f.path),
+            })
+            .collect();
+
+        // Get display name
+        let name = match &folder.kind {
+            crate::core::FolderKind::Mixtape { name } => name.clone(),
+            crate::core::FolderKind::Album => folder
+                .album_name
+                .clone()
+                .unwrap_or_else(|| {
+                    folder
+                        .path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Unknown".to_string())
+                }),
+        };
+
+        // Mark as editing
+        self.editing_folder_index = Some(index);
+
+        // Clone what we need before opening window (which requires &mut App)
+        let folder_id = folder.id.clone();
+        let folder_kind = folder.kind.clone();
+        let existing_track_order = folder.track_order.clone();
+        let tx = self.track_editor_tx.as_ref().unwrap().clone();
+
+        // Store the data needed to open the window
+        // We'll open it in the render loop since we need App context
+        self.pending_track_editor_open = Some(PendingTrackEditorOpen {
+            folder_id,
+            folder_kind,
+            name,
+            tracks,
+            update_tx: tx,
+            existing_track_order,
+        });
+    }
+
+    /// Handle updates from the track editor
+    pub fn poll_track_editor_updates(&mut self) -> bool {
+        // Collect updates first to avoid borrow conflicts
+        let updates: Vec<TrackEditorUpdate> = match &self.track_editor_rx {
+            Some(rx) => rx.try_iter().collect(),
+            None => return false,
+        };
+
+        if updates.is_empty() {
+            return false;
+        }
+
+        // Process collected updates
+        for update in updates {
+            match update {
+                TrackEditorUpdate::OrderChanged { id, order } => {
+                    self.handle_track_order_changed(&id, order);
+                }
+                TrackEditorUpdate::ExclusionsChanged { id, excluded } => {
+                    self.handle_track_exclusions_changed(&id, excluded);
+                }
+                TrackEditorUpdate::TracksChanged {
+                    id,
+                    tracks,
+                    album_arts,
+                } => {
+                    self.handle_mixtape_tracks_changed(&id, tracks, album_arts);
+                }
+                TrackEditorUpdate::NameChanged { id, name } => {
+                    self.handle_mixtape_name_changed(&id, name);
+                }
+                TrackEditorUpdate::Closed { id } => {
+                    self.handle_track_editor_closed(&id);
+                }
+            }
+        }
+        true
+    }
+
+    /// Handle track order change from editor
+    fn handle_track_order_changed(&mut self, folder_id: &FolderId, order: Vec<usize>) {
+        // Find index first to avoid borrow conflicts
+        let idx = match self.folders.iter().position(|f| &f.id == folder_id) {
+            Some(i) => i,
+            None => return,
+        };
+
+        println!("Track order changed for folder: {:?}", order);
+        self.folders[idx].set_track_order(order);
+
+        // Delete old output files (they have wrong numbered prefixes)
+        if let Some(ref output_manager) = self.output_manager {
+            let _ = output_manager.delete_folder_output_from_session(folder_id);
+        }
+
+        // Mark folder for re-encoding
+        self.folders[idx].conversion_status = crate::core::FolderConversionStatus::NotConverted;
+        // Invalidate ISO
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
+        self.has_unsaved_changes = true;
+        // Re-queue for encoding (clone to avoid borrow conflict)
+        let folder_clone = self.folders[idx].clone();
+        self.queue_folder_for_encoding(&folder_clone);
+    }
+
+    /// Handle track exclusion change from editor
+    fn handle_track_exclusions_changed(&mut self, folder_id: &FolderId, excluded: Vec<PathBuf>) {
+        // Find index first to avoid borrow conflicts
+        let idx = match self.folders.iter().position(|f| &f.id == folder_id) {
+            Some(i) => i,
+            None => return,
+        };
+
+        println!("Track exclusions changed: {} excluded", excluded.len());
+        self.folders[idx].excluded_tracks = excluded;
+
+        // Delete old output files (they include excluded tracks)
+        if let Some(ref output_manager) = self.output_manager {
+            let _ = output_manager.delete_folder_output_from_session(folder_id);
+        }
+
+        // Mark folder for re-encoding
+        self.folders[idx].conversion_status = crate::core::FolderConversionStatus::NotConverted;
+        // Invalidate ISO
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
+        self.has_unsaved_changes = true;
+        // Re-queue for encoding (clone to avoid borrow conflict)
+        let folder_clone = self.folders[idx].clone();
+        self.queue_folder_for_encoding(&folder_clone);
+    }
+
+    /// Handle mixtape tracks change from editor
+    fn handle_mixtape_tracks_changed(
+        &mut self,
+        folder_id: &FolderId,
+        tracks: Vec<crate::core::AudioFileInfo>,
+        _album_arts: Vec<Option<String>>,
+    ) {
+        // Find index first to avoid borrow conflicts
+        let idx = match self.folders.iter().position(|f| &f.id == folder_id) {
+            Some(i) => i,
+            None => return,
+        };
+
+        println!("Mixtape tracks changed: {} tracks", tracks.len());
+        self.folders[idx].audio_files = tracks;
+        self.folders[idx].recalculate_totals();
+        // Mark folder for re-encoding
+        self.folders[idx].conversion_status = crate::core::FolderConversionStatus::NotConverted;
+        // Invalidate ISO
+        self.iso_state = None;
+        self.iso_generation_attempted = false;
+        self.has_unsaved_changes = true;
+        // Re-queue for encoding (clone to avoid borrow conflict)
+        let folder_clone = self.folders[idx].clone();
+        self.queue_folder_for_encoding(&folder_clone);
+    }
+
+    /// Handle mixtape name change from editor
+    fn handle_mixtape_name_changed(&mut self, folder_id: &FolderId, name: String) {
+        if let Some(folder) = self.folders.iter_mut().find(|f| &f.id == folder_id) {
+            println!("Mixtape name changed: {}", name);
+            folder.set_mixtape_name(name);
+            self.has_unsaved_changes = true;
+        }
+    }
+
+    /// Handle track editor window closed
+    fn handle_track_editor_closed(&mut self, folder_id: &FolderId) {
+        println!("Track editor closed for folder: {}", folder_id);
+        // Find the index of the folder and clear editing state
+        if let Some(_idx) = self.folders.iter().position(|f| &f.id == folder_id) {
+            self.editing_folder_index = None;
+        }
+    }
+
+    /// Open a pending track editor window (called from render loop)
+    ///
+    /// Uses cx.spawn to defer window opening outside the render cycle.
+    pub fn open_pending_track_editor(&mut self, cx: &mut Context<Self>) {
+        if let Some(pending) = self.pending_track_editor_open.take() {
+            // Spawn a task to open the window outside the render cycle
+            cx.spawn(|_this, cx: &mut AsyncApp| {
+                let async_cx = cx.clone();
+                async move {
+                    async_cx
+                        .update(|cx| {
+                            let _window_handle = TrackEditorWindow::open(
+                                cx,
+                                pending.folder_id,
+                                pending.folder_kind,
+                                pending.name,
+                                pending.tracks,
+                                pending.update_tx,
+                                pending.existing_track_order,
+                            );
+                        })
+                        .ok();
+                }
+            })
+            .detach();
+        }
     }
 
     /// Start a polling loop that drains imported folders and updates the UI

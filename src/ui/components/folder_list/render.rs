@@ -8,7 +8,7 @@ use gpui::{
     Context, ExternalPaths, IntoElement, Render, SharedString, Window, div, prelude::*, rgb,
 };
 
-use crate::actions::{NewProfile, OpenProfile, SaveProfile, SetVolumeLabel};
+use crate::actions::{NewMixtape, NewProfile, OpenProfile, SaveProfile, SetVolumeLabel};
 use crate::core::{BurnStage, DisplaySettings, FolderConversionStatus, WindowState};
 use crate::ui::Theme;
 
@@ -80,6 +80,9 @@ impl FolderList {
                 },
                 |view: &mut Self, idx| {
                     view.remove_folder(idx);
+                },
+                |view: &mut Self, idx| {
+                    view.open_track_editor(idx);
                 },
             );
 
@@ -394,8 +397,11 @@ impl Render for FolderList {
         // Check for pending burn action after volume label dialog closes
         self.check_pending_burn_action(window, cx);
 
-        // Show pending error messages (e.g., failed folder loads)
-        self.show_pending_error_dialog(window, cx);
+        // Poll for track editor updates
+        self.poll_track_editor_updates();
+
+        // Open pending track editor window
+        self.open_pending_track_editor(cx);
 
         // Update window title to include volume label
         let title = if self.volume_label == "Untitled MP3CD" || self.volume_label.is_empty() {
@@ -431,8 +437,9 @@ impl Render for FolderList {
                 println!("Loading dropped profile: {:?}", profile);
                 this.load_dropped_profile(profile.clone(), window, cx);
             } else {
-                // No profile files - treat as music folders
-                this.add_external_folders(paths.paths(), cx);
+                // Handle dropped paths - separates audio files and directories
+                // Audio files create a mixtape, directories scan as albums
+                this.handle_external_drop(paths.paths(), cx);
             }
             this.drop_target_index = None;
         });
@@ -446,6 +453,9 @@ impl Render for FolderList {
         // Profile action handlers
         let on_new_profile = cx.listener(|this, _: &NewProfile, window, cx| {
             this.new_profile(window, cx);
+        });
+        let on_new_mixtape = cx.listener(|this, _: &NewMixtape, _window, cx| {
+            this.add_new_mixtape(cx);
         });
         let on_open_profile = cx.listener(|this, _: &OpenProfile, window, cx| {
             this.open_profile(window, cx);
@@ -470,6 +480,7 @@ impl Render for FolderList {
 
         container
             .on_action(on_new_profile)
+            .on_action(on_new_mixtape)
             .on_action(on_open_profile)
             .on_action(on_save_profile)
             .on_action(on_set_volume_label)

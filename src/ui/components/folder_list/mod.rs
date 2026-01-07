@@ -19,8 +19,9 @@ use std::path::PathBuf;
 
 use crate::burning::IsoState;
 use crate::conversion::OutputManager;
-use crate::core::{ConversionState, ImportState, MusicFolder};
+use crate::core::{ConversionState, FolderId, FolderKind, ImportState, MusicFolder};
 use crate::profiles::ProfileLoadSetup;
+use crate::ui::components::{TrackEditorUpdate, TrackEntry};
 
 pub(crate) use super::VolumeLabelDialog;
 
@@ -86,8 +87,8 @@ pub struct FolderList {
     pub(crate) has_unsaved_changes: bool,
     /// Manual bitrate override (None = use calculated)
     pub(crate) manual_bitrate_override: Option<u32>,
-    /// Receiver for bitrate override dialog result
-    pub(crate) pending_bitrate_rx: Option<std::sync::mpsc::Receiver<u32>>,
+    /// Receiver for bitrate override dialog result (None = use automatic)
+    pub(crate) pending_bitrate_rx: Option<std::sync::mpsc::Receiver<Option<u32>>>,
     /// Flag to track when a bitrate recalculation is pending (waiting for encoder to re-encode)
     /// This prevents ISO generation until the recalculation is complete
     pub(crate) bitrate_recalc_pending: bool,
@@ -95,6 +96,14 @@ pub struct FolderList {
     pub(crate) pending_error_message: Option<(String, String)>, // (title, message)
     /// Pending info message to show to user (e.g., bundle loaded without source)
     pub(crate) pending_info_message: Option<(String, String)>, // (title, message)
+    /// Sender for track editor updates (cloned for each editor window)
+    pub(crate) track_editor_tx: Option<std::sync::mpsc::Sender<TrackEditorUpdate>>,
+    /// Receiver for track editor updates
+    pub(crate) track_editor_rx: Option<std::sync::mpsc::Receiver<TrackEditorUpdate>>,
+    /// Index of the folder currently being edited (to avoid opening multiple editors for same folder)
+    pub(crate) editing_folder_index: Option<usize>,
+    /// Pending track editor window to open (deferred until render loop has App context)
+    pub(crate) pending_track_editor_open: Option<PendingTrackEditorOpen>,
 }
 
 /// Action to take after volume label dialog closes
@@ -104,6 +113,16 @@ pub(crate) enum PendingBurnAction {
     BurnExisting,
     /// Run conversion then burn
     ConvertAndBurn,
+}
+
+/// Data for opening a track editor window (deferred until render loop)
+pub(crate) struct PendingTrackEditorOpen {
+    pub folder_id: FolderId,
+    pub folder_kind: FolderKind,
+    pub name: String,
+    pub tracks: Vec<TrackEntry>,
+    pub update_tx: std::sync::mpsc::Sender<TrackEditorUpdate>,
+    pub existing_track_order: Option<Vec<usize>>,
 }
 
 impl FolderList {
@@ -140,6 +159,10 @@ impl FolderList {
             bitrate_recalc_pending: false,
             pending_error_message: None,
             pending_info_message: None,
+            track_editor_tx: None,
+            track_editor_rx: None,
+            editing_folder_index: None,
+            pending_track_editor_open: None,
         }
     }
 
@@ -178,6 +201,10 @@ impl FolderList {
             bitrate_recalc_pending: false,
             pending_error_message: None,
             pending_info_message: None,
+            track_editor_tx: None,
+            track_editor_rx: None,
+            editing_folder_index: None,
+            pending_track_editor_open: None,
         }
     }
 }

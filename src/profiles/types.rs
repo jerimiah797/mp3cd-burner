@@ -54,6 +54,56 @@ pub struct BurnProfile {
     pub iso_folder_hash: Option<String>,
 }
 
+/// Saved audio track for mixtape serialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedMixtapeTrack {
+    /// Source file path
+    pub source_path: String,
+    /// Duration in seconds
+    pub duration: f64,
+    /// Bitrate in kbps
+    pub bitrate: u32,
+    /// File size in bytes
+    pub size: u64,
+    /// Audio codec name
+    pub codec: String,
+    /// Whether this is a lossy format
+    pub is_lossy: bool,
+    /// Album art as base64-encoded image data (per-track for mixtapes)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_art_base64: Option<String>,
+}
+
+/// Kind of folder in a saved profile
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SavedFolderKind {
+    /// Regular album folder scanned from filesystem
+    Album {
+        /// Paths of tracks excluded from burn
+        #[serde(default)]
+        excluded_tracks: Vec<String>,
+        /// Custom track order (indices into original audio_files)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_order: Option<Vec<usize>>,
+    },
+    /// User-created mixtape/playlist
+    Mixtape {
+        /// Mixtape name
+        name: String,
+        /// Ordered list of tracks
+        tracks: Vec<SavedMixtapeTrack>,
+    },
+}
+
+impl Default for SavedFolderKind {
+    fn default() -> Self {
+        SavedFolderKind::Album {
+            excluded_tracks: Vec::new(),
+            track_order: None,
+        }
+    }
+}
+
 /// Saved conversion state for a single folder
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedFolderState {
@@ -103,6 +153,10 @@ pub struct SavedFolderState {
     /// When this folder was converted (Unix timestamp)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<u64>,
+
+    /// Folder kind (Album with exclusions/order, or Mixtape with tracks)
+    #[serde(default)]
+    pub kind: SavedFolderKind,
 }
 
 impl SavedFolderState {
@@ -130,6 +184,7 @@ impl SavedFolderState {
             album_art: None,
             source_size: None,
             completed_at: None,
+            kind: SavedFolderKind::default(),
         }
     }
 
@@ -149,6 +204,7 @@ impl SavedFolderState {
         album_art: Option<String>,
         source_size: Option<u64>,
         completed_at: Option<u64>,
+        kind: Option<SavedFolderKind>,
     ) -> Self {
         Self {
             folder_id,
@@ -164,6 +220,7 @@ impl SavedFolderState {
             album_art,
             source_size,
             completed_at,
+            kind: kind.unwrap_or_default(),
         }
     }
 

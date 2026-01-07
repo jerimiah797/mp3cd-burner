@@ -70,11 +70,11 @@ impl FolderList {
             return None;
         }
 
-        // Collect all audio files from cached folder data
+        // Collect all active audio files from cached folder data (respects exclusions)
         let all_files: Vec<_> = self
             .folders
             .iter()
-            .flat_map(|f| f.audio_files.iter().cloned())
+            .flat_map(|f| f.active_tracks().into_iter().cloned())
             .collect();
 
         if all_files.is_empty() {
@@ -98,6 +98,29 @@ impl FolderList {
         Some(estimate)
     }
 
+    /// Calculate the "fresh" automatic bitrate from source files only
+    ///
+    /// This ignores any encoder state (last_calculated_bitrate) and calculates
+    /// purely from source file characteristics. Used for the "Use Automatic"
+    /// button in the bitrate override dialog.
+    pub fn fresh_automatic_bitrate(&self) -> u32 {
+        if self.folders.is_empty() {
+            return 320;
+        }
+
+        let all_files: Vec<_> = self
+            .folders
+            .iter()
+            .flat_map(|f| f.active_tracks().into_iter().cloned())
+            .collect();
+
+        if all_files.is_empty() {
+            return 320;
+        }
+
+        calculate_multipass_bitrate(&all_files).target_bitrate
+    }
+
     /// Get the target bitrate for encoding
     ///
     /// If a manual override is set, returns that value.
@@ -118,11 +141,10 @@ impl FolderList {
     pub fn show_bitrate_override_dialog(&mut self, cx: &mut Context<Self>) {
         // Get current effective bitrate (either override or calculated)
         let current_bitrate = self.calculated_bitrate();
-        // Get the auto-calculated bitrate for reference
-        let calculated_bitrate = self
-            .calculated_bitrate_estimate()
-            .map(|e| e.target_bitrate)
-            .unwrap_or(320);
+        // Get the fresh auto-calculated bitrate (ignores encoder state)
+        let calculated_bitrate = self.fresh_automatic_bitrate();
+        // Check if a custom bitrate is currently set
+        let has_custom_bitrate = self.manual_bitrate_override.is_some();
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.pending_bitrate_rx = Some(rx);
@@ -145,6 +167,7 @@ impl FolderList {
             current_bitrate,
             calculated_bitrate,
             warning_message,
+            has_custom_bitrate,
             move |new_bitrate| {
                 let _ = tx.send(new_bitrate);
             },
@@ -156,11 +179,24 @@ impl FolderList {
     /// Returns true if a new bitrate was received and applied.
     pub(super) fn poll_bitrate_override(&mut self) -> bool {
         if let Some(ref rx) = self.pending_bitrate_rx
-            && let Ok(new_bitrate) = rx.try_recv() {
-                println!("Manual bitrate override: {} kbps", new_bitrate);
-
-                self.manual_bitrate_override = Some(new_bitrate);
+            && let Ok(bitrate_option) = rx.try_recv() {
                 self.pending_bitrate_rx = None;
+
+                // Determine the target bitrate
+                let new_bitrate = match bitrate_option {
+                    Some(br) => {
+                        println!("Manual bitrate override: {} kbps", br);
+                        self.manual_bitrate_override = Some(br);
+                        br
+                    }
+                    None => {
+                        // Reset to automatic - use fresh calculation from source files
+                        let auto_bitrate = self.fresh_automatic_bitrate();
+                        println!("Bitrate reset to automatic: {} kbps", auto_bitrate);
+                        self.manual_bitrate_override = None;
+                        auto_bitrate
+                    }
+                };
 
                 // Set flag to prevent ISO generation until recalculation completes
                 self.bitrate_recalc_pending = true;

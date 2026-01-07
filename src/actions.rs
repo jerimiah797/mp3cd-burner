@@ -21,6 +21,8 @@ actions!(
         NewProfile,
         OpenProfile,
         SaveProfile,
+        // Mixtape action
+        NewMixtape,
     ]
 );
 

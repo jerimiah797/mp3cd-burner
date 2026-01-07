@@ -3180,6 +3180,7 @@ dependencies = [
  "symphonia",
  "tempfile",
  "tokio",
+ "uuid",
  "walkdir",
 ]
 

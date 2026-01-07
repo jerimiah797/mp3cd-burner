@@ -31,6 +31,16 @@ impl FolderId {
         FolderId(format!("{:016x}", hasher.finish()))
     }
 
+    /// Create a new FolderId for a mixtape using a UUID
+    pub fn new_mixtape() -> Self {
+        FolderId(format!("mixtape:{}", uuid::Uuid::new_v4()))
+    }
+
+    /// Check if this FolderId represents a mixtape
+    pub fn is_mixtape(&self) -> bool {
+        self.0.starts_with("mixtape:")
+    }
+
     /// Extract the modification time used to create this ID (for comparison)
     /// Note: This is a simplified version - in practice we'd store mtime separately
     pub fn as_str(&self) -> &str {

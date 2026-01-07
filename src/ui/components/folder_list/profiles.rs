@@ -10,7 +10,8 @@ use gpui::{
 };
 
 use crate::actions::take_pending_files;
-use crate::core::{FolderConversionStatus, ImportState, scan_music_folder};
+use crate::core::{FolderConversionStatus, FolderKind, ImportState, scan_music_folder};
+use crate::profiles::types::SavedFolderKind;
 
 use super::{FolderList, PendingBurnAction, VolumeLabelDialog};
 
@@ -253,6 +254,28 @@ impl FolderList {
                                 path.display()
                             );
 
+                            // Extract folder kind from saved state
+                            let (kind, excluded_tracks, track_order) = match &saved.kind {
+                                SavedFolderKind::Album {
+                                    excluded_tracks,
+                                    track_order,
+                                } => (
+                                    Some(FolderKind::Album),
+                                    Some(
+                                        excluded_tracks
+                                            .iter()
+                                            .map(|p| PathBuf::from(p))
+                                            .collect(),
+                                    ),
+                                    track_order.clone(),
+                                ),
+                                SavedFolderKind::Mixtape { name, .. } => {
+                                    // Mixtapes don't have excluded_tracks or track_order
+                                    // (track order is implicit in the tracks list)
+                                    (Some(FolderKind::Mixtape { name: name.clone() }), None, None)
+                                }
+                            };
+
                             // Create a MusicFolder from the saved metadata
                             let folder = crate::core::create_folder_from_metadata(
                                 saved.folder_id.clone(),
@@ -266,6 +289,9 @@ impl FolderList {
                                 saved.album_art.clone(),
                                 // Will be updated later during conversion status restoration
                                 crate::core::FolderConversionStatus::NotConverted,
+                                kind,
+                                excluded_tracks,
+                                track_order,
                             );
                             state.push_folder(folder);
                         } else {
@@ -756,6 +782,24 @@ impl FolderList {
                                         output_size: saved.output_size,
                                         completed_at: saved.completed_at.unwrap_or(0),
                                     };
+
+                                    // Restore folder kind (exclusions and track order)
+                                    match &saved.kind {
+                                        SavedFolderKind::Album {
+                                            excluded_tracks,
+                                            track_order,
+                                        } => {
+                                            folder.excluded_tracks = excluded_tracks
+                                                .iter()
+                                                .map(|p| PathBuf::from(p))
+                                                .collect();
+                                            folder.track_order = track_order.clone();
+                                        }
+                                        SavedFolderKind::Mixtape { name, .. } => {
+                                            folder.kind =
+                                                FolderKind::Mixtape { name: name.clone() };
+                                        }
+                                    }
 
                                     if folder.source_available {
                                         println!(
