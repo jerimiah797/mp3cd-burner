@@ -496,11 +496,36 @@ fn get_output_path(output_dir: &Path, source_path: &Path) -> PathBuf {
 }
 
 /// Measure total size of lossy file outputs
+///
+/// Important: Only measures files that originated from lossy sources.
+/// Previously this measured entire folder output, which would include
+/// lossless-sourced files from previous encoding passes on restart.
 fn measure_total_lossy_size(output_manager: &OutputManager, folders: &[MusicFolder]) -> u64 {
     folders
         .iter()
-        .filter(|f| f.active_tracks().iter().any(|af| af.is_lossy))
-        .map(|f| output_manager.get_folder_output_size(&f.id).unwrap_or(0))
+        .map(|f| {
+            // Get the output directory for this folder
+            let output_dir = match output_manager.get_folder_output_dir(&f.id) {
+                Ok(dir) => dir,
+                Err(_) => return 0,
+            };
+
+            // Sum only the output files that came from lossy sources
+            f.active_tracks()
+                .iter()
+                .filter(|af| af.is_lossy)
+                .map(|af| {
+                    let output_path = get_output_path(&output_dir, &af.path);
+                    if output_path.exists() {
+                        std::fs::metadata(&output_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                })
+                .sum::<u64>()
+        })
         .sum()
 }
 

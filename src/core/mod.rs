@@ -16,8 +16,9 @@ mod state;
 
 pub use folder_state::{FolderConversionStatus, FolderId, calculate_folder_hash};
 pub use scanning::{
-    AudioFileInfo, FolderKind, MusicFolder, create_folder_from_metadata, find_album_folders,
-    format_duration, format_size, scan_audio_file, scan_music_folder,
+    AudioFileInfo, FolderKind, MusicFolder, SavedMixtapeTrackInfo, create_folder_from_metadata,
+    create_mixtape_from_saved_state, find_album_folders, format_duration, format_size,
+    scan_audio_file, scan_music_folder,
 };
 pub use state::{
     AppSettings, BurnStage, ConversionState, DisplaySettings, ImportState, WindowState,

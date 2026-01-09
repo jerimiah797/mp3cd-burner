@@ -348,6 +348,65 @@ pub fn scan_music_folder(path: &Path) -> Result<MusicFolder, String> {
     })
 }
 
+/// Saved mixtape track info (simplified for reconstruction)
+pub struct SavedMixtapeTrackInfo {
+    pub source_path: String,
+    pub duration: f64,
+    pub bitrate: u32,
+    pub size: u64,
+    pub codec: String,
+    pub is_lossy: bool,
+}
+
+/// Create a MusicFolder mixtape from saved profile state
+///
+/// This is used when loading a profile that contains a mixtape.
+/// The mixtape is reconstructed from the saved track list.
+pub fn create_mixtape_from_saved_state(
+    folder_id: String,
+    name: String,
+    tracks: Vec<SavedMixtapeTrackInfo>,
+    album_art: Option<String>,
+) -> MusicFolder {
+    // Convert saved tracks to AudioFileInfo
+    let audio_files: Vec<AudioFileInfo> = tracks
+        .into_iter()
+        .map(|t| AudioFileInfo {
+            path: PathBuf::from(t.source_path),
+            duration: t.duration,
+            bitrate: t.bitrate,
+            size: t.size,
+            codec: t.codec,
+            is_lossy: t.is_lossy,
+        })
+        .collect();
+
+    let file_count = audio_files.len() as u32;
+    let total_size: u64 = audio_files.iter().map(|f| f.size).sum();
+    let total_duration: f64 = audio_files.iter().map(|f| f.duration).sum();
+
+    // Check if source files are available
+    let source_available = audio_files.iter().all(|f| f.path.exists());
+
+    MusicFolder {
+        id: FolderId(folder_id),
+        path: PathBuf::new(), // Mixtapes don't have a path
+        file_count,
+        total_size,
+        total_duration,
+        album_art,
+        album_name: None, // Mixtapes don't have album metadata
+        artist_name: None,
+        year: None,
+        audio_files,
+        conversion_status: FolderConversionStatus::default(),
+        source_available,
+        kind: FolderKind::Mixtape { name },
+        excluded_tracks: Vec::new(),
+        track_order: None,
+    }
+}
+
 /// Create a MusicFolder from saved profile metadata (when source is unavailable)
 ///
 /// This is used when loading a bundle profile where the source folder is missing.

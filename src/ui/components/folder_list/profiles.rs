@@ -236,8 +236,47 @@ impl FolderList {
         // Spawn background thread for scanning
         std::thread::spawn(move || {
             for path in folder_paths {
-                log::debug!("Scanning: {}", path.display());
                 let path_str = path.to_string_lossy().to_string();
+
+                // Check if this is a mixtape (empty path with Mixtape kind in saved state)
+                if path_str.is_empty() {
+                    if let Some(saved) = folder_states.get(&path_str) {
+                        if let SavedFolderKind::Mixtape { name, tracks } = &saved.kind {
+                            log::debug!("Restoring mixtape: {}", name);
+                            // Convert saved tracks to SavedMixtapeTrackInfo
+                            let track_infos: Vec<crate::core::SavedMixtapeTrackInfo> = tracks
+                                .iter()
+                                .map(|t| crate::core::SavedMixtapeTrackInfo {
+                                    source_path: t.source_path.clone(),
+                                    duration: t.duration,
+                                    bitrate: t.bitrate,
+                                    size: t.size,
+                                    codec: t.codec.clone(),
+                                    is_lossy: t.is_lossy,
+                                })
+                                .collect();
+
+                            let folder = crate::core::create_mixtape_from_saved_state(
+                                saved.folder_id.clone(),
+                                name.clone(),
+                                track_infos,
+                                saved.album_art.clone(),
+                            );
+                            log::debug!(
+                                "Restored mixtape: {} ({} tracks)",
+                                name,
+                                folder.file_count
+                            );
+                            state.push_folder(folder);
+                            continue;
+                        }
+                    }
+                    // Empty path but not a mixtape - skip it
+                    log::warn!("Skipping empty path that is not a mixtape");
+                    continue;
+                }
+
+                log::debug!("Scanning: {}", path.display());
 
                 match scan_music_folder(&path) {
                     Ok(folder) => {
@@ -277,10 +316,29 @@ impl FolderList {
                                     ),
                                     track_order.clone(),
                                 ),
-                                SavedFolderKind::Mixtape { name, .. } => {
-                                    // Mixtapes don't have excluded_tracks or track_order
-                                    // (track order is implicit in the tracks list)
-                                    (Some(FolderKind::Mixtape { name: name.clone() }), None, None)
+                                SavedFolderKind::Mixtape { name, tracks } => {
+                                    // For mixtapes in bundle with missing source, reconstruct with tracks
+                                    log::debug!("Restoring mixtape from bundle: {}", name);
+                                    let track_infos: Vec<crate::core::SavedMixtapeTrackInfo> = tracks
+                                        .iter()
+                                        .map(|t| crate::core::SavedMixtapeTrackInfo {
+                                            source_path: t.source_path.clone(),
+                                            duration: t.duration,
+                                            bitrate: t.bitrate,
+                                            size: t.size,
+                                            codec: t.codec.clone(),
+                                            is_lossy: t.is_lossy,
+                                        })
+                                        .collect();
+
+                                    let folder = crate::core::create_mixtape_from_saved_state(
+                                        saved.folder_id.clone(),
+                                        name.clone(),
+                                        track_infos,
+                                        saved.album_art.clone(),
+                                    );
+                                    state.push_folder(folder);
+                                    continue;
                                 }
                             };
 
