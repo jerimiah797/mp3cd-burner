@@ -111,9 +111,9 @@ pub fn burn_iso_with_cancel(
     }
 
     if erase_first {
-        println!("Starting burn of {} (with erase)", iso_path.display());
+        log::info!("Starting burn of {} (with erase)", iso_path.display());
     } else {
-        println!("Starting burn of {}", iso_path.display());
+        log::info!("Starting burn of {}", iso_path.display());
     }
 
     // Build args - add -erase if erasing CD-RW first
@@ -167,7 +167,7 @@ pub fn burn_iso_with_cancel(
         // Check if cancelled
         if let Some(ref token) = cancel_token
             && token.load(Ordering::SeqCst) {
-                println!("Burn cancelled - killing hdiutil process");
+                log::info!("Burn cancelled - killing hdiutil process");
                 let _ = child.kill();
                 let _ = child.wait(); // Reap the process
                 let _ = progress_thread.join();
@@ -181,7 +181,7 @@ pub fn burn_iso_with_cancel(
                 let _ = progress_thread.join();
 
                 if status.success() {
-                    println!("Burn completed successfully");
+                    log::info!("Burn completed successfully");
                     return Ok(());
                 } else {
                     return Err("Burn process failed".to_string());

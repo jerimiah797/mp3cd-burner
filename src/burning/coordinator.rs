@@ -69,14 +69,14 @@ pub fn coordinate_burn(
 
     // Check for simulate mode first
     if config.simulate {
-        println!("\n=== SIMULATED BURN ===");
-        println!("Would burn ISO: {}", iso_path.display());
+        log::info!("\n=== SIMULATED BURN ===");
+        log::info!("Would burn ISO: {}", iso_path.display());
         state.set_stage(BurnStage::Complete);
         return BurnCoordinationResult::Simulated;
     }
 
     // Wait for usable CD
-    println!("\n=== Waiting for blank CD ===");
+    log::info!("\n=== Waiting for blank CD ===");
     state.set_stage(BurnStage::WaitingForCd);
 
     let wait_result = wait_for_cd(state, &cancel_token, config.cd_wait_timeout_secs);
@@ -88,7 +88,7 @@ pub fn coordinate_burn(
             return BurnCoordinationResult::Cancelled;
         }
         WaitForCdResult::Timeout => {
-            println!("No usable CD found after timeout");
+            log::info!("No usable CD found after timeout");
             state.set_stage(BurnStage::Complete);
             return BurnCoordinationResult::NoCdTimeout;
         }
@@ -97,10 +97,10 @@ pub fn coordinate_burn(
     // Start burning
     if erase_first {
         state.set_stage(BurnStage::Erasing);
-        println!("\n=== Erasing and Burning CD ===");
+        log::info!("\n=== Erasing and Burning CD ===");
     } else {
         state.set_stage(BurnStage::Burning);
-        println!("\n=== Burning CD ===");
+        log::info!("\n=== Burning CD ===");
     }
 
     // Set up progress callback with stage transition logic
@@ -114,17 +114,17 @@ pub fn coordinate_burn(
         erase_first,
     ) {
         Ok(()) => {
-            println!("CD burned successfully!");
+            log::info!("CD burned successfully!");
             state.set_stage(BurnStage::Complete);
             BurnCoordinationResult::Success
         }
         Err(e) if e.contains("cancelled") => {
-            println!("Burn was cancelled");
+            log::info!("Burn was cancelled");
             state.set_stage(BurnStage::Cancelled);
             BurnCoordinationResult::Cancelled
         }
         Err(e) => {
-            eprintln!("Burn failed: {}", e);
+            log::error!("Burn failed: {}", e);
             state.set_stage(BurnStage::Complete);
             BurnCoordinationResult::Error(e)
         }
@@ -152,23 +152,23 @@ fn wait_for_cd(
     for _ in 0..timeout_secs {
         // Check for cancellation
         if cancel_token.load(Ordering::SeqCst) {
-            println!("Cancelled while waiting for CD");
+            log::info!("Cancelled while waiting for CD");
             return WaitForCdResult::Cancelled;
         }
 
         match check_cd_status() {
             Ok(CdStatus::Blank) => {
-                println!("Blank CD detected");
+                log::info!("Blank CD detected");
                 return WaitForCdResult::BlankCd;
             }
             Ok(CdStatus::ErasableWithData) => {
-                println!("Erasable disc (CD-RW) with data detected");
+                log::info!("Erasable disc (CD-RW) with data detected");
                 state.set_stage(BurnStage::ErasableDiscDetected);
 
                 // Wait for user to approve erase or cancel
                 match wait_for_erase_approval(state, cancel_token) {
                     Some(true) => {
-                        println!("User approved erase - will erase and burn");
+                        log::info!("User approved erase - will erase and burn");
                         return WaitForCdResult::ErasableCdApproved;
                     }
                     Some(false) | None => {
@@ -177,14 +177,14 @@ fn wait_for_cd(
                 }
             }
             Ok(CdStatus::NonErasable) => {
-                println!("Non-erasable disc detected - please insert a blank disc");
+                log::info!("Non-erasable disc detected - please insert a blank disc");
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
             Ok(CdStatus::NoDisc) => {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
             Err(e) => {
-                eprintln!("Error checking CD: {}", e);
+                log::error!("Error checking CD: {}", e);
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
@@ -201,7 +201,7 @@ fn wait_for_erase_approval(
 ) -> Option<bool> {
     loop {
         if cancel_token.load(Ordering::SeqCst) {
-            println!("Cancelled while waiting for erase approval");
+            log::info!("Cancelled while waiting for erase approval");
             return None;
         }
         if state.erase_approved.load(Ordering::SeqCst) {

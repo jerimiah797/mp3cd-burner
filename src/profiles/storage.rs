@@ -46,7 +46,7 @@ pub fn save_profile(profile: &BurnProfile, path: &Path) -> Result<(), String> {
         if path.is_file() {
             fs::remove_file(path)
                 .map_err(|e| format!("Failed to remove existing profile file: {}", e))?;
-            println!("Removed existing metadata-only profile to create bundle");
+            log::debug!("Removed existing metadata-only profile to create bundle");
         }
 
         // Create bundle directory structure
@@ -63,7 +63,7 @@ pub fn save_profile(profile: &BurnProfile, path: &Path) -> Result<(), String> {
         fs::write(&profile_json_path, json)
             .map_err(|e| format!("Failed to write profile.json: {}", e))?;
 
-        println!("Saved bundle profile to: {:?}", path);
+        log::debug!("Saved bundle profile to: {:?}", path);
     } else {
         // Legacy: write directly to path
         fs::write(path, json).map_err(|e| format!("Failed to write profile file: {}", e))?;

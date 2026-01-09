@@ -44,13 +44,13 @@ impl FolderList {
                 }
                 // ISO is ready, take the action and burn
                 self.pending_burn_action = None;
-                println!("Triggering burn after volume label dialog");
+                log::debug!("Triggering burn after volume label dialog");
                 self.burn_existing_iso(window, cx);
             }
             PendingBurnAction::ConvertAndBurn => {
                 // run_conversion handles waiting for ISO, so trigger immediately
                 self.pending_burn_action = None;
-                println!("Triggering convert & burn after volume label dialog");
+                log::debug!("Triggering convert & burn after volume label dialog");
                 self.run_conversion(window, cx);
             }
         }
@@ -185,14 +185,14 @@ impl FolderList {
                 // Determine the target bitrate
                 let new_bitrate = match bitrate_option {
                     Some(br) => {
-                        println!("Manual bitrate override: {} kbps", br);
+                        log::debug!("Manual bitrate override: {} kbps", br);
                         self.manual_bitrate_override = Some(br);
                         br
                     }
                     None => {
                         // Reset to automatic - use fresh calculation from source files
                         let auto_bitrate = self.fresh_automatic_bitrate();
-                        println!("Bitrate reset to automatic: {} kbps", auto_bitrate);
+                        log::debug!("Bitrate reset to automatic: {} kbps", auto_bitrate);
                         self.manual_bitrate_override = None;
                         auto_bitrate
                     }
@@ -273,7 +273,7 @@ impl FolderList {
             return;
         }
 
-        println!(
+        log::debug!(
             "Bitrate recalculated: {:?} -> {} kbps",
             self.last_calculated_bitrate
                 .map(|b| format!("{}", b))
@@ -296,7 +296,7 @@ impl FolderList {
     #[allow(dead_code)]
     pub fn cancel_conversion(&mut self) -> bool {
         if self.conversion_state.is_converting() {
-            println!("Cancelling conversion...");
+            log::debug!("Cancelling conversion...");
             self.conversion_state.request_cancel();
             true
         } else {
@@ -311,13 +311,13 @@ impl FolderList {
     pub(super) fn run_conversion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Don't start if already converting/burning
         if self.conversion_state.is_converting() {
-            println!("Already in progress");
+            log::debug!("Already in progress");
             return;
         }
 
         // Check if we have folders to burn
         if self.folders.is_empty() {
-            println!("No folders to burn");
+            log::debug!("No folders to burn");
             return;
         }
 
@@ -325,7 +325,7 @@ impl FolderList {
         let encoder_handle = match &self.simple_encoder {
             Some(handle) => handle.clone(),
             None => {
-                eprintln!("Background encoder not available - cannot burn");
+                log::error!("Background encoder not available - cannot burn");
                 return;
             }
         };
@@ -334,12 +334,12 @@ impl FolderList {
         let output_manager = match &self.output_manager {
             Some(om) => om.clone(),
             None => {
-                eprintln!("No output manager available");
+                log::error!("No output manager available");
                 return;
             }
         };
 
-        println!("Starting burn process...");
+        log::debug!("Starting burn process...");
 
         // Get conversion state info
         let all_converted = self.all_folders_converted();
@@ -349,10 +349,10 @@ impl FolderList {
         self.conversion_state.reset(total_folders);
 
         if all_converted {
-            println!("All {} folders already converted", total_folders);
+            log::debug!("All {} folders already converted", total_folders);
             self.conversion_state.set_stage(BurnStage::CreatingIso);
         } else {
-            println!("Waiting for background conversion to complete...");
+            log::debug!("Waiting for background conversion to complete...");
             self.conversion_state.set_stage(BurnStage::Converting);
         }
 
@@ -377,7 +377,7 @@ impl FolderList {
         let window_handle = window.window_handle();
         Self::start_progress_polling(self.conversion_state.clone(), window_handle, cx);
 
-        println!("Burn process started");
+        log::debug!("Burn process started");
         cx.notify();
     }
 
@@ -389,18 +389,18 @@ impl FolderList {
         let iso_path = match &self.iso_state {
             Some(iso) if iso.file_exists() => iso.path.clone(),
             _ => {
-                eprintln!("No valid ISO available for burning");
+                log::error!("No valid ISO available for burning");
                 return;
             }
         };
 
         // Don't start if already converting/burning
         if self.conversion_state.is_converting() {
-            println!("Already burning");
+            log::debug!("Already burning");
             return;
         }
 
-        println!("Burning existing ISO: {:?}", iso_path);
+        log::debug!("Burning existing ISO: {:?}", iso_path);
 
         // Reset state for burning only (no file conversion)
         self.conversion_state.reset(0);
@@ -417,7 +417,7 @@ impl FolderList {
         let window_handle = window.window_handle();
         Self::start_progress_polling(self.conversion_state.clone(), window_handle, cx);
 
-        println!("Burn Another started");
+        log::debug!("Burn Another started");
         cx.notify();
     }
 
@@ -469,7 +469,7 @@ impl FolderList {
                         if should_update
                             && let Ok(iso_state) = IsoState::new(path, &folder_list.folders) {
                                 folder_list.iso_state = Some(iso_state);
-                                println!("ISO state saved - ready for Burn/Burn Another");
+                                log::debug!("ISO state saved - ready for Burn/Burn Another");
                             }
                     });
                 }

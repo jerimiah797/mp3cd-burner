@@ -7,7 +7,7 @@ use symphonia::core::probe::Hint;
 
 /// Extract album art from an audio file
 pub fn get_album_art(path: &Path) -> Option<String> {
-    println!("Attempting to extract album art from: {:?}", path);
+    log::debug!("Attempting to extract album art from: {:?}", path);
 
     let file = File::open(path).ok()?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -25,21 +25,21 @@ pub fn get_album_art(path: &Path) -> Option<String> {
         .ok()?;
 
     // Check for embedded album art in container metadata
-    println!("Checking container metadata...");
+    log::debug!("Checking container metadata...");
     if let Some(metadata_rev) = probed.metadata.get() {
-        println!("Found container metadata");
+        log::debug!("Found container metadata");
         if let Some(metadata_rev) = metadata_rev.current() {
-            println!(
+            log::debug!(
                 "Found current metadata revision with {} visuals",
                 metadata_rev.visuals().len()
             );
             for visual in metadata_rev.visuals() {
-                println!(
+                log::debug!(
                     "Found visual in container, data size: {} bytes",
                     visual.data.len()
                 );
                 if let Some(file_path) = save_album_art_to_temp(&visual.data, &visual.media_type) {
-                    println!("Successfully saved album art to: {}", file_path);
+                    log::debug!("Successfully saved album art to: {}", file_path);
                     return Some(file_path);
                 }
             }
@@ -47,26 +47,26 @@ pub fn get_album_art(path: &Path) -> Option<String> {
     }
 
     // Check for embedded album art in format metadata
-    println!("Checking format metadata...");
+    log::debug!("Checking format metadata...");
     let mut format = probed.format;
     if let Some(metadata_rev) = format.metadata().current() {
-        println!(
+        log::debug!(
             "Found format metadata with {} visuals",
             metadata_rev.visuals().len()
         );
         for visual in metadata_rev.visuals() {
-            println!(
+            log::debug!(
                 "Found visual in format metadata, data size: {} bytes",
                 visual.data.len()
             );
             if let Some(file_path) = save_album_art_to_temp(&visual.data, &visual.media_type) {
-                println!("Successfully saved album art to: {}", file_path);
+                log::debug!("Successfully saved album art to: {}", file_path);
                 return Some(file_path);
             }
         }
     }
 
-    println!("No album art found");
+    log::debug!("No album art found");
     None
 }
 
@@ -85,7 +85,7 @@ pub fn save_album_art_to_temp(data: &[u8], mime_type: &str) -> Option<String> {
     // Create temp directory if it doesn't exist
     let temp_dir = std::env::temp_dir().join("mp3cd_album_art");
     if let Err(e) = fs::create_dir_all(&temp_dir) {
-        println!("Failed to create temp directory: {}", e);
+        log::debug!("Failed to create temp directory: {}", e);
         return None;
     }
 
@@ -99,7 +99,7 @@ pub fn save_album_art_to_temp(data: &[u8], mime_type: &str) -> Option<String> {
 
     // If file already exists, just return the path
     if file_path.exists() {
-        println!("Album art file already exists at: {:?}", file_path);
+        log::debug!("Album art file already exists at: {:?}", file_path);
         return file_path.to_str().map(|s| s.to_string());
     }
 
@@ -107,14 +107,14 @@ pub fn save_album_art_to_temp(data: &[u8], mime_type: &str) -> Option<String> {
     match File::create(&file_path) {
         Ok(mut file) => {
             if let Err(e) = file.write_all(data) {
-                println!("Failed to write album art to file: {}", e);
+                log::debug!("Failed to write album art to file: {}", e);
                 return None;
             }
-            println!("Saved album art to: {:?}", file_path);
+            log::debug!("Saved album art to: {:?}", file_path);
             file_path.to_str().map(|s| s.to_string())
         }
         Err(e) => {
-            println!("Failed to create album art file: {}", e);
+            log::debug!("Failed to create album art file: {}", e);
             None
         }
     }
@@ -158,7 +158,7 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
 
     // Detect codec from Symphonia's codec type or fall back to file extension
     let codec_str = format!("{:?}", track.codec_params.codec);
-    println!("File: {:?}, Codec string: {}", path.file_name(), codec_str);
+    log::debug!("File: {:?}, Codec string: {}", path.file_name(), codec_str);
     let codec = if codec_str.contains("MP3")
         || codec_str.contains("Mp3")
         || codec_str.contains("4099")

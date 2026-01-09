@@ -60,11 +60,11 @@ impl AppSettings {
     pub fn load() -> Self {
         match Self::try_load() {
             Ok(settings) => {
-                println!("Loaded app settings from disk");
+                log::debug!("Loaded app settings from disk");
                 settings
             }
             Err(e) => {
-                println!("Using default app settings: {}", e);
+                log::debug!("Using default app settings: {}", e);
                 Self::default()
             }
         }
@@ -95,7 +95,7 @@ impl AppSettings {
         std::fs::write(&settings_path, json)
             .map_err(|e| format!("Failed to write settings: {}", e))?;
 
-        println!("Saved app settings to {:?}", settings_path);
+        log::debug!("Saved app settings to {:?}", settings_path);
         Ok(())
     }
 }
@@ -149,14 +149,14 @@ impl WindowState {
     pub fn load() -> Self {
         match Self::try_load() {
             Ok(state) => {
-                println!(
+                log::debug!(
                     "Loaded window state from disk: {}x{} at ({}, {})",
                     state.width, state.height, state.x, state.y
                 );
                 state
             }
             Err(e) => {
-                println!("Using default window state: {}", e);
+                log::debug!("Using default window state: {}", e);
                 Self::default()
             }
         }
@@ -249,11 +249,11 @@ impl DisplaySettings {
     pub fn load() -> Self {
         match Self::try_load() {
             Ok(settings) => {
-                println!("Loaded display settings from disk");
+                log::debug!("Loaded display settings from disk");
                 settings
             }
             Err(e) => {
-                println!("Using default display settings: {}", e);
+                log::debug!("Using default display settings: {}", e);
                 Self::default()
             }
         }
@@ -284,7 +284,7 @@ impl DisplaySettings {
         std::fs::write(&settings_path, json)
             .map_err(|e| format!("Failed to write settings: {}", e))?;
 
-        println!("Saved display settings to {:?}", settings_path);
+        log::debug!("Saved display settings to {:?}", settings_path);
         Ok(())
     }
 }

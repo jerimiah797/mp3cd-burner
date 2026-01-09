@@ -40,7 +40,7 @@ impl FolderList {
         self.encoder_event_rx = Some(event_rx);
         self.output_manager = Some((*output_manager).clone());
 
-        println!(
+        log::debug!(
             "Simple encoder enabled, session: {:?}",
             self.output_manager.as_ref().map(|m| m.session_id())
         );
@@ -115,10 +115,10 @@ impl FolderList {
     #[allow(dead_code)]
     pub fn set_embed_album_art(&self, embed: bool) {
         if let Some(ref encoder) = self.simple_encoder {
-            println!("[FolderList] Sending embed_album_art={} to encoder", embed);
+            log::debug!("[FolderList] Sending embed_album_art={} to encoder", embed);
             encoder.set_embed_album_art(embed);
         } else {
-            println!("[FolderList] WARNING: No encoder to send embed_album_art to!");
+            log::debug!("[FolderList] WARNING: No encoder to send embed_album_art to!");
         }
     }
 
@@ -204,7 +204,7 @@ impl FolderList {
                             files_total,
                         };
                     }
-                    println!("Encoding started: {:?} ({} files)", id, files_total);
+                    log::debug!("Encoding started: {:?} ({} files)", id, files_total);
                 }
                 EncoderEvent::FolderProgress {
                     id,
@@ -218,7 +218,7 @@ impl FolderList {
                             files_total,
                         };
                     }
-                    println!(
+                    log::debug!(
                         "Encoding progress: {:?} {}/{}",
                         id, files_completed, files_total
                     );
@@ -229,7 +229,7 @@ impl FolderList {
                     output_size,
                     lossless_bitrate,
                 } => {
-                    println!(
+                    log::debug!(
                         "Encoding complete: {:?} -> {:?} ({} bytes, bitrate: {:?})",
                         id, output_dir, output_size, lossless_bitrate
                     );
@@ -248,16 +248,16 @@ impl FolderList {
                     }
                 }
                 EncoderEvent::FolderFailed { id, error } => {
-                    eprintln!("Encoding failed: {:?} - {}", id, error);
+                    log::error!("Encoding failed: {:?} - {}", id, error);
                 }
                 EncoderEvent::FolderCancelled(id) => {
-                    println!("Encoding cancelled: {:?}", id);
+                    log::debug!("Encoding cancelled: {:?}", id);
                 }
                 EncoderEvent::BitrateRecalculated {
                     new_bitrate,
                     reencode_needed,
                 } => {
-                    println!(
+                    log::debug!(
                         "Bitrate recalculated to {} kbps, {} folders need re-encoding",
                         new_bitrate,
                         reencode_needed.len()
@@ -280,7 +280,7 @@ impl FolderList {
                     measured_lossy_size,
                     optimal_bitrate,
                 } => {
-                    println!(
+                    log::debug!(
                         "Phase transition to {:?}: measured lossy size = {} MB, optimal lossless bitrate = {} kbps",
                         phase,
                         measured_lossy_size / 1_000_000,
@@ -330,7 +330,7 @@ impl FolderList {
                             // Check if we should auto-generate ISO
                             if this.maybe_generate_iso(cx) {
                                 // ISO generation was triggered
-                                println!("Auto-ISO generation triggered");
+                                log::debug!("Auto-ISO generation triggered");
                             }
 
                             // Always notify UI to ensure refresh (even without events,

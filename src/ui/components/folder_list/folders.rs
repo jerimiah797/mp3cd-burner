@@ -47,7 +47,7 @@ impl FolderList {
     pub fn add_external_folders(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         // Don't start if already importing
         if self.import_state.is_importing() {
-            println!("Import already in progress");
+            log::debug!("Import already in progress");
             return;
         }
 
@@ -67,7 +67,7 @@ impl FolderList {
         // completes in start_import_polling(), which calls encoder.recalculate_bitrate()
         self.manual_bitrate_override = None;
 
-        println!("Starting async import of {} folders", new_paths.len());
+        log::info!("Starting async import of {} folders", new_paths.len());
 
         // Reset import state (total will be updated after expansion)
         self.import_state.reset(new_paths.len());
@@ -88,16 +88,16 @@ impl FolderList {
                 .flat_map(|p| find_album_folders(p))
                 .collect();
 
-            println!("Expanded to {} album folders", album_paths.len());
+            log::debug!("Expanded to {} album folders", album_paths.len());
 
             // Reset state with actual count
             state.total.store(album_paths.len(), Ordering::SeqCst);
 
             for path in album_paths {
-                println!("Scanning: {}", path.display());
+                log::debug!("Scanning: {}", path.display());
                 match scan_music_folder(&path) {
                     Ok(folder) => {
-                        println!(
+                        log::debug!(
                             "Scanned folder: {} ({} files, {} bytes)",
                             folder.path.display(),
                             folder.file_count,
@@ -106,14 +106,14 @@ impl FolderList {
                         state.push_folder(folder);
                     }
                     Err(e) => {
-                        eprintln!("Failed to scan folder {}: {}", path.display(), e);
+                        log::error!("Failed to scan folder {}: {}", path.display(), e);
                         // Still increment completed so we know when done
                         state.completed.fetch_add(1, Ordering::SeqCst);
                     }
                 }
             }
             state.finish();
-            println!("Import complete");
+            log::info!("Import complete");
         });
 
         // Start polling for results
@@ -176,23 +176,23 @@ impl FolderList {
         for path in paths {
             match scan_audio_file(path) {
                 Ok(info) => {
-                    println!("Scanned audio file: {:?}", path.file_name());
+                    log::debug!("Scanned audio file: {:?}", path.file_name());
                     audio_files.push(info);
                 }
                 Err(e) => {
-                    eprintln!("Failed to scan audio file {}: {}", path.display(), e);
+                    log::error!("Failed to scan audio file {}: {}", path.display(), e);
                 }
             }
         }
 
         if audio_files.is_empty() {
-            println!("No valid audio files found");
+            log::debug!("No valid audio files found");
             return;
         }
 
         // Create the mixtape folder
         let mixtape = MusicFolder::new_mixtape("My Mixtape".to_string(), audio_files);
-        println!(
+        log::debug!(
             "Created mixtape with {} tracks, {} bytes",
             mixtape.file_count, mixtape.total_size
         );
@@ -225,7 +225,7 @@ impl FolderList {
     /// Add a new empty mixtape and open the track editor
     pub fn add_new_mixtape(&mut self, _cx: &mut Context<Self>) {
         let mixtape = MusicFolder::new_mixtape("My Mixtape".to_string(), Vec::new());
-        println!("Created new empty mixtape");
+        log::debug!("Created new empty mixtape");
 
         // Add to folder list
         self.folders.push(mixtape);
@@ -331,12 +331,12 @@ impl FolderList {
 
         // Check if already editing this folder
         if self.editing_folder_index == Some(index) {
-            println!("Track editor already open for folder {}", index);
+            log::debug!("Track editor already open for folder {}", index);
             return;
         }
 
         let folder = &self.folders[index];
-        println!(
+        log::debug!(
             "Opening track editor for folder {}: {} ({} tracks)",
             index,
             folder.path.display(),
@@ -459,7 +459,7 @@ impl FolderList {
             None => return,
         };
 
-        println!("Track order changed for folder: {:?}", order);
+        log::debug!("Track order changed for folder: {:?}", order);
         self.folders[idx].set_track_order(order);
 
         // Invalidate ISO so it gets regenerated with new track order
@@ -477,7 +477,7 @@ impl FolderList {
             None => return,
         };
 
-        println!("Track exclusions changed: {} excluded", excluded.len());
+        log::debug!("Track exclusions changed: {} excluded", excluded.len());
         self.folders[idx].excluded_tracks = excluded;
 
         // Delete old output files (they include excluded tracks)
@@ -509,7 +509,7 @@ impl FolderList {
             None => return,
         };
 
-        println!("Mixtape tracks changed: {} tracks", tracks.len());
+        log::debug!("Mixtape tracks changed: {} tracks", tracks.len());
         self.folders[idx].audio_files = tracks;
         self.folders[idx].recalculate_totals();
         // Mark folder for re-encoding
@@ -526,7 +526,7 @@ impl FolderList {
     /// Handle mixtape name change from editor
     fn handle_mixtape_name_changed(&mut self, folder_id: &FolderId, name: String) {
         if let Some(folder) = self.folders.iter_mut().find(|f| &f.id == folder_id) {
-            println!("Mixtape name changed: {}", name);
+            log::debug!("Mixtape name changed: {}", name);
             folder.set_mixtape_name(name);
             self.has_unsaved_changes = true;
         }
@@ -534,7 +534,7 @@ impl FolderList {
 
     /// Handle track editor window closed
     fn handle_track_editor_closed(&mut self, folder_id: &FolderId) {
-        println!("Track editor closed for folder: {}", folder_id);
+        log::debug!("Track editor closed for folder: {}", folder_id);
         // Find the index of the folder and clear editing state
         if let Some(_idx) = self.folders.iter().position(|f| &f.id == folder_id) {
             self.editing_folder_index = None;
@@ -640,7 +640,7 @@ impl FolderList {
                         encoder.recalculate_bitrate(new_bitrate);
                         // Store the calculated bitrate
                         this.last_calculated_bitrate = Some(new_bitrate);
-                        println!("Import complete - bitrate set to {} kbps", new_bitrate);
+                        log::info!("Import complete - bitrate set to {} kbps", new_bitrate);
                     }
                 });
 

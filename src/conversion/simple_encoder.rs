@@ -135,19 +135,19 @@ impl gpui::Global for SimpleEncoderHandle {}
 impl SimpleEncoderHandle {
     /// Signal that folders changed - restart encoding
     pub fn restart(&self) {
-        println!("Encoder: restart requested");
+        log::debug!("Encoder: restart requested");
         self.state.request_restart();
     }
 
     /// Pause encoding (for imports)
     pub fn pause(&self) {
-        println!("Encoder: paused");
+        log::debug!("Encoder: paused");
         self.state.set_paused(true);
     }
 
     /// Resume encoding after import
     pub fn resume(&self) {
-        println!("Encoder: resumed");
+        log::debug!("Encoder: resumed");
         self.state.set_paused(false);
         // Also restart to pick up new folders
         self.state.request_restart();
@@ -184,7 +184,7 @@ impl SimpleEncoderHandle {
 
         // Clean up output files
         if let Err(e) = self.output_manager.cleanup() {
-            eprintln!("Warning: Failed to cleanup output files: {}", e);
+            log::warn!("Warning: Failed to cleanup output files: {}", e);
         }
     }
 
@@ -332,7 +332,7 @@ fn encoding_loop(
     progress_tx: mpsc::Sender<EncoderEvent>,
     ffmpeg_path: PathBuf,
 ) {
-    println!("Simple encoder loop started");
+    log::debug!("Simple encoder loop started");
 
     loop {
         // Wait until we have work to do
@@ -365,7 +365,7 @@ fn encoding_loop(
             continue;
         }
 
-        println!("Starting encoding: {} folders", folders.len());
+        log::debug!("Starting encoding: {} folders", folders.len());
 
         // === PHASE 1: Lossy files (global parallel encoding with smart strategies) ===
         state.set_phase(EncodingPhase::LossyPass);
@@ -387,7 +387,7 @@ fn encoding_loop(
         );
 
         if was_interrupted {
-            println!("Restart requested during lossy pass");
+            log::debug!("Restart requested during lossy pass");
             continue;
         }
 
@@ -413,7 +413,7 @@ fn encoding_loop(
         let old_bitrate = state.lossless_bitrate.load(Ordering::SeqCst);
         state.lossless_bitrate.store(lossless_bitrate, Ordering::SeqCst);
 
-        println!(
+        log::debug!(
             "Bitrate calculation: lossy_size={} MB, lossless_duration={:.0}s, bitrate={}",
             lossy_size / 1_000_000,
             lossless_duration,
@@ -423,7 +423,7 @@ fn encoding_loop(
         // If bitrate changed, delete old lossless outputs and notify UI
         if old_bitrate != 0 && old_bitrate != lossless_bitrate {
             // old_bitrate == 0 means this is the first calculation (no previous encoding)
-            println!("Bitrate changed {} -> {}, deleting old lossless outputs", old_bitrate, lossless_bitrate);
+            log::debug!("Bitrate changed {} -> {}, deleting old lossless outputs", old_bitrate, lossless_bitrate);
             delete_lossless_outputs(&output_manager, &folders);
 
             // Collect folders with active lossless files that need re-encoding
@@ -461,7 +461,7 @@ fn encoding_loop(
         );
 
         if was_interrupted {
-            println!("Restart requested during lossless pass");
+            log::debug!("Restart requested during lossless pass");
             continue;
         }
 
@@ -470,7 +470,7 @@ fn encoding_loop(
         *state.current_folder.lock().unwrap() = None;
         *state.current_progress.lock().unwrap() = (0, 0);
 
-        println!("Encoding complete!");
+        log::debug!("Encoding complete!");
 
         // Wait for restart signal or new folders
         loop {
@@ -610,7 +610,7 @@ fn encode_all_lossless_parallel(
         let output_dir = match output_manager.get_folder_output_dir(&folder.id) {
             Ok(dir) => dir,
             Err(e) => {
-                eprintln!("Failed to get output dir for {:?}: {}", folder.id, e);
+                log::warn!("Failed to get output dir for {:?}: {}", folder.id, e);
                 continue;
             }
         };
@@ -686,7 +686,7 @@ fn encode_all_lossless_parallel(
     }
 
     let total_jobs = all_jobs.len();
-    println!(
+    log::debug!(
         "Global parallel encoding: {} files across {} folders with {} workers",
         total_jobs,
         folder_contexts.len(),
@@ -757,7 +757,7 @@ fn encode_all_lossless_parallel(
 
                 if let Err(e) = result {
                     if !state.is_restart_requested() {
-                        eprintln!("Failed to encode {:?}: {}", job.input_path, e);
+                        log::warn!("Failed to encode {:?}: {}", job.input_path, e);
                     }
                 }
 
@@ -873,7 +873,7 @@ fn encode_all_lossy_parallel(
         let output_dir = match output_manager.get_folder_output_dir(&folder.id) {
             Ok(dir) => dir,
             Err(e) => {
-                eprintln!("Failed to get output dir for {:?}: {}", folder.id, e);
+                log::warn!("Failed to get output dir for {:?}: {}", folder.id, e);
                 continue;
             }
         };
@@ -962,7 +962,7 @@ fn encode_all_lossy_parallel(
     let copy_count = all_jobs.iter().filter(|j| matches!(j.strategy, EncodingStrategy::Copy | EncodingStrategy::CopyWithoutArt)).count();
     let transcode_count = all_jobs.len() - copy_count;
 
-    println!(
+    log::debug!(
         "Global parallel lossy encoding: {} files ({} copy, {} transcode) across {} folders with {} workers",
         all_jobs.len(),
         copy_count,
@@ -1034,7 +1034,7 @@ fn encode_all_lossy_parallel(
 
                 if let Err(e) = result {
                     if !state.is_restart_requested() {
-                        eprintln!("Failed to encode {:?}: {}", job.input_path, e);
+                        log::warn!("Failed to encode {:?}: {}", job.input_path, e);
                     }
                 }
 

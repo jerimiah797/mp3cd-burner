@@ -18,6 +18,8 @@ walkdir = "2.5"
 tokio = { version = "1", features = ["sync", "process", "rt-multi-thread", "macros"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+simplelog = "0.12"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

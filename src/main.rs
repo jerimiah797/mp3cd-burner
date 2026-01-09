@@ -8,12 +8,13 @@ mod audio;
 mod burning;
 mod conversion;
 mod core;
+mod logging;
 mod profiles;
 mod ui;
 
 use actions::{
-    About, NewMixtape, NewProfile, OpenDisplaySettings, OpenOutputDir, OpenProfile, Quit,
-    SaveProfile, SetVolumeLabel, ToggleEmbedAlbumArt, ToggleSimulateBurn, push_pending_file,
+    About, NewMixtape, NewProfile, OpenDisplaySettings, OpenLogFolder, OpenOutputDir, OpenProfile,
+    Quit, SaveProfile, SetVolumeLabel, ToggleEmbedAlbumArt, ToggleSimulateBurn, push_pending_file,
 };
 use core::{AppSettings, DisplaySettings, WindowState};
 use gpui::{
@@ -89,10 +90,17 @@ fn build_menus(settings: &AppSettings) -> Vec<Menu> {
                 MenuItem::action("Open Output Folder", OpenOutputDir),
             ],
         },
+        Menu {
+            name: "Help".into(),
+            items: vec![MenuItem::action("Open Log Folder", OpenLogFolder)],
+        },
     ]
 }
 
 fn main() {
+    // Initialize logging (to file + terminal)
+    logging::init_logging();
+
     let app = Application::new();
 
     // Handle files opened via Finder (double-click on .mp3cd files)
@@ -104,7 +112,7 @@ fn main() {
                 let decoded = percent_decode_str(path_str);
                 let path = std::path::PathBuf::from(&decoded);
                 if path.extension().is_some_and(|ext| ext == "mp3cd") {
-                    println!("File opened from Finder: {:?}", path);
+                    log::info!("File opened from Finder: {:?}", path);
                     push_pending_file(path);
                 }
             }
@@ -128,14 +136,19 @@ fn main() {
             if output_dir.exists() {
                 let _ = std::process::Command::new("open").arg(&output_dir).spawn();
             } else {
-                println!("Output directory does not exist yet: {:?}", output_dir);
+                log::warn!("Output directory does not exist yet: {:?}", output_dir);
+            }
+        });
+        cx.on_action(|_: &OpenLogFolder, _cx| {
+            if let Err(e) = logging::open_log_directory() {
+                log::error!("Failed to open log folder: {}", e);
             }
         });
         cx.on_action(|_: &ToggleSimulateBurn, cx| {
             // Toggle the setting
             let settings = cx.global_mut::<AppSettings>();
             settings.simulate_burn = !settings.simulate_burn;
-            println!("Simulate burn: {}", settings.simulate_burn);
+            log::info!("Simulate burn: {}", settings.simulate_burn);
 
             // Rebuild menus to show updated checkmark
             let menus = build_menus(settings);
@@ -143,7 +156,7 @@ fn main() {
 
             // Save settings to disk
             if let Err(e) = cx.global::<AppSettings>().save() {
-                eprintln!("Failed to save settings: {}", e);
+                log::error!("Failed to save settings: {}", e);
             }
         });
         // Note: ToggleEmbedAlbumArt handler is registered after window creation
@@ -217,8 +230,8 @@ fn main() {
                                 folder_list.start_encoder_polling(cx);
                             }
                             Err(e) => {
-                                eprintln!("Warning: Could not enable background encoding: {}", e);
-                                eprintln!("Falling back to legacy mode (convert on burn)");
+                                log::warn!("Could not enable background encoding: {}", e);
+                                log::warn!("Falling back to legacy mode (convert on burn)");
                             }
                         }
                         folder_list
@@ -243,7 +256,7 @@ fn main() {
             if let Some(state) = cx.try_global::<core::ConversionState>()
                 && state.is_converting() {
                     // Show warning - don't quit
-                    eprintln!("Cannot quit: burn in progress");
+                    log::warn!("Cannot quit: burn in progress");
                     // TODO: Show a dialog instead of just logging
                     return;
                 }
@@ -256,7 +269,7 @@ fn main() {
             let settings = cx.global_mut::<AppSettings>();
             settings.embed_album_art = !settings.embed_album_art;
             let embed = settings.embed_album_art;
-            println!("[main.rs] Toggled embed_album_art = {}", embed);
+            log::debug!("Toggled embed_album_art = {}", embed);
 
             // Rebuild menus to show updated checkmark
             let menus = build_menus(settings);
@@ -265,14 +278,14 @@ fn main() {
             // Notify the encoder via the global handle
             if let Some(encoder) = cx.try_global::<conversion::SimpleEncoderHandle>() {
                 encoder.set_embed_album_art(embed);
-                println!("[main.rs] Notified encoder");
+                log::debug!("Notified encoder of embed_album_art change");
             } else {
-                println!("[main.rs] No encoder global available");
+                log::debug!("No encoder global available");
             }
 
             // Save settings to disk
             if let Err(e) = cx.global::<AppSettings>().save() {
-                eprintln!("Failed to save settings: {}", e);
+                log::error!("Failed to save settings: {}", e);
             }
         });
 
@@ -287,7 +300,7 @@ fn main() {
                 // Don't quit if a burn is in progress - show progress window instead
                 if let Some(state) = cx.try_global::<core::ConversionState>()
                     && state.is_converting() {
-                        println!("Window closed during burn - opening progress window");
+                        log::info!("Window closed during burn - opening progress window");
                         ui::components::BurnProgressWindow::open(cx, state.clone());
                         return;
                     }

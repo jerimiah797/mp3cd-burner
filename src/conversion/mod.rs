@@ -30,7 +30,7 @@ pub fn get_ffmpeg_path() -> Result<PathBuf, String> {
             .join("ffmpeg");
 
         if dev_path.exists() {
-            println!("Found ffmpeg at development path: {:?}", dev_path);
+            log::debug!("Found ffmpeg at development path: {:?}", dev_path);
             return Ok(dev_path);
         }
     }
@@ -46,14 +46,14 @@ pub fn get_ffmpeg_path() -> Result<PathBuf, String> {
                 .join("ffmpeg");
 
             if bundle_path.exists() {
-                println!("Found ffmpeg at bundle path: {:?}", bundle_path);
+                log::debug!("Found ffmpeg at bundle path: {:?}", bundle_path);
                 return Ok(bundle_path);
             }
 
             // Also try directly next to executable
             let local_path = exe_dir.join("resources").join("bin").join("ffmpeg");
             if local_path.exists() {
-                println!("Found ffmpeg at local path: {:?}", local_path);
+                log::debug!("Found ffmpeg at local path: {:?}", local_path);
                 return Ok(local_path);
             }
         }
@@ -82,7 +82,7 @@ pub fn verify_ffmpeg() -> Result<PathBuf, String> {
         }
     }
 
-    println!("ffmpeg verified at: {:?}", path);
+    log::debug!("ffmpeg verified at: {:?}", path);
     Ok(path)
 }
 

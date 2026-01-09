@@ -13,6 +13,7 @@ actions!(
         Quit,
         About,
         OpenOutputDir,
+        OpenLogFolder,
         ToggleSimulateBurn,
         ToggleEmbedAlbumArt,
         OpenDisplaySettings,

@@ -101,7 +101,7 @@ impl DisplaySettingsModal {
 
         // Persist to disk
         if let Err(e) = settings.save() {
-            eprintln!("Failed to save display settings: {}", e);
+            log::error!("Failed to save display settings: {}", e);
         }
     }
 

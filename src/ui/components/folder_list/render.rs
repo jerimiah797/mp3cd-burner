@@ -267,7 +267,7 @@ impl FolderList {
                 el.child(
                     render_erase_burn_button_base(success_color, success_hover).on_click(
                         cx.listener(|this, _event, _window, _cx| {
-                            println!("Erase & Burn clicked");
+                            log::debug!("Erase & Burn clicked");
                             this.conversion_state
                                 .erase_approved
                                 .store(true, Ordering::SeqCst);
@@ -287,7 +287,7 @@ impl FolderList {
     ) -> impl IntoElement {
         render_burn_button_base(iso_has_been_burned, success_color, success_hover).on_click(
             cx.listener(move |this, _event, _window, cx| {
-                println!("Burn clicked - showing volume label dialog");
+                log::debug!("Burn clicked - showing volume label dialog");
                 this.show_volume_label_dialog(Some(PendingBurnAction::BurnExisting), cx);
             }),
         )
@@ -305,7 +305,7 @@ impl FolderList {
         render_convert_burn_button_base(has_folders, success_color, success_hover, text_muted)
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 if has_folders {
-                    println!("Convert & Burn clicked - showing volume label dialog");
+                    log::debug!("Convert & Burn clicked - showing volume label dialog");
                     this.show_volume_label_dialog(Some(PendingBurnAction::ConvertAndBurn), cx);
                 }
             }))
@@ -373,7 +373,7 @@ impl Render for FolderList {
                     height: bounds.size.height.into(),
                 };
                 if let Err(e) = state.save() {
-                    eprintln!("Failed to save window state: {}", e);
+                    log::error!("Failed to save window state: {}", e);
                 }
             })
             .detach();
@@ -434,7 +434,7 @@ impl Render for FolderList {
             if let Some(profile) = profile_path {
                 // Load as profile instead of treating as music folder
                 // This handles unsaved changes check like File > Open
-                println!("Loading dropped profile: {:?}", profile);
+                log::debug!("Loading dropped profile: {:?}", profile);
                 this.load_dropped_profile(profile.clone(), window, cx);
             } else {
                 // Handle dropped paths - separates audio files and directories

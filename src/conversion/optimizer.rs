@@ -194,7 +194,7 @@ pub fn optimize_bitrate(
         }
     }
 
-    println!(
+    log::debug!(
         "Bitrate optimization: {} -> {} kbps (headroom: {:.1} MB)",
         initial_bitrate,
         best_bitrate,

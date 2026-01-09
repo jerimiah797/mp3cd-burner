@@ -53,11 +53,11 @@ pub fn generate_iso(
 
     // Create staging directory with symlinks
     let staging_dir = output_manager.create_iso_staging(folders)?;
-    println!("ISO staging directory: {:?}", staging_dir);
+    log::info!("ISO staging directory: {:?}", staging_dir);
 
     // Create ISO from staging directory
     let result = create_iso(&staging_dir, volume_label)?;
-    println!("ISO created successfully: {:?}", result.iso_path);
+    log::info!("ISO created successfully: {:?}", result.iso_path);
 
     // Store ISO path in conversion state
     let iso_path = result.iso_path.clone();
@@ -90,7 +90,7 @@ pub fn spawn_iso_generation(
                     state.set_stage(BurnStage::Complete);
                 }
                 Err(e) => {
-                    eprintln!("ISO generation failed: {}", e);
+                    log::error!("ISO generation failed: {}", e);
                     state.set_stage(BurnStage::Complete);
                 }
             }

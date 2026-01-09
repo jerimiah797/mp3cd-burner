@@ -25,12 +25,12 @@ impl FolderList {
     pub(super) fn poll_volume_label(&mut self) -> bool {
         if let Some(ref rx) = self.pending_volume_label_rx
             && let Ok(label) = rx.try_recv() {
-                println!("Volume label set to: {}", label);
+                log::debug!("Volume label set to: {}", label);
 
                 // If the label changed, invalidate the ISO so it gets regenerated
                 if self.volume_label != label
                     && self.iso_state.is_some() {
-                        println!("Volume label changed - invalidating existing ISO");
+                        log::debug!("Volume label changed - invalidating existing ISO");
                         self.iso_state = None;
                         self.iso_generation_attempted = false;
                     }
@@ -52,11 +52,11 @@ impl FolderList {
     pub(super) fn poll_pending_open_files(&mut self, cx: &mut Context<Self>) {
         let pending_paths = take_pending_files();
         for path in pending_paths {
-            println!("Loading profile from Finder: {:?}", path);
+            log::debug!("Loading profile from Finder: {:?}", path);
             // Don't prompt to save - just load the profile directly
             // (this is the expected behavior when double-clicking a file)
             if let Err(e) = self.load_profile(&path, cx) {
-                eprintln!("Failed to load profile: {}", e);
+                log::error!("Failed to load profile: {}", e);
             }
         }
     }
@@ -103,7 +103,7 @@ impl FolderList {
                     if path.is_file() {
                         std::fs::remove_file(path)
                             .map_err(|e| format!("Failed to remove existing profile file: {}", e))?;
-                        println!("Removed existing metadata-only profile to create bundle");
+                        log::debug!("Removed existing metadata-only profile to create bundle");
                     }
 
                     // Copy converted files from temp to bundle
@@ -181,7 +181,7 @@ impl FolderList {
             return Err("Profile has no folders".to_string());
         }
 
-        println!("Starting async profile load of {} folders", folder_count);
+        log::debug!("Starting async profile load of {} folders", folder_count);
 
         // Clear current state
         self.folders.clear();
@@ -236,12 +236,12 @@ impl FolderList {
         // Spawn background thread for scanning
         std::thread::spawn(move || {
             for path in folder_paths {
-                println!("Scanning: {}", path.display());
+                log::debug!("Scanning: {}", path.display());
                 let path_str = path.to_string_lossy().to_string();
 
                 match scan_music_folder(&path) {
                     Ok(folder) => {
-                        println!(
+                        log::debug!(
                             "Scanned folder: {} ({} files, {} bytes)",
                             folder.path.display(),
                             folder.file_count,
@@ -250,14 +250,14 @@ impl FolderList {
                         state.push_folder(folder);
                     }
                     Err(e) => {
-                        eprintln!("Failed to scan folder {}: {}", path.display(), e);
+                        log::error!("Failed to scan folder {}: {}", path.display(), e);
 
                         // For bundle profiles with saved metadata, create folder from metadata
                         if bundle_path.is_some()
                             && let Some(saved) = folder_states.get(&path_str)
                             && saved.has_display_metadata()
                         {
-                            println!(
+                            log::debug!(
                                 "Creating folder from saved metadata (source unavailable): {}",
                                 path.display()
                             );
@@ -310,7 +310,7 @@ impl FolderList {
                 }
             }
             state.finish();
-            println!("Profile import complete");
+            log::debug!("Profile import complete");
         });
 
         // Start polling for results (profile-aware)
@@ -348,7 +348,7 @@ impl FolderList {
                     match choice {
                         0 => {
                             // Save - show save dialog, then clear
-                            println!("User chose to save - showing save dialog");
+                            log::debug!("User chose to save - showing save dialog");
                             let _ = async_cx.update_window(window_handle, |_, window, cx| {
                                 let _ = this_handle.update(cx, |this, cx| {
                                     // Set flag to clear after save
@@ -359,7 +359,7 @@ impl FolderList {
                         }
                         1 => {
                             // Don't Save - clear immediately
-                            println!("User chose not to save - clearing");
+                            log::debug!("User chose not to save - clearing");
                             let _ = async_cx.update(|cx| {
                                 let _ = this_handle.update(cx, |this, cx| {
                                     this.clear_for_new_profile(cx);
@@ -368,7 +368,7 @@ impl FolderList {
                         }
                         2 => {
                             // Cancel - do nothing
-                            println!("User cancelled new profile");
+                            log::debug!("User cancelled new profile");
                         }
                         _ => {}
                     }
@@ -398,7 +398,7 @@ impl FolderList {
         if let Some(output_manager) = &mut self.output_manager {
             output_manager.set_bundle_path(None);
         }
-        println!("New profile - cleared all folders and encoder state");
+        log::debug!("New profile - cleared all folders and encoder state");
         cx.notify();
     }
 
@@ -455,7 +455,7 @@ impl FolderList {
                     match choice {
                         0 => {
                             // Save first, then open
-                            println!("User chose to save before opening - showing save dialog");
+                            log::debug!("User chose to save before opening - showing save dialog");
                             let _ = async_cx.update_window(window_handle, |_, window, cx| {
                                 let _ = this_handle.update(cx, |this, cx| {
                                     // Set flag to show open picker after save completes
@@ -466,7 +466,7 @@ impl FolderList {
                         }
                         1 => {
                             // Don't Save - open profile directly
-                            println!("User chose not to save - opening profile");
+                            log::debug!("User chose not to save - opening profile");
                             let _ = async_cx.update(|cx| {
                                 let _ = this_handle.update(cx, |this, cx| {
                                     this.show_open_file_picker(cx);
@@ -475,7 +475,7 @@ impl FolderList {
                         }
                         2 => {
                             // Cancel - do nothing
-                            println!("User cancelled open profile");
+                            log::debug!("User cancelled open profile");
                         }
                         _ => {}
                     }
@@ -497,7 +497,7 @@ impl FolderList {
         // If no unsaved changes, load immediately
         if !self.has_unsaved_changes {
             if let Err(e) = self.load_profile(&path, cx) {
-                eprintln!("Failed to load dropped profile: {}", e);
+                log::error!("Failed to load dropped profile: {}", e);
             }
             return;
         }
@@ -520,7 +520,7 @@ impl FolderList {
                     match choice {
                         0 => {
                             // Save first, then load dropped profile
-                            println!("User chose to save before loading dropped profile");
+                            log::debug!("User chose to save before loading dropped profile");
                             let _ = async_cx.update_window(window_handle, |_, window, cx| {
                                 let _ = this_handle.update(cx, |this, cx| {
                                     // Store the path to load after save completes
@@ -531,18 +531,18 @@ impl FolderList {
                         }
                         1 => {
                             // Don't Save - load profile directly
-                            println!("User chose not to save - loading dropped profile");
+                            log::debug!("User chose not to save - loading dropped profile");
                             let _ = async_cx.update(|cx| {
                                 let _ = this_handle.update(cx, |this, cx| {
                                     if let Err(e) = this.load_profile(&path, cx) {
-                                        eprintln!("Failed to load dropped profile: {}", e);
+                                        log::error!("Failed to load dropped profile: {}", e);
                                     }
                                 });
                             });
                         }
                         2 => {
                             // Cancel - do nothing
-                            println!("User cancelled loading dropped profile");
+                            log::debug!("User cancelled loading dropped profile");
                         }
                         _ => {}
                     }
@@ -569,7 +569,7 @@ impl FolderList {
                         let path = path.clone();
                         let _ = this_handle.update(&mut async_cx, |this, cx| {
                             if let Err(e) = this.load_profile(&path, cx) {
-                                eprintln!("Failed to load profile: {}", e);
+                                log::error!("Failed to load profile: {}", e);
                             }
                         });
                     }
@@ -584,7 +584,7 @@ impl FolderList {
     /// Then shows the file picker and saves the profile.
     pub fn save_profile_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.folders.is_empty() {
-            println!("No folders to save");
+            log::debug!("No folders to save");
             return;
         }
 
@@ -697,12 +697,12 @@ impl FolderList {
 
                         let _ = this_handle.update(&mut async_cx, |this, cx| {
                             if let Err(e) = this.save_profile(&path, chosen_name, for_bundle) {
-                                eprintln!("Failed to save profile: {}", e);
+                                log::error!("Failed to save profile: {}", e);
                                 this.pending_new_after_save = false;
                                 this.pending_open_after_save = false;
                                 this.pending_load_profile_path = None;
                             } else {
-                                println!("Profile saved to: {:?} (bundle: {})", path, for_bundle);
+                                log::debug!("Profile saved to: {:?} (bundle: {})", path, for_bundle);
                                 // Remember the save path and mark as saved
                                 this.current_profile_path = Some(path);
                                 this.has_unsaved_changes = false;
@@ -720,7 +720,7 @@ impl FolderList {
                                 // If we were saving before loading a dropped profile, load it now
                                 if let Some(profile_path) = this.pending_load_profile_path.take()
                                     && let Err(e) = this.load_profile(&profile_path, cx) {
-                                        eprintln!("Failed to load dropped profile: {}", e);
+                                        log::error!("Failed to load dropped profile: {}", e);
                                     }
                             }
                         });
@@ -789,7 +789,7 @@ impl FolderList {
                                                 .collect();
                                             folder.track_order = track_order.clone();
                                             if track_order.is_some() {
-                                                println!(
+                                                log::debug!(
                                                     "Restored track order for: {}",
                                                     folder_path_str
                                                 );
@@ -820,12 +820,12 @@ impl FolderList {
                                         };
 
                                         if folder.source_available {
-                                            println!(
+                                            log::debug!(
                                                 "Restored conversion status for: {}",
                                                 folder_path_str
                                             );
                                         } else {
-                                            println!(
+                                            log::debug!(
                                                 "Restored conversion status (source unavailable): {}",
                                                 folder_path_str
                                             );
@@ -888,12 +888,12 @@ impl FolderList {
                                 };
 
                                 if folder.source_available {
-                                    println!(
+                                    log::debug!(
                                         "Restored conversion status for: {}",
                                         folder_path_str
                                     );
                                 } else {
-                                    println!(
+                                    log::debug!(
                                         "Restored conversion status (source unavailable): {}",
                                         folder_path_str
                                     );
@@ -909,7 +909,7 @@ impl FolderList {
                 let failed_paths = state.get_failed_paths();
                 let _ = this.update(&mut async_cx, |this, _cx| {
                     if let Some(setup) = this.pending_profile_load.take() {
-                        println!(
+                        log::debug!(
                             "Profile import complete: {} folders loaded",
                             this.folders.len()
                         );
@@ -970,7 +970,7 @@ impl FolderList {
                                 crate::burning::IsoState::new(iso_path, &this.folders)
                             {
                                 this.iso_state = Some(iso_state);
-                                println!("Restored ISO state from profile");
+                                log::debug!("Restored ISO state from profile");
                             }
 
                         // For bundle profiles: copy converted files from bundle to temp
@@ -991,7 +991,7 @@ impl FolderList {
                                             .copy_from_bundle(bundle_path, &folder.id)
                                         {
                                             Ok(new_output_dir) => {
-                                                println!(
+                                                log::debug!(
                                                     "Copied bundle folder to temp: {}",
                                                     folder.path.display()
                                                 );
@@ -1017,7 +1017,7 @@ impl FolderList {
                                                     };
                                             }
                                             Err(e) => {
-                                                eprintln!(
+                                                log::error!(
                                                     "Failed to copy bundle folder {}: {}",
                                                     folder.path.display(),
                                                     e
@@ -1028,7 +1028,7 @@ impl FolderList {
                                                     folder.conversion_status =
                                                         FolderConversionStatus::NotConverted;
                                                 } else {
-                                                    eprintln!(
+                                                    log::error!(
                                                         "WARNING: Folder {} has no source files and bundle copy failed - folder will be removed",
                                                         folder.path.display()
                                                     );
@@ -1095,7 +1095,7 @@ impl FolderList {
                             .collect();
 
                         if !folders_to_remove.is_empty() {
-                            println!(
+                            log::debug!(
                                 "Removing {} folders with no source and no converted files",
                                 folders_to_remove.len()
                             );
@@ -1135,7 +1135,7 @@ impl FolderList {
                                 }
                             });
                             if let Some(bitrate) = saved_lossless_bitrate {
-                                println!(
+                                log::debug!(
                                     "Profile loaded - restored lossless bitrate: {} kbps",
                                     bitrate
                                 );

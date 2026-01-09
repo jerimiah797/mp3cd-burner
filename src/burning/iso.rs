@@ -31,7 +31,7 @@ pub fn create_iso(source_dir: &Path, volume_label: &str) -> Result<IsoResult, St
 
     // Remove existing ISO file if it exists
     if iso_path.exists() {
-        println!("Removing existing ISO file at {}", iso_path.display());
+        log::info!("Removing existing ISO file at {}", iso_path.display());
         fs::remove_file(&iso_path).map_err(|e| format!("Failed to remove existing ISO: {}", e))?;
     }
 
@@ -48,7 +48,7 @@ pub fn create_iso(source_dir: &Path, volume_label: &str) -> Result<IsoResult, St
                 .map_err(|e| format!("Failed to clean dereferenced directory: {}", e))?;
         }
 
-        println!(
+        log::info!(
             "Dereferencing symlinks from {} to {}",
             source_dir.display(),
             dereferenced_dir.display()
@@ -83,7 +83,7 @@ pub fn create_iso(source_dir: &Path, volume_label: &str) -> Result<IsoResult, St
         source_dir.to_path_buf()
     };
 
-    println!(
+    log::info!(
         "Creating ISO from {} to {} with volume label '{}'",
         effective_source.display(),
         iso_path.display(),
@@ -106,7 +106,7 @@ pub fn create_iso(source_dir: &Path, volume_label: &str) -> Result<IsoResult, St
         .map_err(|e| format!("Failed to execute hdiutil makehybrid: {}", e))?;
 
     if output.status.success() {
-        println!("ISO created successfully at {}", iso_path.display());
+        log::info!("ISO created successfully at {}", iso_path.display());
         Ok(IsoResult { iso_path })
     } else {
         let error_msg = String::from_utf8_lossy(&output.stderr);

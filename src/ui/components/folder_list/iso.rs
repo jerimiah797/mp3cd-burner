@@ -108,7 +108,7 @@ impl FolderList {
         // Mark as attempted to prevent retry loop
         self.iso_generation_attempted = true;
 
-        println!("All folders encoded - generating ISO automatically...");
+        log::debug!("All folders encoded - generating ISO automatically...");
 
         // Get the output manager to access encoded folder paths
         let output_manager = match &self.output_manager {
@@ -159,13 +159,13 @@ impl FolderList {
                 if let Some(path) = iso_path {
                     let _ = this.update(&mut async_cx, |folder_list, cx| {
                         if let Ok(iso_state) = IsoState::new(path.clone(), &folders) {
-                            println!(
+                            log::debug!(
                                 "ISO size: {} bytes ({:.1} MB)",
                                 iso_state.size_bytes,
                                 iso_state.size_bytes as f64 / 1_000_000.0
                             );
                             folder_list.iso_state = Some(iso_state);
-                            println!("ISO state saved - ready for Burn");
+                            log::debug!("ISO state saved - ready for Burn");
                             cx.notify(); // Ensure UI updates with new ISO size
                         }
                     });

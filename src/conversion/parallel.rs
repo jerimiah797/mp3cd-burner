@@ -294,7 +294,7 @@ where
     let semaphore = Arc::new(Semaphore::new(worker_count));
     let on_complete = Arc::new(on_file_complete);
 
-    println!(
+    log::debug!(
         "Starting parallel conversion: {} files with {} workers",
         jobs.len(),
         worker_count
@@ -307,7 +307,7 @@ where
     for job in jobs {
         // Check for cancellation before starting each new job
         if cancel_token.load(Ordering::SeqCst) {
-            println!("Cancellation requested - skipping remaining files");
+            log::debug!("Cancellation requested - skipping remaining files");
             was_cancelled = true;
             break;
         }
@@ -316,7 +316,7 @@ where
         while pause_token.load(Ordering::SeqCst) {
             // Also check for cancellation while paused
             if cancel_token.load(Ordering::SeqCst) {
-                println!("Cancellation requested while paused");
+                log::debug!("Cancellation requested while paused");
                 was_cancelled = true;
                 break;
             }
@@ -349,7 +349,7 @@ where
                     format!("transcode @{}k (target)", br)
                 }
             };
-            println!("Processing: {} [{}]", input_name, strategy_desc);
+            log::debug!("Processing: {} [{}]", input_name, strategy_desc);
 
             let result = convert_file_async(
                 &ffmpeg,
@@ -362,11 +362,11 @@ where
 
             if result.success {
                 let count = progress.increment_completed();
-                println!("Completed ({}/{}): {}", count, progress.total, input_name);
+                log::debug!("Completed ({}/{}): {}", count, progress.total, input_name);
             } else {
                 progress.increment_failed();
                 if let Some(ref error) = result.error {
-                    eprintln!("Failed: {} - {}", input_name, error);
+                    log::error!("Failed: {} - {}", input_name, error);
                 }
             }
 

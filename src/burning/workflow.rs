@@ -32,7 +32,7 @@ pub fn execute_full_burn(
     // Wait for all folders to be converted
     loop {
         if state.is_cancelled() {
-            println!("Burn cancelled while waiting for conversion");
+            log::info!("Burn cancelled while waiting for conversion");
             state.set_stage(BurnStage::Cancelled);
             state.finish();
             return;
@@ -52,7 +52,7 @@ pub fn execute_full_burn(
         state.completed.store(completed_count, Ordering::SeqCst);
 
         if is_done && completed_count == folders.len() {
-            println!("All folders converted ({} total)", completed_count);
+            log::info!("All folders converted ({} total)", completed_count);
             break;
         }
 
@@ -61,15 +61,15 @@ pub fn execute_full_burn(
 
     // Create ISO staging directory with symlinks to converted folders
     state.set_stage(BurnStage::CreatingIso);
-    println!("\n=== Creating ISO image ===");
+    log::info!("\n=== Creating ISO image ===");
 
     let staging_dir = match output_manager.create_iso_staging(&folders) {
         Ok(dir) => {
-            println!("ISO staging directory: {:?}", dir);
+            log::info!("ISO staging directory: {:?}", dir);
             dir
         }
         Err(e) => {
-            eprintln!("Failed to create ISO staging: {}", e);
+            log::error!("Failed to create ISO staging: {}", e);
             state.set_stage(BurnStage::Complete);
             state.finish();
             return;
@@ -92,18 +92,18 @@ fn execute_iso_and_burn(
     volume_label: String,
 ) {
     state.set_stage(BurnStage::CreatingIso);
-    println!("\n=== Creating ISO image ===");
+    log::info!("\n=== Creating ISO image ===");
 
     match create_iso(&staging_dir, &volume_label) {
         Ok(result) => {
-            println!("ISO created at: {}", result.iso_path.display());
+            log::info!("ISO created at: {}", result.iso_path.display());
             *state.iso_path.lock().unwrap() = Some(result.iso_path.clone());
 
             // Coordinate the burn process
             execute_burn(&result.iso_path, &state, simulate_burn);
         }
         Err(e) => {
-            eprintln!("ISO creation failed: {}", e);
+            log::error!("ISO creation failed: {}", e);
             state.set_stage(BurnStage::Complete);
             state.finish();
         }
@@ -126,7 +126,7 @@ fn execute_burn(iso_path: &Path, state: &ConversionState, simulate_burn: bool) {
     };
 
     let result = coordinate_burn(iso_path, state, &config);
-    println!("Burn coordination result: {:?}", result);
+    log::info!("Burn coordination result: {:?}", result);
     state.finish();
 }
 

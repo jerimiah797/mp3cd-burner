@@ -44,7 +44,7 @@ impl OutputManager {
         fs::create_dir_all(&session_dir)
             .map_err(|e| format!("Failed to create session directory: {}", e))?;
 
-        println!("Created session: {} at {:?}", session_id, session_dir);
+        log::debug!("Created session: {} at {:?}", session_id, session_dir);
 
         Ok(Self {
             session_id,
@@ -64,9 +64,9 @@ impl OutputManager {
         let mut guard = self.bundle_path.lock().unwrap();
         *guard = path;
         if let Some(ref p) = *guard {
-            println!("OutputManager: bundle path set to {:?}", p);
+            log::debug!("OutputManager: bundle path set to {:?}", p);
         } else {
-            println!("OutputManager: bundle path cleared");
+            log::debug!("OutputManager: bundle path cleared");
         }
     }
 
@@ -103,9 +103,9 @@ impl OutputManager {
                 }
                 // Delete old session
                 if let Err(e) = fs::remove_dir_all(&path) {
-                    eprintln!("Warning: Failed to clean old session {:?}: {}", path, e);
+                    log::warn!("Warning: Failed to clean old session {:?}: {}", path, e);
                 } else {
-                    println!("Cleaned up old session: {:?}", path);
+                    log::debug!("Cleaned up old session: {:?}", path);
                 }
             }
         }
@@ -184,7 +184,7 @@ impl OutputManager {
         if folder_dir.exists() {
             fs::remove_dir_all(&folder_dir)
                 .map_err(|e| format!("Failed to delete folder output: {}", e))?;
-            println!("Deleted output for folder: {}", folder_id);
+            log::debug!("Deleted output for folder: {}", folder_id);
         }
 
         Ok(())
@@ -198,7 +198,7 @@ impl OutputManager {
         if folder_dir.exists() {
             fs::remove_dir_all(&folder_dir)
                 .map_err(|e| format!("Failed to delete folder output from session: {}", e))?;
-            println!("Deleted session output for folder: {}", folder_id);
+            log::debug!("Deleted session output for folder: {}", folder_id);
         }
 
         Ok(())
@@ -219,7 +219,7 @@ impl OutputManager {
         if converted_dir.exists() {
             fs::remove_dir_all(&converted_dir)
                 .map_err(|e| format!("Failed to clean existing converted directory: {}", e))?;
-            println!("Cleaned existing converted directory in bundle");
+            log::debug!("Cleaned existing converted directory in bundle");
         }
 
         fs::create_dir_all(&converted_dir)
@@ -232,9 +232,9 @@ impl OutputManager {
             if src.exists() {
                 // Copy the entire folder
                 copy_dir_recursive(&src, &dst)?;
-                println!("Copied {} to bundle: {:?} -> {:?}", folder_id, src, dst);
+                log::debug!("Copied {} to bundle: {:?} -> {:?}", folder_id, src, dst);
             } else {
-                println!(
+                log::debug!(
                     "Warning: Source folder not found for {}: {:?}",
                     folder_id, src
                 );
@@ -275,7 +275,7 @@ impl OutputManager {
 
         // Copy the entire folder from bundle to temp
         copy_dir_recursive(&src, &dst)?;
-        println!(
+        log::debug!(
             "Copied from bundle: {:?} -> {:?}",
             src, dst
         );
@@ -378,14 +378,14 @@ impl OutputManager {
                         })?;
                     }
                 } else {
-                    println!(
+                    log::debug!(
                         "Warning: Source file not found during staging: {}",
                         source_file.display()
                     );
                 }
             }
 
-            println!(
+            log::debug!(
                 "Staged: {} ({} tracks, numbered: {})",
                 numbered_name,
                 active_tracks.len(),
@@ -404,13 +404,13 @@ impl OutputManager {
 
     /// Clean up the session (delete all output)
     pub fn cleanup(&self) -> Result<(), String> {
-        println!("Cleanup requested for session: {} at {:?}", self.session_id, self.session_dir);
+        log::debug!("Cleanup requested for session: {} at {:?}", self.session_id, self.session_dir);
         if self.session_dir.exists() {
             fs::remove_dir_all(&self.session_dir)
                 .map_err(|e| format!("Failed to clean up session {}: {}", self.session_id, e))?;
-            println!("Cleaned up session: {}", self.session_id);
+            log::debug!("Cleaned up session: {}", self.session_id);
         } else {
-            println!("Session directory does not exist, nothing to clean: {}", self.session_id);
+            log::debug!("Session directory does not exist, nothing to clean: {}", self.session_id);
         }
         Ok(())
     }

@@ -59,14 +59,14 @@ pub fn prepare_profile_load(path: &Path) -> Result<ProfileLoadSetup, String> {
     // Validate conversion state, passing bundle path if applicable
     let validation = validate_conversion_state(&profile, bundle_path.as_deref());
 
-    println!(
+    log::debug!(
         "Loading profile: {} (bundle: {})",
         profile.profile_name,
         bundle_path.is_some()
     );
-    println!("  Valid folders: {:?}", validation.valid_folders);
-    println!("  Invalid folders: {:?}", validation.invalid_folders);
-    println!("  ISO valid: {}", validation.iso_valid);
+    log::debug!("  Valid folders: {:?}", validation.valid_folders);
+    log::debug!("  Invalid folders: {:?}", validation.invalid_folders);
+    log::debug!("  ISO valid: {}", validation.iso_valid);
 
     let folder_paths: Vec<PathBuf> = profile.folders.iter().map(PathBuf::from).collect();
 
@@ -258,7 +258,7 @@ pub fn save_profile_to_path(
     );
     save_profile(&profile, path)?;
     add_to_recent_profiles(&path.to_string_lossy())?;
-    println!("Profile saved to: {}", path.display());
+    log::debug!("Profile saved to: {}", path.display());
     Ok(())
 }
 
