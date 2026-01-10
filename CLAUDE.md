@@ -17,22 +17,30 @@ This is a GPUI-based MP3 CD burner application. Key points:
 
 ## Building Signed Releases
 
+**Always build universal binaries** for compatibility with both Intel and Apple Silicon Macs.
+
 Use the build script at `scripts/bundle-macos.sh`:
 
 ```bash
 source ~/.zshrc  # Required to access SIGNING_IDENTITY env var
 
-# Build and sign for current architecture
-./scripts/bundle-macos.sh --sign
-
-# Build universal binary (ARM64 + x86_64) and sign
+# Build universal binary (ARM64 + x86_64) and sign - ALWAYS USE THIS
 ./scripts/bundle-macos.sh --universal --sign
 ```
 
 The script:
-- Builds the release binary with `cargo build --release`
+- Builds release binaries for both aarch64-apple-darwin and x86_64-apple-darwin
+- Creates a universal binary with `lipo`
 - Creates the .app bundle structure
-- Copies ffmpeg, icons, and Info.plist to the bundle
+- Copies ffmpeg, icons, images, and Info.plist to the bundle
 - Signs the app with the Developer ID (requires `SIGNING_IDENTITY` env var)
 
 Output: `target/release/MP3 CD Burner.app`
+
+To create a DMG for distribution:
+```bash
+hdiutil create -volname "MP3 CD Burner" \
+  -srcfolder "target/release/MP3 CD Burner.app" \
+  -ov -format UDZO \
+  target/release/MP3-CD-Burner-X.X.X.dmg
+```
