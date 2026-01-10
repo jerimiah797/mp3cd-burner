@@ -189,6 +189,9 @@ impl FolderList {
         self.iso_generation_attempted = false;
         self.iso_has_been_burned = false;
         self.last_calculated_bitrate = None; // Force fresh calculation on load
+        // Clear track editor state (window may be orphaned after profile load)
+        self.editing_folder_index = None;
+        self.pending_track_editor_open = None;
 
         // Remember the profile path and mark as saved (no unsaved changes after load)
         self.current_profile_path = Some(path.to_path_buf());
@@ -448,6 +451,9 @@ impl FolderList {
         self.volume_label = DEFAULT_LABEL.to_string();
         self.current_profile_path = None;
         self.has_unsaved_changes = false;
+        // Clear track editor state (window may be orphaned after profile change)
+        self.editing_folder_index = None;
+        self.pending_track_editor_open = None;
         // Clear the encoder state and delete converted files
         if let Some(encoder) = &self.simple_encoder {
             encoder.clear_all();

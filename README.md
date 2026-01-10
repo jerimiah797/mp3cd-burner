@@ -35,6 +35,29 @@ Drag album folders from Finder into the app window. The app will:
 
 You can also drag a parent folder containing multiple albums - the app will detect and add each album separately.
 
+### Create Mixtapes
+
+Create custom playlists by dragging individual audio files (not folders) into the app. This creates a "Mixtape" that you can name and customize:
+- Drag audio files from different albums into the app
+- A new mixtape is created automatically
+- Double-click to open the Track Editor to rename, reorder, or add more tracks
+
+### Track Editor
+
+Double-click any folder to open the Track Editor window:
+
+**For Albums:**
+- View all tracks with metadata (title, artist, duration)
+- Drag tracks to reorder them
+- Click the checkbox to exclude/include individual tracks
+- Excluded tracks are dimmed and won't be burned to CD
+
+**For Mixtapes:**
+- All album features plus:
+- Drag additional audio files from Finder to add them
+- Click the × button to remove tracks
+- Edit the mixtape name in the title bar
+
 ### 2. Monitor Progress
 
 As folders are added:
@@ -51,7 +74,7 @@ The status bar shows:
 - **Bitrate**: Calculated optimal bitrate (or your manual override)
 - **ISO**: Final ISO size after encoding
 
-If the ISO exceeds 700 MB, you'll need to remove some folders.
+If the ISO exceeds 700 MB, you'll need to remove some folders, or perhaps customize the bitrate on lossless files.
 
 ### 4. Adjust Bitrate (Optional)
 
@@ -114,6 +137,7 @@ Save your folder list and settings for later use.
 
 ### File Menu
 - **New** (Cmd+N) - Clear all folders and start fresh
+- **New Mixtape** (Cmd+Shift+N) - Create an empty mixtape to add tracks to
 - **Open** (Cmd+O) - Open a saved burn profile
 - **Save** (Cmd+S) - Save current state as a burn profile
 
@@ -133,6 +157,9 @@ Save your folder list and settings for later use.
 - **Simulate Burn** - Test the burn process without using a disc
 - **Embed Album Art** - Include cover art in output MP3 files
 - **Open Output Folder** - Reveal the temporary encoding directory
+
+### Help Menu
+- **Open Log Folder** - Reveal the log directory for troubleshooting
 
 ## Technical Details
 
@@ -179,6 +206,9 @@ CD-RW discs are detected and can be erased before burning.
 - **Temporary files**: `/tmp/mp3cd_output/session_*/`
 - **Profiles**: Saved wherever you choose (Documents recommended)
 - **Settings**: `~/Library/Application Support/mp3cd-gpui/`
+- **Logs**: `~/Library/Logs/MP3-CD-Burner/mp3cd-burner.log`
+
+The log file captures debug-level information and can be helpful for troubleshooting. Logs rotate automatically when they exceed 10MB.
 
 ## Requirements
 

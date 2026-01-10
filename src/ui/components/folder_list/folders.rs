@@ -535,10 +535,9 @@ impl FolderList {
     /// Handle track editor window closed
     fn handle_track_editor_closed(&mut self, folder_id: &FolderId) {
         log::debug!("Track editor closed for folder: {}", folder_id);
-        // Find the index of the folder and clear editing state
-        if let Some(_idx) = self.folders.iter().position(|f| &f.id == folder_id) {
-            self.editing_folder_index = None;
-        }
+        // Always clear editing state - we only allow one editor at a time,
+        // and the folder ID may have changed (e.g., after profile reload)
+        self.editing_folder_index = None;
     }
 
     /// Open a pending track editor window (called from render loop)
