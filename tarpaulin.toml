@@ -1,0 +1,35 @@
+# Tarpaulin coverage configuration
+# Run with: cargo tarpaulin --out Html --output-dir target/coverage
+
+[default]
+# Output formats
+out = ["Html", "Stdout"]
+output-dir = "target/coverage"
+
+# Exclude UI rendering code that's hard to unit test
+exclude-files = [
+    # Main entry point (app initialization)
+    "src/main.rs",
+
+    # UI rendering code
+    "src/ui/components/about.rs",
+    "src/ui/components/burn_progress.rs",
+    "src/ui/components/display_settings.rs",
+    "src/ui/components/status_bar.rs",
+    "src/ui/components/volume_label.rs",
+    "src/ui/components/bitrate_override.rs",
+    "src/ui/components/folder_list/render.rs",
+    "src/ui/theme.rs",
+
+    # Actions (menu handlers, UI glue)
+    "src/actions.rs",
+]
+
+# Timeout for long-running tests
+timeout = "120s"
+
+# Run tests in release mode for speed (optional)
+# release = true
+
+# Verbose output
+# verbose = true

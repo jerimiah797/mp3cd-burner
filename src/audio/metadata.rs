@@ -345,3 +345,131 @@ pub fn get_track_metadata(path: &Path) -> TrackMetadata {
 
     metadata
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures;
+
+    #[test]
+    fn test_get_audio_metadata_mp3() {
+        let path = test_fixtures::generate_audio_file("meta_test", "mp3", 3, Some(128));
+        let result = get_audio_metadata(&path);
+        assert!(result.is_ok(), "Should successfully read MP3 metadata");
+
+        let (duration, bitrate, codec, is_lossy) = result.unwrap();
+        assert!(duration > 2.5 && duration < 3.5, "Duration should be ~3 seconds, got {}", duration);
+        assert!(bitrate > 100 && bitrate < 200, "Bitrate should be ~128 kbps, got {}", bitrate);
+        assert_eq!(codec, "mp3");
+        assert!(is_lossy, "MP3 should be lossy");
+    }
+
+    #[test]
+    fn test_get_audio_metadata_flac() {
+        let path = test_fixtures::generate_audio_file("meta_test", "flac", 3, None);
+        let result = get_audio_metadata(&path);
+        assert!(result.is_ok(), "Should successfully read FLAC metadata");
+
+        let (duration, _bitrate, codec, is_lossy) = result.unwrap();
+        assert!(duration > 2.5 && duration < 3.5, "Duration should be ~3 seconds, got {}", duration);
+        assert_eq!(codec, "flac");
+        assert!(!is_lossy, "FLAC should be lossless");
+    }
+
+    #[test]
+    fn test_get_audio_metadata_wav() {
+        let path = test_fixtures::generate_audio_file("meta_test", "wav", 3, None);
+        let result = get_audio_metadata(&path);
+        assert!(result.is_ok(), "Should successfully read WAV metadata");
+
+        let (duration, _bitrate, codec, is_lossy) = result.unwrap();
+        assert!(duration > 2.5 && duration < 3.5, "Duration should be ~3 seconds, got {}", duration);
+        assert_eq!(codec, "wav");
+        assert!(!is_lossy, "WAV should be lossless");
+    }
+
+    #[test]
+    fn test_get_audio_metadata_aac() {
+        let path = test_fixtures::generate_audio_file("meta_test", "aac", 3, Some(256));
+        let result = get_audio_metadata(&path);
+        assert!(result.is_ok(), "Should successfully read AAC metadata");
+
+        let (duration, _bitrate, codec, is_lossy) = result.unwrap();
+        assert!(duration > 2.5 && duration < 3.5, "Duration should be ~3 seconds, got {}", duration);
+        assert_eq!(codec, "aac");
+        assert!(is_lossy, "AAC should be lossy");
+    }
+
+    #[test]
+    fn test_get_audio_metadata_ogg() {
+        let path = test_fixtures::generate_audio_file("meta_test", "ogg", 3, Some(192));
+        let result = get_audio_metadata(&path);
+        assert!(result.is_ok(), "Should successfully read OGG metadata");
+
+        let (duration, _bitrate, codec, is_lossy) = result.unwrap();
+        assert!(duration > 2.5 && duration < 3.5, "Duration should be ~3 seconds, got {}", duration);
+        assert_eq!(codec, "ogg");
+        assert!(is_lossy, "OGG Vorbis should be lossy");
+    }
+
+    #[test]
+    fn test_get_audio_metadata_nonexistent_file() {
+        let path = Path::new("/nonexistent/file.mp3");
+        let result = get_audio_metadata(path);
+        assert!(result.is_err(), "Should fail for nonexistent file");
+    }
+
+    #[test]
+    fn test_save_album_art_to_temp_jpeg() {
+        let fake_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        let result = save_album_art_to_temp(&fake_jpeg, "image/jpeg");
+        assert!(result.is_some(), "Should save JPEG album art");
+
+        let path = result.unwrap();
+        assert!(path.ends_with(".jpg"), "Should have .jpg extension");
+        assert!(Path::new(&path).exists(), "File should exist");
+    }
+
+    #[test]
+    fn test_save_album_art_to_temp_png() {
+        let fake_png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let result = save_album_art_to_temp(&fake_png, "image/png");
+        assert!(result.is_some(), "Should save PNG album art");
+
+        let path = result.unwrap();
+        assert!(path.ends_with(".png"), "Should have .png extension");
+        assert!(Path::new(&path).exists(), "File should exist");
+    }
+
+    #[test]
+    fn test_save_album_art_caches_identical_data() {
+        let data = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+
+        let path1 = save_album_art_to_temp(&data, "image/jpeg").unwrap();
+        let path2 = save_album_art_to_temp(&data, "image/jpeg").unwrap();
+
+        assert_eq!(path1, path2, "Same data should return same cached path");
+    }
+
+    #[test]
+    fn test_get_album_art_returns_none_for_file_without_art() {
+        let path = test_fixtures::generate_audio_file("no_art_test", "mp3", 2, Some(128));
+        let result = get_album_art(&path);
+        assert!(result.is_none(), "Generated file should not have album art");
+    }
+
+    #[test]
+    fn test_album_metadata_default() {
+        let metadata = AlbumMetadata::default();
+        assert!(metadata.album.is_none());
+        assert!(metadata.artist.is_none());
+        assert!(metadata.year.is_none());
+    }
+
+    #[test]
+    fn test_track_metadata_default() {
+        let metadata = TrackMetadata::default();
+        assert!(metadata.title.is_none());
+        assert!(metadata.artist.is_none());
+    }
+}

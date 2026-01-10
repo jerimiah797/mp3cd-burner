@@ -10,6 +10,8 @@ mod conversion;
 mod core;
 mod logging;
 mod profiles;
+#[cfg(test)]
+mod test_fixtures;
 mod ui;
 
 use actions::{
