@@ -13,4 +13,26 @@ This is a GPUI-based MP3 CD burner application. Key points:
 
 - Uses GPUI framework (not Tauri) - run with `cargo run`
 - Async work uses `std::thread::spawn` with `tokio::runtime::Runtime::new()` inside, not `tokio::spawn` directly
-- Tests: `cargo test` (117+ tests currently)
+- Tests: `cargo test` (353+ tests currently)
+
+## Building Signed Releases
+
+Use the build script at `scripts/bundle-macos.sh`:
+
+```bash
+source ~/.zshrc  # Required to access SIGNING_IDENTITY env var
+
+# Build and sign for current architecture
+./scripts/bundle-macos.sh --sign
+
+# Build universal binary (ARM64 + x86_64) and sign
+./scripts/bundle-macos.sh --universal --sign
+```
+
+The script:
+- Builds the release binary with `cargo build --release`
+- Creates the .app bundle structure
+- Copies ffmpeg, icons, and Info.plist to the bundle
+- Signs the app with the Developer ID (requires `SIGNING_IDENTITY` env var)
+
+Output: `target/release/MP3 CD Burner.app`
