@@ -44,3 +44,24 @@ hdiutil create -volname "MP3 CD Burner" \
   -ov -format UDZO \
   target/release/MP3-CD-Burner-X.X.X.dmg
 ```
+
+## TODO: Notarization
+
+The app is signed but **not yet notarized**. Without notarization, macOS shows a Gatekeeper warning ("Apple cannot check it for malicious software"). Users can bypass by right-clicking → Open, but for proper distribution, notarization is needed:
+
+```bash
+# 1. Zip the app
+ditto -c -k --keepParent "target/release/MP3 CD Burner.app" /tmp/app.zip
+
+# 2. Submit to Apple (requires app-specific password from appleid.apple.com)
+xcrun notarytool submit /tmp/app.zip \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "3QUH73KW5Q" \
+  --password "APP_SPECIFIC_PASSWORD" \
+  --wait
+
+# 3. Staple the ticket
+xcrun stapler staple "target/release/MP3 CD Burner.app"
+
+# 4. Re-create DMG after stapling
+```
