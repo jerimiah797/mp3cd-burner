@@ -386,4 +386,101 @@ mod tests {
         assert!(profile_path.join("profile.json").exists());
         assert!(profile_path.join("converted").is_dir());
     }
+
+    #[test]
+    fn test_create_profile_with_bitrate_override() {
+        let folders = vec![MusicFolder::new_for_test("/test/album")];
+
+        let profile = create_profile(
+            "Test".to_string(),
+            &folders,
+            None,
+            None,
+            None,
+            Some(256), // manual override
+            false,
+        );
+        assert_eq!(profile.manual_bitrate_override, Some(256));
+    }
+
+    #[test]
+    fn test_create_profile_multiple_folders() {
+        let folders = vec![
+            MusicFolder::new_for_test("/music/album1"),
+            MusicFolder::new_for_test("/music/album2"),
+            MusicFolder::new_for_test("/music/album3"),
+        ];
+
+        let profile = create_profile(
+            "Multi Album".to_string(),
+            &folders,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert_eq!(profile.folders.len(), 3);
+        assert_eq!(profile.folders[0], "/music/album1");
+        assert_eq!(profile.folders[1], "/music/album2");
+        assert_eq!(profile.folders[2], "/music/album3");
+    }
+
+    #[test]
+    fn test_profile_load_setup_fields() {
+        // Test that ProfileLoadSetup can be constructed with all fields
+        let setup = ProfileLoadSetup {
+            profile_name: "Test".to_string(),
+            folder_paths: vec![PathBuf::from("/test/path")],
+            validation: ConversionStateValidation {
+                valid_folders: vec!["/test/path".to_string()],
+                invalid_folders: vec![],
+                iso_valid: true,
+                session_exists: true,
+            },
+            folder_states: HashMap::new(),
+            iso_path: Some(PathBuf::from("/tmp/test.iso")),
+            volume_label: Some("Test CD".to_string()),
+            bundle_path: None,
+            manual_bitrate_override: Some(192),
+        };
+
+        assert_eq!(setup.folder_paths.len(), 1);
+        assert!(setup.iso_path.is_some());
+        assert_eq!(setup.manual_bitrate_override, Some(192));
+    }
+
+    #[test]
+    fn test_profile_load_setup_clone() {
+        let setup = ProfileLoadSetup {
+            profile_name: "Clone Test".to_string(),
+            folder_paths: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            validation: ConversionStateValidation {
+                valid_folders: vec![],
+                invalid_folders: vec![],
+                iso_valid: false,
+                session_exists: false,
+            },
+            folder_states: HashMap::new(),
+            iso_path: None,
+            volume_label: None,
+            bundle_path: Some(PathBuf::from("/bundle")),
+            manual_bitrate_override: None,
+        };
+
+        let cloned = setup.clone();
+        assert_eq!(cloned.profile_name, "Clone Test");
+        assert_eq!(cloned.folder_paths.len(), 2);
+        assert!(cloned.bundle_path.is_some());
+    }
+
+    #[test]
+    fn test_create_profile_settings_defaults() {
+        let profile = create_profile("Test".to_string(), &[], None, None, None, None, false);
+
+        // Check default settings
+        assert_eq!(profile.settings.target_bitrate, "auto");
+        assert!(!profile.settings.no_lossy_conversions);
+        assert!(profile.settings.embed_album_art);
+    }
 }

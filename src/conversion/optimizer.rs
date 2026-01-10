@@ -448,4 +448,248 @@ mod tests {
         assert_eq!(snap_to_valid_bitrate(32), 64);
         assert_eq!(snap_to_valid_bitrate(1), 64);
     }
+
+    #[test]
+    fn test_next_higher_bitrate() {
+        assert_eq!(next_higher_bitrate(64), Some(80));
+        assert_eq!(next_higher_bitrate(128), Some(160));
+        assert_eq!(next_higher_bitrate(256), Some(320));
+        assert_eq!(next_higher_bitrate(320), None); // No higher bitrate
+        assert_eq!(next_higher_bitrate(100), Some(112)); // Between values
+    }
+
+    #[test]
+    fn test_estimate_lossless_size() {
+        // 180 seconds at 320kbps
+        // audio_bytes = 180 * 320 * 1000 / 8 = 7,200,000 bytes
+        // estimated_tracks = 180 / 240 = 0 (integer division)
+        // overhead = 0 * 10_000 = 0
+        // Total = 7,200,000
+        let size = estimate_lossless_size(180.0, 320);
+        assert_eq!(size, 7_200_000);
+    }
+
+    #[test]
+    fn test_estimate_lossless_size_with_overhead() {
+        // 600 seconds (10 min) at 192kbps - enough for multiple tracks
+        // audio_bytes = 600 * 192 * 1000 / 8 = 14,400,000 bytes
+        // estimated_tracks = 600 / 240 = 2
+        // overhead = 2 * 10_000 = 20_000
+        // Total = 14,420,000
+        let size = estimate_lossless_size(600.0, 192);
+        assert_eq!(size, 14_420_000);
+    }
+
+    #[test]
+    fn test_headroom_mb() {
+        let estimate = ConversionEstimate {
+            target_bitrate: 192,
+            total_bytes: 600_000_000,
+            copy_count: 5,
+            transcode_count: 10,
+            headroom_bytes: 100_000_000, // 100 MB remaining
+        };
+        assert!((estimate.headroom_mb() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_headroom_mb_negative() {
+        let estimate = ConversionEstimate {
+            target_bitrate: 320,
+            total_bytes: 800_000_000,
+            copy_count: 0,
+            transcode_count: 20,
+            headroom_bytes: -100_000_000, // 100 MB over
+        };
+        assert!((estimate.headroom_mb() - (-100.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_calculate_multipass_bitrate_all_mp3() {
+        // All MP3 files that will be copied
+        let files = vec![
+            make_test_file("mp3", 192, 180.0, 4_320_000, true),
+            make_test_file("mp3", 192, 240.0, 5_760_000, true),
+        ];
+
+        let result = calculate_multipass_bitrate(&files);
+
+        assert_eq!(result.copy_count, 2);
+        assert_eq!(result.lossy_count, 0);
+        assert_eq!(result.lossless_count, 0);
+        assert!(!result.would_exceed_capacity);
+    }
+
+    #[test]
+    fn test_calculate_multipass_bitrate_all_flac() {
+        // All FLAC files
+        let files = vec![
+            make_test_file("flac", 1411, 180.0, 30_000_000, false),
+            make_test_file("flac", 1411, 240.0, 40_000_000, false),
+        ];
+
+        let result = calculate_multipass_bitrate(&files);
+
+        assert_eq!(result.copy_count, 0);
+        assert_eq!(result.lossy_count, 0);
+        assert_eq!(result.lossless_count, 2);
+        // Target bitrate should be calculated to fill remaining space
+        assert!(result.target_bitrate > 0);
+        assert!(result.target_bitrate <= 320);
+    }
+
+    #[test]
+    fn test_calculate_multipass_bitrate_mixed() {
+        // Mix of MP3 and FLAC
+        let files = vec![
+            make_test_file("mp3", 192, 180.0, 4_320_000, true),
+            make_test_file("flac", 1411, 240.0, 40_000_000, false),
+        ];
+
+        let result = calculate_multipass_bitrate(&files);
+
+        assert_eq!(result.copy_count, 1);
+        assert_eq!(result.lossy_count, 0);
+        assert_eq!(result.lossless_count, 1);
+    }
+
+    #[test]
+    fn test_calculate_multipass_bitrate_aac() {
+        // AAC files need transcoding (lossy to lossy)
+        let files = vec![
+            make_test_file("aac", 256, 180.0, 5_760_000, true),
+            make_test_file("aac", 320, 240.0, 9_600_000, true),
+        ];
+
+        let result = calculate_multipass_bitrate(&files);
+
+        assert_eq!(result.lossy_count, 2);
+        assert_eq!(result.max_lossy_bitrate, 320);
+    }
+
+    #[test]
+    fn test_calculate_multipass_bitrate_exceeds_capacity() {
+        // 10 hours of AAC audio at 320kbps should exceed capacity
+        // 320kbps = 40,000 bytes/sec, CD = 700MB = 700,000,000 bytes
+        // Max duration = 700,000,000 / 40,000 = 17,500 sec = ~4.9 hours
+        let files: Vec<_> = (0..20)
+            .map(|_| make_test_file("aac", 320, 1800.0, 72_000_000, true)) // 30 min each
+            .collect();
+
+        let result = calculate_multipass_bitrate(&files);
+
+        assert!(result.would_exceed_capacity);
+        assert!(result.should_show_bitrate()); // Should show because it exceeds
+    }
+
+    #[test]
+    fn test_multipass_estimate_should_show_bitrate() {
+        // Should show for lossless
+        let estimate_lossless = MultipassEstimate {
+            target_bitrate: 256,
+            copy_count: 2,
+            lossy_count: 0,
+            lossless_count: 3,
+            max_lossy_bitrate: 0,
+            would_exceed_capacity: false,
+        };
+        assert!(estimate_lossless.should_show_bitrate());
+
+        // Should show when exceeding capacity
+        let estimate_exceed = MultipassEstimate {
+            target_bitrate: 200,
+            copy_count: 0,
+            lossy_count: 10,
+            lossless_count: 0,
+            max_lossy_bitrate: 320,
+            would_exceed_capacity: true,
+        };
+        assert!(estimate_exceed.should_show_bitrate());
+
+        // Should NOT show for all-copy scenario
+        let estimate_copy = MultipassEstimate {
+            target_bitrate: 192,
+            copy_count: 5,
+            lossy_count: 0,
+            lossless_count: 0,
+            max_lossy_bitrate: 0,
+            would_exceed_capacity: false,
+        };
+        assert!(!estimate_copy.should_show_bitrate());
+    }
+
+    #[test]
+    fn test_file_estimate_fields() {
+        let file = make_test_file("flac", 0, 180.0, 30_000_000, false);
+        let estimate = estimate_file_size(&file, 256);
+
+        assert_eq!(estimate.duration_secs, 180.0);
+        assert!(estimate.estimated_bytes > 0);
+    }
+
+    #[test]
+    fn test_optimize_bitrate_empty_files() {
+        let files: Vec<AudioFileInfo> = vec![];
+        let (bitrate, estimate) = optimize_bitrate(&files, 192);
+
+        // Empty files have 0 total bytes, so optimization pushes to max
+        assert_eq!(bitrate, 320); // Maximizes since there's infinite headroom
+        assert_eq!(estimate.copy_count, 0);
+        assert_eq!(estimate.transcode_count, 0);
+    }
+
+    #[test]
+    fn test_optimize_bitrate_max_ceiling() {
+        // Tiny file that could theoretically use infinite bitrate
+        let files = vec![make_test_file("flac", 0, 10.0, 1_000_000, false)];
+
+        let (bitrate, _) = optimize_bitrate(&files, 128);
+
+        // Should cap at MAX_BITRATE (320)
+        assert!(bitrate <= 320);
+    }
+
+    #[test]
+    fn test_estimate_copy_without_art() {
+        // MP3 at lower bitrate than target - copies but strips art
+        let file = make_test_file("mp3", 192, 180.0, 4_320_000, true);
+        let estimate = estimate_file_size(&file, 256);
+
+        // CopyWithoutArt strategy estimates audio size + overhead
+        assert!(matches!(estimate.strategy, EncodingStrategy::CopyWithoutArt));
+        // audio_estimate = 180 * 192 * 1000 / 8 = 4,320,000
+        // min(4,320,000, 4,320,000 + 50,000) = 4,320,000
+        assert_eq!(estimate.estimated_bytes, 4_320_000);
+    }
+
+    #[test]
+    fn test_conversion_estimate_clone() {
+        let estimate = ConversionEstimate {
+            target_bitrate: 256,
+            total_bytes: 500_000_000,
+            copy_count: 5,
+            transcode_count: 10,
+            headroom_bytes: 200_000_000,
+        };
+
+        let cloned = estimate.clone();
+        assert_eq!(cloned.target_bitrate, 256);
+        assert_eq!(cloned.total_bytes, 500_000_000);
+    }
+
+    #[test]
+    fn test_multipass_estimate_clone() {
+        let estimate = MultipassEstimate {
+            target_bitrate: 192,
+            copy_count: 3,
+            lossy_count: 2,
+            lossless_count: 5,
+            max_lossy_bitrate: 256,
+            would_exceed_capacity: false,
+        };
+
+        let cloned = estimate.clone();
+        assert_eq!(cloned.lossless_count, 5);
+        assert_eq!(cloned.max_lossy_bitrate, 256);
+    }
 }
