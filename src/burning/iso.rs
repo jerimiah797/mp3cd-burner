@@ -179,4 +179,105 @@ mod tests {
         let content1 = fs::read_to_string(dst_path.join("file1.txt")).unwrap();
         assert_eq!(content1, "content1");
     }
+
+    #[test]
+    fn test_copy_dir_recursive_empty() {
+        let temp_src = TempDir::new().unwrap();
+        let temp_dst = TempDir::new().unwrap();
+
+        let dst_path = temp_dst.path().join("copied_empty");
+
+        // Copy empty directory
+        copy_dir_recursive(temp_src.path(), &dst_path).unwrap();
+
+        // Verify directory exists
+        assert!(dst_path.exists());
+        assert!(dst_path.is_dir());
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_deep_nesting() {
+        let temp_src = TempDir::new().unwrap();
+        let temp_dst = TempDir::new().unwrap();
+
+        let src_path = temp_src.path();
+        let dst_path = temp_dst.path().join("deep_copy");
+
+        // Create deep structure
+        fs::create_dir_all(src_path.join("a/b/c")).unwrap();
+        fs::write(src_path.join("a/b/c/deep.txt"), b"deep content").unwrap();
+
+        // Copy
+        copy_dir_recursive(src_path, &dst_path).unwrap();
+
+        // Verify
+        assert!(dst_path.join("a/b/c/deep.txt").exists());
+        let content = fs::read_to_string(dst_path.join("a/b/c/deep.txt")).unwrap();
+        assert_eq!(content, "deep content");
+    }
+
+    #[test]
+    fn test_contains_symlinks_no_symlinks() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        // Create regular files
+        fs::write(dir_path.join("file.txt"), b"content").unwrap();
+        fs::create_dir(dir_path.join("subdir")).unwrap();
+        fs::write(dir_path.join("subdir/nested.txt"), b"nested").unwrap();
+
+        // Should not contain symlinks
+        assert!(!contains_symlinks(dir_path));
+    }
+
+    #[test]
+    fn test_contains_symlinks_with_symlink() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        // Create a file and a symlink to it
+        let file_path = dir_path.join("file.txt");
+        fs::write(&file_path, b"content").unwrap();
+
+        let symlink_path = dir_path.join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&file_path, &symlink_path).unwrap();
+
+        #[cfg(unix)]
+        assert!(contains_symlinks(dir_path));
+    }
+
+    #[test]
+    fn test_contains_symlinks_nested() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        // Create nested structure with symlink inside
+        fs::create_dir(dir_path.join("subdir")).unwrap();
+        let file_path = dir_path.join("subdir/file.txt");
+        fs::write(&file_path, b"content").unwrap();
+
+        let symlink_path = dir_path.join("subdir/link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&file_path, &symlink_path).unwrap();
+
+        #[cfg(unix)]
+        assert!(contains_symlinks(dir_path));
+    }
+
+    #[test]
+    fn test_iso_result_debug() {
+        let result = IsoResult {
+            iso_path: PathBuf::from("/tmp/test.iso"),
+        };
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("iso_path"));
+        assert!(debug_str.contains("test.iso"));
+    }
+
+    #[test]
+    fn test_contains_symlinks_nonexistent() {
+        let result = contains_symlinks(Path::new("/nonexistent/path/does/not/exist"));
+        assert!(!result);
+    }
 }

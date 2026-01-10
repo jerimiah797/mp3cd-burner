@@ -1267,3 +1267,157 @@ fn transcode_file_internal(
         Err(format!("ffmpeg failed with status: {}", status))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_encoder_state_new() {
+        let state = SimpleEncoderState::new();
+        assert!(!state.is_restart_requested());
+        assert!(!state.is_paused());
+        assert_eq!(state.get_phase(), EncodingPhase::Idle);
+        assert_eq!(state.lossless_bitrate.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_simple_encoder_state_pause() {
+        let state = SimpleEncoderState::new();
+        assert!(!state.is_paused());
+        state.set_paused(true);
+        assert!(state.is_paused());
+        state.set_paused(false);
+        assert!(!state.is_paused());
+    }
+
+    #[test]
+    fn test_simple_encoder_state_restart() {
+        let state = SimpleEncoderState::new();
+        assert!(!state.is_restart_requested());
+        state.request_restart();
+        assert!(state.is_restart_requested());
+        state.clear_restart();
+        assert!(!state.is_restart_requested());
+    }
+
+    #[test]
+    fn test_simple_encoder_state_phase() {
+        let state = SimpleEncoderState::new();
+        assert_eq!(state.get_phase(), EncodingPhase::Idle);
+        state.set_phase(EncodingPhase::LossyPass);
+        assert_eq!(state.get_phase(), EncodingPhase::LossyPass);
+        state.set_phase(EncodingPhase::LosslessPass);
+        assert_eq!(state.get_phase(), EncodingPhase::LosslessPass);
+        state.set_phase(EncodingPhase::Complete);
+        assert_eq!(state.get_phase(), EncodingPhase::Complete);
+    }
+
+    #[test]
+    fn test_simple_encoder_state_pid_registration() {
+        let state = SimpleEncoderState::new();
+
+        // Register some PIDs
+        state.register_pid(1234);
+        state.register_pid(5678);
+
+        let pids = state.running_pids.lock().unwrap();
+        assert!(pids.contains(&1234));
+        assert!(pids.contains(&5678));
+        drop(pids);
+
+        // Unregister one
+        state.unregister_pid(1234);
+        let pids = state.running_pids.lock().unwrap();
+        assert!(!pids.contains(&1234));
+        assert!(pids.contains(&5678));
+    }
+
+    #[test]
+    fn test_simple_encoder_state_kill_running_processes() {
+        let state = SimpleEncoderState::new();
+
+        // Register some PIDs (they don't need to be real processes for this test)
+        state.register_pid(99999);
+        state.register_pid(99998);
+
+        // Kill should clear the set
+        state.kill_running_processes();
+
+        let pids = state.running_pids.lock().unwrap();
+        assert!(pids.is_empty());
+    }
+
+    #[test]
+    fn test_simple_encoder_state_current_folder() {
+        let state = SimpleEncoderState::new();
+
+        // Initially None
+        assert!(state.current_folder.lock().unwrap().is_none());
+
+        // Set a folder
+        *state.current_folder.lock().unwrap() = Some(FolderId("test_folder".to_string()));
+
+        let folder = state.current_folder.lock().unwrap();
+        assert_eq!(folder.as_ref().unwrap().0, "test_folder");
+    }
+
+    #[test]
+    fn test_simple_encoder_state_current_progress() {
+        let state = SimpleEncoderState::new();
+
+        // Initially (0, 0)
+        let progress = state.current_progress.lock().unwrap();
+        assert_eq!(*progress, (0, 0));
+        drop(progress);
+
+        // Update progress
+        *state.current_progress.lock().unwrap() = (5, 10);
+        let progress = state.current_progress.lock().unwrap();
+        assert_eq!(*progress, (5, 10));
+    }
+
+    #[test]
+    fn test_simple_encoder_state_manual_bitrate() {
+        let state = SimpleEncoderState::new();
+
+        // Initially None
+        assert!(state.manual_bitrate.lock().unwrap().is_none());
+
+        // Set a bitrate
+        *state.manual_bitrate.lock().unwrap() = Some(256);
+        assert_eq!(state.manual_bitrate.lock().unwrap().unwrap(), 256);
+    }
+
+    #[test]
+    fn test_simple_encoder_state_lossless_bitrate() {
+        let state = SimpleEncoderState::new();
+
+        // Initially 0
+        assert_eq!(state.lossless_bitrate.load(Ordering::SeqCst), 0);
+
+        // Set a bitrate
+        state.lossless_bitrate.store(320, Ordering::SeqCst);
+        assert_eq!(state.lossless_bitrate.load(Ordering::SeqCst), 320);
+    }
+
+    #[test]
+    fn test_simple_encoder_state_embed_album_art() {
+        let state = SimpleEncoderState::new();
+
+        // Initially false
+        assert!(!state.embed_album_art.load(Ordering::SeqCst));
+
+        // Enable
+        state.embed_album_art.store(true, Ordering::SeqCst);
+        assert!(state.embed_album_art.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_encoding_phase_variants() {
+        assert_eq!(EncodingPhase::Idle, EncodingPhase::Idle);
+        assert_ne!(EncodingPhase::Idle, EncodingPhase::LossyPass);
+        assert_ne!(EncodingPhase::LossyPass, EncodingPhase::LosslessPass);
+        assert_ne!(EncodingPhase::LosslessPass, EncodingPhase::Complete);
+    }
+}

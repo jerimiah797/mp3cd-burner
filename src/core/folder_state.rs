@@ -174,4 +174,114 @@ mod tests {
         assert_ne!(hash1, hash2); // Different order = different hash
         assert_eq!(hash1, hash3); // Same order = same hash
     }
+
+    #[test]
+    fn test_folder_id_new_mixtape() {
+        let id = FolderId::new_mixtape();
+        assert!(id.0.starts_with("mixtape:"));
+        assert!(id.is_mixtape());
+    }
+
+    #[test]
+    fn test_folder_id_is_mixtape() {
+        let regular_id = FolderId("abc123".to_string());
+        assert!(!regular_id.is_mixtape());
+
+        let mixtape_id = FolderId("mixtape:some-uuid".to_string());
+        assert!(mixtape_id.is_mixtape());
+    }
+
+    #[test]
+    fn test_folder_id_as_str() {
+        let id = FolderId("test_id_string".to_string());
+        assert_eq!(id.as_str(), "test_id_string");
+    }
+
+    #[test]
+    fn test_folder_id_display() {
+        let id = FolderId("display_test".to_string());
+        let display = format!("{}", id);
+        assert_eq!(display, "display_test");
+    }
+
+    #[test]
+    fn test_folder_conversion_status_converting() {
+        let status = FolderConversionStatus::Converting {
+            files_completed: 5,
+            files_total: 10,
+        };
+        match status {
+            FolderConversionStatus::Converting {
+                files_completed,
+                files_total,
+            } => {
+                assert_eq!(files_completed, 5);
+                assert_eq!(files_total, 10);
+            }
+            _ => panic!("Expected Converting"),
+        }
+    }
+
+    #[test]
+    fn test_folder_conversion_status_needs_reencode() {
+        let status = FolderConversionStatus::NeedsReencode {
+            previous_output_dir: Some(PathBuf::from("/tmp/old")),
+            reason: ReencodeReason::BitrateChanged { old: 320, new: 192 },
+        };
+        match status {
+            FolderConversionStatus::NeedsReencode { reason, .. } => {
+                assert!(matches!(reason, ReencodeReason::BitrateChanged { old: 320, new: 192 }));
+            }
+            _ => panic!("Expected NeedsReencode"),
+        }
+    }
+
+    #[test]
+    fn test_reencode_reason_variants() {
+        let bitrate_changed = ReencodeReason::BitrateChanged { old: 256, new: 192 };
+        let modified = ReencodeReason::SourceFilesModified;
+        let size_exceeded = ReencodeReason::IsoSizeExceeded;
+
+        assert!(matches!(bitrate_changed, ReencodeReason::BitrateChanged { .. }));
+        assert!(matches!(modified, ReencodeReason::SourceFilesModified));
+        assert!(matches!(size_exceeded, ReencodeReason::IsoSizeExceeded));
+    }
+
+    #[test]
+    fn test_folder_id_hash() {
+        use std::collections::HashSet;
+
+        let id1 = FolderId("test1".to_string());
+        let id2 = FolderId("test1".to_string());
+        let id3 = FolderId("test2".to_string());
+
+        let mut set = HashSet::new();
+        set.insert(id1.clone());
+        set.insert(id2.clone());
+        set.insert(id3.clone());
+
+        // id1 and id2 are equal, so set should have 2 elements
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_folder_id_from_nonexistent_path() {
+        // Should still work (uses 0 for mtime)
+        let id = FolderId::from_path(Path::new("/nonexistent/path/12345"));
+        assert!(!id.0.is_empty());
+    }
+
+    #[test]
+    fn test_calculate_folder_hash_empty() {
+        let empty: Vec<FolderId> = vec![];
+        let hash = calculate_folder_hash(&empty);
+        assert!(!hash.is_empty());
+    }
+
+    #[test]
+    fn test_calculate_folder_hash_single() {
+        let single = vec![FolderId("single".to_string())];
+        let hash = calculate_folder_hash(&single);
+        assert_eq!(hash.len(), 16); // 64-bit hash as hex
+    }
 }

@@ -292,21 +292,23 @@ mod tests {
     use crate::profiles::types::BurnSettings;
     use tempfile::TempDir;
 
+    fn make_test_settings() -> BurnSettings {
+        BurnSettings {
+            target_bitrate: "auto".to_string(),
+            no_lossy_conversions: false,
+            embed_album_art: true,
+        }
+    }
+
     #[test]
     fn test_save_and_load_profile() {
         let temp_dir = TempDir::new().unwrap();
         let profile_path = temp_dir.path().join("test.mp3cd");
 
-        let settings = BurnSettings {
-            target_bitrate: "auto".to_string(),
-            no_lossy_conversions: false,
-            embed_album_art: true,
-        };
-
         let profile = BurnProfile::new(
             "Test".to_string(),
             vec!["/music/test".to_string()],
-            settings,
+            make_test_settings(),
         );
 
         // Save
@@ -317,5 +319,210 @@ mod tests {
         let loaded = load_profile(&profile_path).unwrap();
         assert_eq!(loaded.profile_name, "Test");
         assert_eq!(loaded.folders[0], "/music/test");
+    }
+
+    #[test]
+    fn test_is_bundle_directory() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Regular directory - not a bundle
+        let regular_dir = temp_dir.path().join("regular");
+        fs::create_dir(&regular_dir).unwrap();
+        assert!(!is_bundle(&regular_dir));
+
+        // Directory with .mp3cd extension - is a bundle
+        let bundle_dir = temp_dir.path().join("test.mp3cd");
+        fs::create_dir(&bundle_dir).unwrap();
+        assert!(is_bundle(&bundle_dir));
+    }
+
+    #[test]
+    fn test_is_bundle_file() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // File with .mp3cd extension - not a bundle (bundles are directories)
+        let profile_file = temp_dir.path().join("test.mp3cd");
+        fs::write(&profile_file, "{}").unwrap();
+        assert!(!is_bundle(&profile_file));
+    }
+
+    #[test]
+    fn test_get_profile_json_path() {
+        let bundle_path = Path::new("/path/to/test.mp3cd");
+        let json_path = get_profile_json_path(bundle_path);
+        assert_eq!(json_path, PathBuf::from("/path/to/test.mp3cd/profile.json"));
+    }
+
+    #[test]
+    fn test_get_converted_dir() {
+        let bundle_path = Path::new("/path/to/test.mp3cd");
+        let converted = get_converted_dir(bundle_path);
+        assert_eq!(converted, PathBuf::from("/path/to/test.mp3cd/converted"));
+    }
+
+    #[test]
+    fn test_save_bundle_format() {
+        let temp_dir = TempDir::new().unwrap();
+        let bundle_path = temp_dir.path().join("bundle.mp3cd");
+
+        let mut profile = BurnProfile::new(
+            "Bundle Test".to_string(),
+            vec!["/music/album".to_string()],
+            make_test_settings(),
+        );
+        profile.version = "2.0".to_string();
+
+        // Save as bundle
+        save_profile(&profile, &bundle_path).unwrap();
+
+        // Verify bundle structure
+        assert!(bundle_path.is_dir());
+        assert!(bundle_path.join("profile.json").exists());
+        assert!(bundle_path.join("converted").is_dir());
+    }
+
+    #[test]
+    fn test_load_bundle_format() {
+        let temp_dir = TempDir::new().unwrap();
+        let bundle_path = temp_dir.path().join("load.mp3cd");
+
+        // Create bundle structure manually
+        fs::create_dir(&bundle_path).unwrap();
+        fs::create_dir(bundle_path.join("converted")).unwrap();
+
+        let profile_json = r#"{
+            "version": "2.0",
+            "profile_name": "Loaded Bundle",
+            "folders": ["/music/test"],
+            "settings": {
+                "target_bitrate": "auto",
+                "no_lossy_conversions": false,
+                "embed_album_art": true
+            },
+            "created": "2024-01-01T00:00:00Z",
+            "modified": "2024-01-01T00:00:00Z"
+        }"#;
+        fs::write(bundle_path.join("profile.json"), profile_json).unwrap();
+
+        // Load
+        let loaded = load_profile(&bundle_path).unwrap();
+        assert_eq!(loaded.profile_name, "Loaded Bundle");
+        assert_eq!(loaded.version, "2.0");
+    }
+
+    #[test]
+    fn test_load_profile_not_found() {
+        let result = load_profile(Path::new("/nonexistent/path.mp3cd"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_no_conversion_state() {
+        let profile = BurnProfile::new(
+            "Test".to_string(),
+            vec!["/folder1".to_string(), "/folder2".to_string()],
+            make_test_settings(),
+        );
+
+        let validation = validate_conversion_state(&profile, None);
+
+        assert!(!validation.session_exists);
+        assert!(validation.valid_folders.is_empty());
+        assert_eq!(validation.invalid_folders.len(), 2);
+        assert!(!validation.iso_valid);
+    }
+
+    #[test]
+    fn test_validate_no_session_id() {
+        let mut profile = BurnProfile::new(
+            "Test".to_string(),
+            vec!["/folder".to_string()],
+            make_test_settings(),
+        );
+        // Add folder_states but no session_id
+        profile.folder_states = Some(std::collections::HashMap::new());
+
+        let validation = validate_conversion_state(&profile, None);
+
+        assert!(!validation.session_exists);
+        assert_eq!(validation.invalid_folders.len(), 1);
+    }
+
+    #[test]
+    fn test_validate_bundle_format() {
+        let temp_dir = TempDir::new().unwrap();
+        let bundle_path = temp_dir.path().join("test.mp3cd");
+        fs::create_dir(&bundle_path).unwrap();
+
+        let mut profile = BurnProfile::new(
+            "Test".to_string(),
+            vec!["/folder".to_string()],
+            make_test_settings(),
+        );
+        profile.folder_states = Some(std::collections::HashMap::new());
+
+        let validation = validate_conversion_state(&profile, Some(&bundle_path));
+
+        // Session exists because bundle exists
+        assert!(validation.session_exists);
+        // Folder is invalid because no saved state for it
+        assert_eq!(validation.invalid_folders.len(), 1);
+    }
+
+    #[test]
+    fn test_recent_profiles_add_and_load() {
+        // This test modifies real app data, so we just verify the functions work
+        let test_path = "/tmp/test_profile_12345.mp3cd";
+
+        // Add to recent
+        let result = add_to_recent_profiles(test_path);
+        assert!(result.is_ok());
+
+        // Load recent
+        let recent = load_recent_profiles().unwrap();
+        // Should contain our path (if it exists) or be filtered out
+        // Since /tmp/test_profile_12345.mp3cd doesn't exist, it gets filtered
+
+        // Clean up
+        let _ = remove_from_recent_profiles(test_path);
+        assert!(recent.is_empty() || !recent.contains(&test_path.to_string()));
+    }
+
+    #[test]
+    fn test_recent_profiles_removes_duplicates() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_path = temp_dir.path().join("dup_test.mp3cd");
+        let test_path_str = test_path.to_string_lossy().to_string();
+
+        // Create the file
+        fs::write(&test_path, "{}").unwrap();
+
+        // Add twice
+        add_to_recent_profiles(&test_path_str).unwrap();
+        add_to_recent_profiles(&test_path_str).unwrap();
+
+        let recent = load_recent_profiles().unwrap();
+        let count = recent.iter().filter(|p| *p == &test_path_str).count();
+        assert!(count <= 1); // Should only appear once (or zero if filtered)
+
+        // Clean up
+        let _ = remove_from_recent_profiles(&test_path_str);
+    }
+
+    #[test]
+    fn test_remove_from_recent_profiles() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_path = temp_dir.path().join("remove_test.mp3cd");
+        let test_path_str = test_path.to_string_lossy().to_string();
+
+        // Create the file
+        fs::write(&test_path, "{}").unwrap();
+
+        // Add then remove
+        add_to_recent_profiles(&test_path_str).unwrap();
+        remove_from_recent_profiles(&test_path_str).unwrap();
+
+        let recent = load_recent_profiles().unwrap();
+        assert!(!recent.contains(&test_path_str));
     }
 }

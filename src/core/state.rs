@@ -837,4 +837,129 @@ mod tests {
         let stage_copy = stage;
         assert_eq!(stage, stage_copy);
     }
+
+    #[test]
+    fn test_conversion_state_erase_approved() {
+        let state = ConversionState::new();
+        assert!(!state.erase_approved.load(Ordering::SeqCst));
+        state.erase_approved.store(true, Ordering::SeqCst);
+        assert!(state.erase_approved.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_conversion_state_iso_path() {
+        let state = ConversionState::new();
+        assert!(state.iso_path.lock().unwrap().is_none());
+
+        *state.iso_path.lock().unwrap() = Some(PathBuf::from("/tmp/test.iso"));
+        assert_eq!(
+            state.iso_path.lock().unwrap().as_ref().unwrap().to_str().unwrap(),
+            "/tmp/test.iso"
+        );
+    }
+
+    #[test]
+    fn test_conversion_state_reset_clears_iso_path() {
+        let state = ConversionState::new();
+        *state.iso_path.lock().unwrap() = Some(PathBuf::from("/tmp/old.iso"));
+        state.reset(5);
+        assert!(state.iso_path.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_conversion_state_reset_clears_erase_approved() {
+        let state = ConversionState::new();
+        state.erase_approved.store(true, Ordering::SeqCst);
+        state.reset(5);
+        assert!(!state.erase_approved.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_import_state_has_pending_folders_empty() {
+        let state = ImportState::new();
+        assert!(!state.has_pending_folders());
+    }
+
+    #[test]
+    fn test_import_state_drain_empty() {
+        let state = ImportState::new();
+        let folders = state.drain_folders();
+        assert!(folders.is_empty());
+    }
+
+    #[test]
+    fn test_import_state_reset_clears_previous() {
+        let state = ImportState::new();
+        state.reset(3);
+        state.push_folder(MusicFolder::new_for_test("/test/album"));
+        state.push_failed(PathBuf::from("/bad/path"));
+
+        // Reset should clear everything
+        state.reset(5);
+        assert!(!state.has_pending_folders());
+        assert!(state.get_failed_paths().is_empty());
+        assert_eq!(state.progress().0, 0);
+        assert_eq!(state.progress().1, 5);
+    }
+
+    #[test]
+    fn test_burn_stage_debug() {
+        let stage = BurnStage::ErasableDiscDetected;
+        let debug_str = format!("{:?}", stage);
+        assert!(debug_str.contains("ErasableDiscDetected"));
+    }
+
+    #[test]
+    fn test_burn_settings_clone() {
+        let settings = BurnSettings {
+            bitrate: 256,
+            volume_label: "Test Label".to_string(),
+        };
+        let cloned = settings.clone();
+        assert_eq!(cloned.bitrate, 256);
+        assert_eq!(cloned.volume_label, "Test Label");
+    }
+
+    #[test]
+    fn test_app_settings_clone() {
+        let settings = AppSettings {
+            simulate_burn: true,
+            no_lossy_conversions: true,
+            embed_album_art: false,
+        };
+        let cloned = settings.clone();
+        assert!(cloned.simulate_burn);
+        assert!(cloned.no_lossy_conversions);
+        assert!(!cloned.embed_album_art);
+    }
+
+    #[test]
+    fn test_window_state_clone() {
+        let state = WindowState {
+            x: 150.0,
+            y: 200.0,
+            width: 1000.0,
+            height: 800.0,
+        };
+        let cloned = state.clone();
+        assert_eq!(cloned.x, 150.0);
+        assert_eq!(cloned.y, 200.0);
+        assert_eq!(cloned.width, 1000.0);
+        assert_eq!(cloned.height, 800.0);
+    }
+
+    #[test]
+    fn test_display_settings_clone() {
+        let settings = DisplaySettings {
+            show_file_count: true,
+            show_original_size: false,
+            show_converted_size: true,
+            show_source_format: false,
+            show_source_bitrate: true,
+            show_final_bitrate: false,
+        };
+        let cloned = settings.clone();
+        assert!(cloned.show_file_count);
+        assert!(!cloned.show_original_size);
+    }
 }

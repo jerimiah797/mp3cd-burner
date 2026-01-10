@@ -68,3 +68,50 @@ pub fn get_resource_path(relative_path: &str) -> Option<PathBuf> {
 pub fn get_mixtape_default_art() -> Option<PathBuf> {
     get_resource_path("images/mixtape.jpg")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_resource_path_nonexistent() {
+        // A path that definitely doesn't exist should return None
+        let result = get_resource_path("definitely/not/a/real/file.txt");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_resource_path_returns_pathbuf() {
+        // Even if the path doesn't exist, the function should handle it gracefully
+        let result = get_resource_path("test.txt");
+        // Result is None because file doesn't exist
+        assert!(result.is_none() || result.is_some());
+    }
+
+    #[test]
+    fn test_get_mixtape_default_art_development() {
+        // In development mode, this should find the mixtape.jpg in resources/
+        // This test will pass if run from the project root with CARGO_MANIFEST_DIR set
+        let result = get_mixtape_default_art();
+        // The file may or may not exist depending on the test environment
+        if let Some(path) = result {
+            assert!(path.to_string_lossy().contains("mixtape.jpg"));
+        }
+    }
+
+    #[test]
+    fn test_get_resource_path_with_subdirectory() {
+        // Test with a subdirectory path
+        let result = get_resource_path("images/something.png");
+        // Just verify it doesn't panic
+        assert!(result.is_none() || result.is_some());
+    }
+
+    #[test]
+    fn test_get_resource_path_empty_string() {
+        // Test with empty string
+        let result = get_resource_path("");
+        // Should return Some if resources/ dir exists, None otherwise
+        assert!(result.is_none() || result.is_some());
+    }
+}

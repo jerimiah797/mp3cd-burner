@@ -317,4 +317,106 @@ mod tests {
         let action = determine_iso_action(Some(&iso), &folders, &encoded);
         assert_eq!(action, IsoAction::RegenerateIso);
     }
+
+    #[test]
+    fn test_iso_state_file_exists() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let iso_path = temp_dir.path().join("test.iso");
+
+        let iso = IsoState {
+            path: iso_path.clone(),
+            folder_hash: "abc".to_string(),
+            size_bytes: 100,
+            is_valid: true,
+        };
+
+        // File doesn't exist yet
+        assert!(!iso.file_exists());
+
+        // Create the file
+        std::fs::write(&iso_path, "content").unwrap();
+        assert!(iso.file_exists());
+    }
+
+    #[test]
+    fn test_iso_state_is_ready_to_burn() {
+        let folders = vec![MusicFolder::new_for_test_with_id("album1")];
+        let folder_ids: Vec<FolderId> = folders.iter().map(|f| f.id.clone()).collect();
+        let hash = calculate_folder_hash(&folder_ids);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let iso_path = temp_dir.path().join("test.iso");
+        std::fs::write(&iso_path, "iso content").unwrap();
+
+        let iso = IsoState {
+            path: iso_path,
+            folder_hash: hash,
+            size_bytes: 100_000_000,
+            is_valid: true,
+        };
+
+        // Should be ready to burn
+        assert!(iso.is_ready_to_burn(&folders));
+
+        // Different folders - not ready
+        let other_folders = vec![MusicFolder::new_for_test_with_id("album2")];
+        assert!(!iso.is_ready_to_burn(&other_folders));
+    }
+
+    #[test]
+    fn test_iso_state_is_ready_to_burn_invalid() {
+        let folders = vec![MusicFolder::new_for_test_with_id("album1")];
+        let folder_ids: Vec<FolderId> = folders.iter().map(|f| f.id.clone()).collect();
+        let hash = calculate_folder_hash(&folder_ids);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let iso_path = temp_dir.path().join("test.iso");
+        std::fs::write(&iso_path, "iso content").unwrap();
+
+        let iso = IsoState {
+            path: iso_path,
+            folder_hash: hash,
+            size_bytes: 100_000_000,
+            is_valid: false, // Invalid
+        };
+
+        // Not ready because invalid
+        assert!(!iso.is_ready_to_burn(&folders));
+    }
+
+    #[test]
+    fn test_iso_state_clone() {
+        let iso = IsoState {
+            path: PathBuf::from("/tmp/test.iso"),
+            folder_hash: "hash123".to_string(),
+            size_bytes: 500_000_000,
+            is_valid: true,
+        };
+
+        let cloned = iso.clone();
+        assert_eq!(cloned.path, iso.path);
+        assert_eq!(cloned.folder_hash, iso.folder_hash);
+        assert_eq!(cloned.size_bytes, iso.size_bytes);
+    }
+
+    #[test]
+    fn test_iso_action_equality() {
+        assert_eq!(IsoAction::BurnExisting, IsoAction::BurnExisting);
+        assert_eq!(IsoAction::RegenerateIso, IsoAction::RegenerateIso);
+        assert_ne!(IsoAction::BurnExisting, IsoAction::FullConversion);
+
+        let action1 = IsoAction::EncodeAndRegenerate {
+            folders_to_encode: vec![FolderId("a".to_string())],
+        };
+        let action2 = IsoAction::EncodeAndRegenerate {
+            folders_to_encode: vec![FolderId("a".to_string())],
+        };
+        assert_eq!(action1, action2);
+    }
+
+    #[test]
+    fn test_max_iso_size_constant() {
+        // Verify the constant is 700 MB in decimal
+        assert_eq!(MAX_ISO_SIZE_BYTES, 700_000_000);
+    }
 }

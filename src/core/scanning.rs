@@ -1199,4 +1199,125 @@ mod tests {
         let result = get_audio_files(temp_dir.path()).unwrap();
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn test_mixtape_name_for_album() {
+        let folder = MusicFolder::new_for_test("/test/album");
+        assert!(folder.mixtape_name().is_none());
+    }
+
+    #[test]
+    fn test_mixtape_name_for_mixtape() {
+        let mixtape = MusicFolder::new_mixtape("My Mix".to_string(), vec![]);
+        assert_eq!(mixtape.mixtape_name(), Some("My Mix"));
+    }
+
+    #[test]
+    fn test_folder_kind_clone() {
+        let album = FolderKind::Album;
+        let cloned = album.clone();
+        assert!(matches!(cloned, FolderKind::Album));
+
+        let mixtape = FolderKind::Mixtape {
+            name: "Test".to_string(),
+        };
+        let cloned = mixtape.clone();
+        match cloned {
+            FolderKind::Mixtape { name } => assert_eq!(name, "Test"),
+            _ => panic!("Should be Mixtape"),
+        }
+    }
+
+    #[test]
+    fn test_folder_kind_debug() {
+        let album = FolderKind::Album;
+        let debug_str = format!("{:?}", album);
+        assert!(debug_str.contains("Album"));
+
+        let mixtape = FolderKind::Mixtape {
+            name: "Test".to_string(),
+        };
+        let debug_str = format!("{:?}", mixtape);
+        assert!(debug_str.contains("Mixtape"));
+        assert!(debug_str.contains("Test"));
+    }
+
+    #[test]
+    fn test_audio_file_info_clone() {
+        let info = AudioFileInfo {
+            path: PathBuf::from("/test/song.mp3"),
+            duration: 180.0,
+            bitrate: 320,
+            size: 7200000,
+            codec: "mp3".to_string(),
+            is_lossy: true,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.path, info.path);
+        assert_eq!(cloned.duration, info.duration);
+        assert_eq!(cloned.bitrate, info.bitrate);
+        assert_eq!(cloned.size, info.size);
+        assert_eq!(cloned.codec, info.codec);
+        assert_eq!(cloned.is_lossy, info.is_lossy);
+    }
+
+    #[test]
+    fn test_audio_file_info_debug() {
+        let info = AudioFileInfo {
+            path: PathBuf::from("/test/song.mp3"),
+            duration: 180.0,
+            bitrate: 320,
+            size: 7200000,
+            codec: "mp3".to_string(),
+            is_lossy: true,
+        };
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("song.mp3"));
+        assert!(debug_str.contains("320"));
+    }
+
+    #[test]
+    fn test_music_folder_debug() {
+        let folder = MusicFolder::new_for_test("/music/album");
+        let debug_str = format!("{:?}", folder);
+        assert!(debug_str.contains("album"));
+    }
+
+    #[test]
+    fn test_set_mixtape_name_on_album_no_effect() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.set_mixtape_name("New Name".to_string());
+        // Should not change because it's an album
+        assert!(folder.mixtape_name().is_none());
+    }
+
+    #[test]
+    fn test_recalculate_totals_ignores_exclusions() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 240.0,
+                bitrate: 320,
+                size: 9600000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        folder.exclude_track(Path::new("/test/1.mp3"));
+        folder.recalculate_totals();
+
+        // recalculate_totals uses all audio_files, not just active tracks
+        assert_eq!(folder.file_count, 2);
+        assert_eq!(folder.total_size, 16800000);
+        assert_eq!(folder.total_duration, 420.0);
+    }
 }

@@ -251,4 +251,99 @@ mod tests {
         assert!(!config.simulate);
         assert_eq!(config.cd_wait_timeout_secs, 120);
     }
+
+    #[test]
+    fn test_burn_config_custom() {
+        let config = BurnConfig {
+            simulate: true,
+            cd_wait_timeout_secs: 60,
+        };
+        assert!(config.simulate);
+        assert_eq!(config.cd_wait_timeout_secs, 60);
+    }
+
+    #[test]
+    fn test_burn_coordination_result_debug() {
+        // Test Debug implementations
+        let success = BurnCoordinationResult::Success;
+        let debug_str = format!("{:?}", success);
+        assert!(debug_str.contains("Success"));
+
+        let simulated = BurnCoordinationResult::Simulated;
+        let debug_str = format!("{:?}", simulated);
+        assert!(debug_str.contains("Simulated"));
+
+        let cancelled = BurnCoordinationResult::Cancelled;
+        let debug_str = format!("{:?}", cancelled);
+        assert!(debug_str.contains("Cancelled"));
+
+        let timeout = BurnCoordinationResult::NoCdTimeout;
+        let debug_str = format!("{:?}", timeout);
+        assert!(debug_str.contains("NoCdTimeout"));
+
+        let error = BurnCoordinationResult::Error("test error".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("Error"));
+    }
+
+    #[test]
+    fn test_coordinate_burn_simulate_mode() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp_dir = TempDir::new().unwrap();
+        let iso_path = temp_dir.path().join("test.iso");
+        fs::write(&iso_path, "fake iso").unwrap();
+
+        let state = ConversionState::new();
+        let config = BurnConfig {
+            simulate: true,
+            cd_wait_timeout_secs: 1,
+        };
+
+        let result = coordinate_burn(&iso_path, &state, &config);
+
+        match result {
+            BurnCoordinationResult::Simulated => {}
+            other => panic!("Expected Simulated, got {:?}", other),
+        }
+
+        assert_eq!(state.get_stage(), BurnStage::Complete);
+    }
+
+    #[test]
+    fn test_create_progress_callback() {
+        let state = ConversionState::new();
+        state.set_stage(BurnStage::Burning);
+
+        let callback = create_progress_callback(state.clone(), false);
+
+        // Test normal progress update
+        callback(50);
+        assert_eq!(state.get_burn_progress(), 50);
+
+        // Test high progress
+        callback(95);
+        assert_eq!(state.get_burn_progress(), 95);
+
+        // Test indeterminate progress (-1) after high progress - should transition to Finishing
+        callback(-1);
+        assert_eq!(state.get_stage(), BurnStage::Finishing);
+    }
+
+    #[test]
+    fn test_create_progress_callback_with_erase() {
+        let state = ConversionState::new();
+        state.set_stage(BurnStage::Erasing);
+
+        let callback = create_progress_callback(state.clone(), true);
+
+        // Progress during erase phase
+        callback(60);
+        assert_eq!(state.get_burn_progress(), 60);
+
+        // When progress drops from high to low, should transition from Erasing to Burning
+        callback(10);
+        assert_eq!(state.get_stage(), BurnStage::Burning);
+    }
 }

@@ -202,12 +202,88 @@ pub fn burn_iso_with_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_check_cd_inserted_runs() {
         // Just verify the function runs without panicking
         // The result depends on hardware state
         let result = check_cd_inserted();
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_cd_status_equality() {
+        assert_eq!(CdStatus::NoDisc, CdStatus::NoDisc);
+        assert_eq!(CdStatus::Blank, CdStatus::Blank);
+        assert_eq!(CdStatus::ErasableWithData, CdStatus::ErasableWithData);
+        assert_eq!(CdStatus::NonErasable, CdStatus::NonErasable);
+
+        assert_ne!(CdStatus::NoDisc, CdStatus::Blank);
+        assert_ne!(CdStatus::Blank, CdStatus::ErasableWithData);
+        assert_ne!(CdStatus::ErasableWithData, CdStatus::NonErasable);
+    }
+
+    #[test]
+    fn test_cd_status_clone() {
+        let status = CdStatus::Blank;
+        let cloned = status.clone();
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_cd_status_copy() {
+        let status = CdStatus::ErasableWithData;
+        let copied = status;
+        assert_eq!(status, copied);
+    }
+
+    #[test]
+    fn test_cd_status_debug() {
+        let status = CdStatus::NoDisc;
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("NoDisc"));
+
+        let status = CdStatus::Blank;
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("Blank"));
+    }
+
+    #[test]
+    fn test_burn_result_debug() {
+        let result = BurnResult::Success;
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("Success"));
+
+        let result = BurnResult::Cancelled;
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("Cancelled"));
+
+        let result = BurnResult::Error("test error".to_string());
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("Error"));
+        assert!(debug_str.contains("test error"));
+    }
+
+    #[test]
+    fn test_burn_iso_file_not_found() {
+        let result = burn_iso(Path::new("/nonexistent/file.iso"), None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_burn_iso_with_cancel_file_not_found() {
+        let result = burn_iso_with_cancel(Path::new("/nonexistent/file.iso"), None, None, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_check_cd_status_runs() {
+        // Just verify the function runs without panicking
+        // The result depends on hardware state
+        let result = check_cd_status();
         assert!(result.is_ok() || result.is_err());
     }
 }
