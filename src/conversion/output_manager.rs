@@ -641,4 +641,264 @@ mod tests {
     // Note: create_iso_staging requires MusicFolder with valid conversion state,
     // which requires more integration testing. The symlink creation logic is
     // tested implicitly through the individual helper tests.
+
+    #[test]
+    fn test_output_manager_default() {
+        let manager = OutputManager::default();
+        assert!(manager.session_dir().exists());
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_bundle_mode_operations() {
+        let manager = OutputManager::new().unwrap();
+
+        // Initially not in bundle mode
+        assert!(!manager.is_bundle_mode());
+        assert!(manager.get_bundle_path().is_none());
+
+        // Set bundle path
+        let temp_dir = TempDir::new().unwrap();
+        manager.set_bundle_path(Some(temp_dir.path().to_path_buf()));
+
+        assert!(manager.is_bundle_mode());
+        assert!(manager.get_bundle_path().is_some());
+
+        // Clear bundle path
+        manager.set_bundle_path(None);
+        assert!(!manager.is_bundle_mode());
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_bundle_mode_shared_across_clones() {
+        let manager1 = OutputManager::new().unwrap();
+        let manager2 = manager1.clone();
+
+        // Both start without bundle
+        assert!(!manager1.is_bundle_mode());
+        assert!(!manager2.is_bundle_mode());
+
+        // Set on one, affects both
+        let temp_dir = TempDir::new().unwrap();
+        manager1.set_bundle_path(Some(temp_dir.path().to_path_buf()));
+
+        assert!(manager1.is_bundle_mode());
+        assert!(manager2.is_bundle_mode());
+
+        let _ = manager1.cleanup();
+    }
+
+    #[test]
+    fn test_get_relative_output_path() {
+        let manager = OutputManager::new().unwrap();
+        let folder_id = FolderId("abc123".to_string());
+
+        let relative = manager.get_relative_output_path(&folder_id);
+        assert_eq!(relative, "converted/abc123");
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_delete_folder_output_from_session() {
+        let manager = OutputManager::new().unwrap();
+        let folder_id = FolderId("session_delete_test".to_string());
+
+        // Create folder in session
+        let folder_dir = manager.get_folder_output_dir(&folder_id).unwrap();
+        fs::write(folder_dir.join("test.mp3"), "data").unwrap();
+        assert!(folder_dir.exists());
+
+        // Delete from session
+        manager.delete_folder_output_from_session(&folder_id).unwrap();
+        assert!(!folder_dir.exists());
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_folder_output_in_bundle_mode() {
+        let manager = OutputManager::new().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let folder_id = FolderId("bundle_folder".to_string());
+
+        // Set bundle mode
+        manager.set_bundle_path(Some(temp_dir.path().to_path_buf()));
+
+        // Get folder output dir (should be in bundle)
+        let folder_dir = manager.get_folder_output_dir(&folder_id).unwrap();
+        assert!(folder_dir.starts_with(temp_dir.path()));
+        assert!(folder_dir.to_string_lossy().contains("converted"));
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_copy_to_bundle() {
+        let manager = OutputManager::new().unwrap();
+        let bundle_dir = TempDir::new().unwrap();
+        let folder_id = FolderId("copy_test".to_string());
+
+        // Create folder with content in session
+        let folder_dir = manager.get_folder_output_dir(&folder_id).unwrap();
+        fs::write(folder_dir.join("track1.mp3"), "audio1").unwrap();
+        fs::write(folder_dir.join("track2.mp3"), "audio2").unwrap();
+
+        // Copy to bundle
+        manager.copy_to_bundle(bundle_dir.path(), &[folder_id.clone()]).unwrap();
+
+        // Verify copied
+        let bundle_folder = bundle_dir.path().join("converted").join("copy_test");
+        assert!(bundle_folder.exists());
+        assert!(bundle_folder.join("track1.mp3").exists());
+        assert!(bundle_folder.join("track2.mp3").exists());
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_copy_from_bundle() {
+        let manager = OutputManager::new().unwrap();
+        let bundle_dir = TempDir::new().unwrap();
+        let folder_id = FolderId("from_bundle".to_string());
+
+        // Create converted folder in bundle
+        let converted_dir = bundle_dir.path().join("converted").join("from_bundle");
+        fs::create_dir_all(&converted_dir).unwrap();
+        fs::write(converted_dir.join("song.mp3"), "music").unwrap();
+
+        // Copy from bundle to session
+        let result = manager.copy_from_bundle(bundle_dir.path(), &folder_id);
+        assert!(result.is_ok());
+
+        // Verify in session
+        let session_folder = manager.session_dir().join("from_bundle");
+        assert!(session_folder.exists());
+        assert!(session_folder.join("song.mp3").exists());
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_copy_from_bundle_not_found() {
+        let manager = OutputManager::new().unwrap();
+        let bundle_dir = TempDir::new().unwrap();
+        let folder_id = FolderId("nonexistent".to_string());
+
+        let result = manager.copy_from_bundle(bundle_dir.path(), &folder_id);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+
+        // Create nested structure
+        fs::create_dir_all(src_dir.path().join("subdir")).unwrap();
+        fs::write(src_dir.path().join("root.txt"), "root content").unwrap();
+        fs::write(src_dir.path().join("subdir").join("nested.txt"), "nested content").unwrap();
+
+        // Copy
+        let dst_path = dst_dir.path().join("copied");
+        copy_dir_recursive(src_dir.path(), &dst_path).unwrap();
+
+        // Verify
+        assert!(dst_path.join("root.txt").exists());
+        assert!(dst_path.join("subdir").join("nested.txt").exists());
+        assert_eq!(fs::read_to_string(dst_path.join("root.txt")).unwrap(), "root content");
+    }
+
+    #[test]
+    fn test_cleanup_session() {
+        let manager = OutputManager::new().unwrap();
+        let session_dir = manager.session_dir().to_path_buf();
+
+        // Create some content
+        let folder_id = FolderId("cleanup_test".to_string());
+        let folder_dir = manager.get_folder_output_dir(&folder_id).unwrap();
+        fs::write(folder_dir.join("file.mp3"), "data").unwrap();
+
+        assert!(session_dir.exists());
+
+        // Cleanup
+        manager.cleanup().unwrap();
+        assert!(!session_dir.exists());
+    }
+
+    #[test]
+    fn test_cleanup_old_sessions() {
+        // Create two managers (two sessions)
+        let manager1 = OutputManager::new().unwrap();
+        let manager2 = OutputManager::new().unwrap();
+
+        let session1_dir = manager1.session_dir().to_path_buf();
+        let session2_dir = manager2.session_dir().to_path_buf();
+
+        // Both should exist
+        assert!(session1_dir.exists());
+        assert!(session2_dir.exists());
+
+        // Cleanup old sessions from manager2's perspective
+        manager2.cleanup_old_sessions().unwrap();
+
+        // Manager1's session should be deleted (it's old)
+        assert!(!session1_dir.exists());
+        // Manager2's session should still exist
+        assert!(session2_dir.exists());
+
+        let _ = manager2.cleanup();
+    }
+
+    #[test]
+    fn test_calculate_dir_size_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let size = calculate_dir_size(temp_dir.path()).unwrap();
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn test_calculate_dir_size_nonexistent() {
+        let result = calculate_dir_size(Path::new("/nonexistent/path/xyz"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_folder_size_nonexistent() {
+        let manager = OutputManager::new().unwrap();
+        let folder_id = FolderId("nonexistent_folder".to_string());
+
+        // Non-existent folder should return 0
+        let size = manager.get_folder_output_size(&folder_id).unwrap();
+        assert_eq!(size, 0);
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_folder_exists_in_bundle_mode() {
+        let manager = OutputManager::new().unwrap();
+        let bundle_dir = TempDir::new().unwrap();
+        let folder_id = FolderId("bundle_exists_test".to_string());
+
+        // Set bundle mode
+        manager.set_bundle_path(Some(bundle_dir.path().to_path_buf()));
+
+        // Doesn't exist yet
+        assert!(!manager.folder_output_exists(&folder_id));
+
+        // Create in bundle
+        let converted_dir = bundle_dir.path().join("converted").join("bundle_exists_test");
+        fs::create_dir_all(&converted_dir).unwrap();
+
+        // Now exists
+        assert!(manager.folder_output_exists(&folder_id));
+
+        let _ = manager.cleanup();
+    }
 }
