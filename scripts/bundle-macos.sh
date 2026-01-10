@@ -69,10 +69,16 @@ cp "${BUILD_DIR}/MP3-CD-Burner" "${BUNDLE_DIR}/Contents/MacOS/"
 echo "Copying Info.plist..."
 cp "${PROJECT_DIR}/macos/Info.plist" "${BUNDLE_DIR}/Contents/"
 
-# Copy resources (ffmpeg binary)
+# Copy resources (ffmpeg binary and images)
 echo "Copying resources..."
 mkdir -p "${BUNDLE_DIR}/Contents/Resources/bin"
 cp "${PROJECT_DIR}/resources/bin/ffmpeg" "${BUNDLE_DIR}/Contents/Resources/bin/"
+
+# Copy images folder (mixtape art, etc.)
+if [ -d "${PROJECT_DIR}/resources/images" ]; then
+    echo "Copying images..."
+    cp -r "${PROJECT_DIR}/resources/images" "${BUNDLE_DIR}/Contents/Resources/"
+fi
 
 # Copy icon if it exists
 if [ -f "${PROJECT_DIR}/macos/AppIcon.icns" ]; then
