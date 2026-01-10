@@ -212,7 +212,7 @@ The log file captures debug-level information and can be helpful for troubleshoo
 
 ## Requirements
 
-- macOS 11.0 or later
+- macOS 12.0 (Monterey) or later
 - Optical drive (internal or external USB)
 - Blank CD-R or CD-RW discs
 
