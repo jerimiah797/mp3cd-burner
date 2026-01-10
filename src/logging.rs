@@ -130,3 +130,43 @@ pub fn open_log_directory() -> Result<(), String> {
         Err("Could not determine log directory".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_log_directory_returns_path() {
+        let dir = get_log_directory();
+        assert!(dir.is_some(), "Should return a log directory path");
+
+        let path = dir.unwrap();
+        assert!(
+            path.to_string_lossy().contains("MP3-CD-Burner"),
+            "Path should contain app name"
+        );
+    }
+
+    #[test]
+    fn test_get_log_file_path_returns_path() {
+        let path = get_log_file_path();
+        assert!(path.is_some(), "Should return a log file path");
+
+        let file_path = path.unwrap();
+        assert!(
+            file_path.to_string_lossy().ends_with("mp3cd-burner.log"),
+            "Path should end with log filename"
+        );
+    }
+
+    #[test]
+    fn test_log_file_path_is_inside_log_directory() {
+        let dir = get_log_directory().unwrap();
+        let file = get_log_file_path().unwrap();
+
+        assert!(
+            file.starts_with(&dir),
+            "Log file should be inside log directory"
+        );
+    }
+}

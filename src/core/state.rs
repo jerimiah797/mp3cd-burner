@@ -544,9 +544,297 @@ mod tests {
     }
 
     #[test]
+    fn test_app_settings_serialize() {
+        let settings = AppSettings {
+            simulate_burn: true,
+            no_lossy_conversions: true,
+            embed_album_art: true,
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("simulate_burn"));
+        assert!(json.contains("true"));
+    }
+
+    #[test]
+    fn test_app_settings_deserialize() {
+        let json = r#"{"simulate_burn":true,"no_lossy_conversions":false,"embed_album_art":true}"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert!(settings.simulate_burn);
+        assert!(!settings.no_lossy_conversions);
+        assert!(settings.embed_album_art);
+    }
+
+    #[test]
     fn test_burn_settings_default() {
         let settings = BurnSettings::default();
         assert_eq!(settings.bitrate, 192);
         assert!(settings.volume_label.is_empty());
+    }
+
+    #[test]
+    fn test_burn_settings_custom() {
+        let settings = BurnSettings {
+            bitrate: 320,
+            volume_label: "My Music".to_string(),
+        };
+        assert_eq!(settings.bitrate, 320);
+        assert_eq!(settings.volume_label, "My Music");
+    }
+
+    #[test]
+    fn test_window_state_default() {
+        let state = WindowState::default();
+        assert_eq!(state.x, 100.0);
+        assert_eq!(state.y, 100.0);
+        assert_eq!(state.width, 600.0);
+        assert_eq!(state.height, 500.0);
+    }
+
+    #[test]
+    fn test_window_state_serialize() {
+        let state = WindowState {
+            x: 200.0,
+            y: 150.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: WindowState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.x, 200.0);
+        assert_eq!(parsed.width, 800.0);
+    }
+
+    #[test]
+    fn test_display_settings_default() {
+        let settings = DisplaySettings::default();
+        // All fields should be same value (based on debug_assertions)
+        assert_eq!(
+            settings.show_file_count,
+            settings.show_original_size
+        );
+        assert_eq!(
+            settings.show_converted_size,
+            settings.show_source_format
+        );
+    }
+
+    #[test]
+    fn test_display_settings_serialize() {
+        let settings = DisplaySettings {
+            show_file_count: true,
+            show_original_size: false,
+            show_converted_size: true,
+            show_source_format: false,
+            show_source_bitrate: true,
+            show_final_bitrate: false,
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let parsed: DisplaySettings = serde_json::from_str(&json).unwrap();
+        assert!(parsed.show_file_count);
+        assert!(!parsed.show_original_size);
+        assert!(parsed.show_converted_size);
+        assert!(!parsed.show_source_format);
+    }
+
+    #[test]
+    fn test_burn_stage_display_text() {
+        assert_eq!(BurnStage::Converting.display_text(), "Converting...");
+        assert_eq!(BurnStage::CreatingIso.display_text(), "Creating ISO...");
+        assert_eq!(BurnStage::WaitingForCd.display_text(), "Insert blank CD");
+        assert_eq!(BurnStage::ErasableDiscDetected.display_text(), "Erase disc?");
+        assert_eq!(BurnStage::Erasing.display_text(), "Erasing...");
+        assert_eq!(BurnStage::Burning.display_text(), "Burning...");
+        assert_eq!(BurnStage::Finishing.display_text(), "Finishing...");
+        assert_eq!(BurnStage::Complete.display_text(), "Complete!");
+        assert_eq!(BurnStage::Cancelled.display_text(), "Cancelled");
+    }
+
+    #[test]
+    fn test_conversion_state_new() {
+        let state = ConversionState::new();
+        assert!(!state.is_converting());
+        assert!(!state.is_cancelled());
+        let (completed, failed, total) = state.progress();
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_conversion_state_default() {
+        let state = ConversionState::default();
+        assert!(!state.is_converting());
+    }
+
+    #[test]
+    fn test_conversion_state_reset() {
+        let state = ConversionState::new();
+        state.reset(10);
+        assert!(state.is_converting());
+        assert!(!state.is_cancelled());
+        let (completed, failed, total) = state.progress();
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+        assert_eq!(total, 10);
+        assert_eq!(state.get_stage(), BurnStage::Converting);
+        assert_eq!(state.get_burn_progress(), -1);
+    }
+
+    #[test]
+    fn test_conversion_state_finish() {
+        let state = ConversionState::new();
+        state.reset(10);
+        assert!(state.is_converting());
+        state.finish();
+        assert!(!state.is_converting());
+    }
+
+    #[test]
+    fn test_conversion_state_cancel() {
+        let state = ConversionState::new();
+        assert!(!state.is_cancelled());
+        state.request_cancel();
+        assert!(state.is_cancelled());
+    }
+
+    #[test]
+    fn test_conversion_state_stage() {
+        let state = ConversionState::new();
+        state.set_stage(BurnStage::Burning);
+        assert_eq!(state.get_stage(), BurnStage::Burning);
+        state.set_stage(BurnStage::Complete);
+        assert_eq!(state.get_stage(), BurnStage::Complete);
+    }
+
+    #[test]
+    fn test_conversion_state_burn_progress() {
+        let state = ConversionState::new();
+        state.set_burn_progress(50);
+        assert_eq!(state.get_burn_progress(), 50);
+        state.set_burn_progress(100);
+        assert_eq!(state.get_burn_progress(), 100);
+    }
+
+    #[test]
+    fn test_conversion_state_progress_tracking() {
+        let state = ConversionState::new();
+        state.reset(5);
+        state.completed.fetch_add(2, Ordering::SeqCst);
+        state.failed.fetch_add(1, Ordering::SeqCst);
+        let (completed, failed, total) = state.progress();
+        assert_eq!(completed, 2);
+        assert_eq!(failed, 1);
+        assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn test_conversion_state_clone() {
+        let state1 = ConversionState::new();
+        state1.reset(10);
+        state1.set_stage(BurnStage::Burning);
+
+        let state2 = state1.clone();
+        assert!(state2.is_converting());
+        assert_eq!(state2.get_stage(), BurnStage::Burning);
+
+        // Changes to state1 should be visible in state2 (Arc)
+        state1.set_stage(BurnStage::Complete);
+        assert_eq!(state2.get_stage(), BurnStage::Complete);
+    }
+
+    #[test]
+    fn test_import_state_new() {
+        let state = ImportState::new();
+        assert!(!state.is_importing());
+        let (completed, total) = state.progress();
+        assert_eq!(completed, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_import_state_default() {
+        let state = ImportState::default();
+        assert!(!state.is_importing());
+    }
+
+    #[test]
+    fn test_import_state_reset() {
+        let state = ImportState::new();
+        state.reset(5);
+        assert!(state.is_importing());
+        let (completed, total) = state.progress();
+        assert_eq!(completed, 0);
+        assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn test_import_state_finish() {
+        let state = ImportState::new();
+        state.reset(5);
+        assert!(state.is_importing());
+        state.finish();
+        assert!(!state.is_importing());
+    }
+
+    #[test]
+    fn test_import_state_push_and_drain_folders() {
+        let state = ImportState::new();
+        state.reset(2);
+
+        // Push some folders
+        let folder1 = MusicFolder::new_for_test("/test/album1");
+        let folder2 = MusicFolder::new_for_test("/test/album2");
+        state.push_folder(folder1);
+        state.push_folder(folder2);
+
+        assert!(state.has_pending_folders());
+        let (completed, _) = state.progress();
+        assert_eq!(completed, 2);
+
+        // Drain
+        let folders = state.drain_folders();
+        assert_eq!(folders.len(), 2);
+        assert!(!state.has_pending_folders());
+    }
+
+    #[test]
+    fn test_import_state_push_failed() {
+        let state = ImportState::new();
+        state.reset(2);
+
+        state.push_failed(PathBuf::from("/bad/path1"));
+        state.push_failed(PathBuf::from("/bad/path2"));
+
+        let failed = state.get_failed_paths();
+        assert_eq!(failed.len(), 2);
+        assert_eq!(failed[0], PathBuf::from("/bad/path1"));
+        let (completed, _) = state.progress();
+        assert_eq!(completed, 2);
+    }
+
+    #[test]
+    fn test_import_state_clone() {
+        let state1 = ImportState::new();
+        state1.reset(5);
+
+        let state2 = state1.clone();
+        assert!(state2.is_importing());
+
+        // Changes to state1 should be visible in state2 (Arc)
+        state1.finish();
+        assert!(!state2.is_importing());
+    }
+
+    #[test]
+    fn test_burn_stage_equality() {
+        assert_eq!(BurnStage::Converting, BurnStage::Converting);
+        assert_ne!(BurnStage::Converting, BurnStage::Burning);
+    }
+
+    #[test]
+    fn test_burn_stage_copy() {
+        let stage = BurnStage::Complete;
+        let stage_copy = stage;
+        assert_eq!(stage, stage_copy);
     }
 }

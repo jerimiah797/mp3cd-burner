@@ -766,4 +766,437 @@ mod tests {
         ];
         assert_eq!(total_size(&files), 16800000);
     }
+
+    #[test]
+    fn test_normalize_codec_mp3() {
+        assert_eq!(MusicFolder::normalize_codec("mp3"), "MP3");
+        assert_eq!(MusicFolder::normalize_codec("MP3"), "MP3");
+        assert_eq!(MusicFolder::normalize_codec("mpeg audio"), "MP3");
+    }
+
+    #[test]
+    fn test_normalize_codec_flac() {
+        assert_eq!(MusicFolder::normalize_codec("flac"), "FLAC");
+        assert_eq!(MusicFolder::normalize_codec("FLAC"), "FLAC");
+    }
+
+    #[test]
+    fn test_normalize_codec_aac() {
+        assert_eq!(MusicFolder::normalize_codec("aac"), "AAC");
+        assert_eq!(MusicFolder::normalize_codec("m4a"), "AAC");
+    }
+
+    #[test]
+    fn test_normalize_codec_wav() {
+        assert_eq!(MusicFolder::normalize_codec("wav"), "WAV");
+        assert_eq!(MusicFolder::normalize_codec("pcm_s16le"), "WAV");
+    }
+
+    #[test]
+    fn test_normalize_codec_ogg() {
+        assert_eq!(MusicFolder::normalize_codec("ogg"), "OGG");
+        assert_eq!(MusicFolder::normalize_codec("vorbis"), "OGG");
+    }
+
+    #[test]
+    fn test_normalize_codec_opus() {
+        assert_eq!(MusicFolder::normalize_codec("opus"), "OPUS");
+    }
+
+    #[test]
+    fn test_normalize_codec_alac() {
+        assert_eq!(MusicFolder::normalize_codec("alac"), "ALAC");
+    }
+
+    #[test]
+    fn test_normalize_codec_unknown() {
+        assert_eq!(MusicFolder::normalize_codec("unknown_format"), "Other");
+    }
+
+    #[test]
+    fn test_has_lossless_files_all_lossy() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        assert!(!folder.has_lossless_files());
+    }
+
+    #[test]
+    fn test_has_lossless_files_with_lossless() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.flac"),
+                duration: 180.0,
+                bitrate: 1411,
+                size: 30000000,
+                codec: "flac".to_string(),
+                is_lossy: false,
+            },
+        ];
+        assert!(folder.has_lossless_files());
+    }
+
+    #[test]
+    fn test_source_format_summary_single_format() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        assert_eq!(folder.source_format_summary(), "MP3");
+    }
+
+    #[test]
+    fn test_source_format_summary_mixed_formats() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.flac"),
+                duration: 180.0,
+                bitrate: 1411,
+                size: 30000000,
+                codec: "flac".to_string(),
+                is_lossy: false,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        assert_eq!(folder.source_format_summary(), "FLAC/MP3");
+    }
+
+    #[test]
+    fn test_source_format_summary_empty() {
+        let folder = MusicFolder::new_for_test("/test/album");
+        assert_eq!(folder.source_format_summary(), "");
+    }
+
+    #[test]
+    fn test_source_bitrate_summary_uniform() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        assert_eq!(folder.source_bitrate_summary(), "320k");
+    }
+
+    #[test]
+    fn test_source_bitrate_summary_range() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 128,
+                size: 2880000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        assert_eq!(folder.source_bitrate_summary(), "128-320k");
+    }
+
+    #[test]
+    fn test_source_bitrate_summary_lossless() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.flac"),
+                duration: 180.0,
+                bitrate: 1411,
+                size: 30000000,
+                codec: "flac".to_string(),
+                is_lossy: false,
+            },
+        ];
+        assert_eq!(folder.source_bitrate_summary(), "lossless");
+    }
+
+    #[test]
+    fn test_source_bitrate_summary_empty() {
+        let folder = MusicFolder::new_for_test("/test/album");
+        assert_eq!(folder.source_bitrate_summary(), "");
+    }
+
+    #[test]
+    fn test_is_mixtape_album() {
+        let folder = MusicFolder::new_for_test("/test/album");
+        assert!(!folder.is_mixtape());
+    }
+
+    #[test]
+    fn test_is_mixtape_true() {
+        let mixtape = MusicFolder::new_mixtape("My Mix".to_string(), vec![]);
+        assert!(mixtape.is_mixtape());
+    }
+
+    #[test]
+    fn test_display_name_album_with_name() {
+        let mut folder = MusicFolder::new_for_test("/music/Artist - Album");
+        folder.album_name = Some("The Album".to_string());
+        assert_eq!(folder.display_name(), "The Album");
+    }
+
+    #[test]
+    fn test_display_name_album_without_name() {
+        let folder = MusicFolder::new_for_test("/music/My Album Folder");
+        assert_eq!(folder.display_name(), "My Album Folder");
+    }
+
+    #[test]
+    fn test_display_name_mixtape() {
+        let mixtape = MusicFolder::new_mixtape("Road Trip Mix".to_string(), vec![]);
+        assert_eq!(mixtape.display_name(), "Road Trip Mix");
+    }
+
+    #[test]
+    fn test_set_mixtape_name() {
+        let mut mixtape = MusicFolder::new_mixtape("Old Name".to_string(), vec![]);
+        mixtape.set_mixtape_name("New Name".to_string());
+        assert_eq!(mixtape.display_name(), "New Name");
+    }
+
+    #[test]
+    fn test_active_tracks_default_order() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 240.0,
+                bitrate: 320,
+                size: 9600000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        let tracks = folder.active_tracks();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].path, PathBuf::from("/test/1.mp3"));
+        assert_eq!(tracks[1].path, PathBuf::from("/test/2.mp3"));
+    }
+
+    #[test]
+    fn test_active_tracks_custom_order() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 240.0,
+                bitrate: 320,
+                size: 9600000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        folder.set_track_order(vec![1, 0]); // Reverse order
+        let tracks = folder.active_tracks();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].path, PathBuf::from("/test/2.mp3"));
+        assert_eq!(tracks[1].path, PathBuf::from("/test/1.mp3"));
+    }
+
+    #[test]
+    fn test_active_tracks_with_exclusion() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 240.0,
+                bitrate: 320,
+                size: 9600000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        folder.exclude_track(Path::new("/test/1.mp3"));
+        let tracks = folder.active_tracks();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].path, PathBuf::from("/test/2.mp3"));
+    }
+
+    #[test]
+    fn test_include_track() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        folder.exclude_track(Path::new("/test/1.mp3"));
+        assert_eq!(folder.active_tracks().len(), 0);
+
+        folder.include_track(Path::new("/test/1.mp3"));
+        assert_eq!(folder.active_tracks().len(), 1);
+    }
+
+    #[test]
+    fn test_reset_track_order() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.set_track_order(vec![1, 0]);
+        assert!(folder.track_order.is_some());
+
+        folder.reset_track_order();
+        assert!(folder.track_order.is_none());
+    }
+
+    #[test]
+    fn test_recalculate_totals() {
+        let mut folder = MusicFolder::new_for_test("/test/album");
+        folder.audio_files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+            AudioFileInfo {
+                path: PathBuf::from("/test/2.mp3"),
+                duration: 240.0,
+                bitrate: 320,
+                size: 9600000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        folder.recalculate_totals();
+        assert_eq!(folder.file_count, 2);
+        assert_eq!(folder.total_size, 16800000);
+        assert_eq!(folder.total_duration, 420.0);
+    }
+
+    #[test]
+    fn test_new_mixtape() {
+        let files = vec![
+            AudioFileInfo {
+                path: PathBuf::from("/test/1.mp3"),
+                duration: 180.0,
+                bitrate: 320,
+                size: 7200000,
+                codec: "mp3".to_string(),
+                is_lossy: true,
+            },
+        ];
+        let mixtape = MusicFolder::new_mixtape("Test Mix".to_string(), files);
+
+        assert!(mixtape.is_mixtape());
+        assert_eq!(mixtape.display_name(), "Test Mix");
+        assert_eq!(mixtape.file_count, 1);
+        assert_eq!(mixtape.total_size, 7200000);
+        assert_eq!(mixtape.total_duration, 180.0);
+        assert!(mixtape.path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_folder_kind_default() {
+        let kind: FolderKind = Default::default();
+        assert!(matches!(kind, FolderKind::Album));
+    }
+
+    #[test]
+    fn test_find_album_folders_nonexistent() {
+        let result = find_album_folders(Path::new("/nonexistent/path"));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_album_folders_empty_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = find_album_folders(temp_dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_audio_files_nonexistent() {
+        let result = get_audio_files(Path::new("/nonexistent/path"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_audio_files_empty_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = get_audio_files(temp_dir.path()).unwrap();
+        assert!(result.is_empty());
+    }
 }
