@@ -437,7 +437,7 @@ fn generate_session_id() -> String {
 }
 
 /// Calculate the total size of a directory recursively
-fn calculate_dir_size(path: &Path) -> Result<u64, String> {
+pub fn calculate_dir_size(path: &Path) -> Result<u64, String> {
     let mut total = 0u64;
 
     for entry in

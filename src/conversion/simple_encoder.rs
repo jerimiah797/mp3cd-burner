@@ -1218,6 +1218,8 @@ fn transcode_file_internal(
         .arg("-vn")
         .arg("-codec:a")
         .arg("libmp3lame")
+        .arg("-abr")
+        .arg("1") // ABR mode: targets average bitrate precisely (not limited to CBR presets)
         .arg("-b:a")
         .arg(&bitrate_str)
         .arg("-map_metadata")

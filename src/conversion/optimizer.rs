@@ -84,8 +84,9 @@ pub struct ConversionEstimate {
 
 impl ConversionEstimate {
     /// Returns headroom as MB (positive = under capacity, negative = over)
+    /// Uses decimal units to match Finder (1 MB = 1,000,000 bytes)
     pub fn headroom_mb(&self) -> f64 {
-        self.headroom_bytes as f64 / (1024.0 * 1024.0)
+        self.headroom_bytes as f64 / (1000.0 * 1000.0)
     }
 }
 
@@ -414,8 +415,8 @@ mod tests {
     fn test_optimize_bitrate_decreases_when_over() {
         // Simulate ~6 hours of audio that won't fit at high bitrate
         // At 320kbps: 320 * 1000 / 8 = 40,000 bytes/sec
-        // CD capacity: 685 * 1024 * 1024 = 718,274,560 bytes
-        // Max duration at 320kbps: 718,274,560 / 40,000 = 17,957 seconds = ~5 hours
+        // CD capacity: 700 * 1000 * 1000 = 700,000,000 bytes (decimal)
+        // Max duration at 320kbps: 700,000,000 / 40,000 = 17,500 seconds = ~4.9 hours
         // So 10 files of 36 minutes each = 6 hours should exceed capacity
         let files: Vec<_> = (0..10)
             .map(|_| make_test_file("flac", 0, 2160.0, 50_000_000, false)) // 36 min each

@@ -198,6 +198,9 @@ impl FolderList {
                     }
                 };
 
+                // Mark as having unsaved changes when bitrate is modified
+                self.has_unsaved_changes = true;
+
                 // Set flag to prevent ISO generation until recalculation completes
                 self.bitrate_recalc_pending = true;
 

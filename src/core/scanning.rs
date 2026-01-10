@@ -648,10 +648,11 @@ pub fn format_duration(seconds: f64) -> String {
 }
 
 /// Format size in human-readable form (KB, MB, GB)
+/// Uses decimal units to match Finder (1 MB = 1,000,000 bytes)
 pub fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
+    const KB: u64 = 1000;
+    const MB: u64 = KB * 1000;
+    const GB: u64 = MB * 1000;
 
     if bytes >= GB {
         format!("{:.2} GB", bytes as f64 / GB as f64)
@@ -682,11 +683,12 @@ mod tests {
 
     #[test]
     fn test_format_size() {
+        // Uses decimal units to match Finder
         assert_eq!(format_size(500), "500 bytes");
-        assert_eq!(format_size(1024), "1.00 KB");
-        assert_eq!(format_size(1536), "1.50 KB");
-        assert_eq!(format_size(1048576), "1.00 MB");
-        assert_eq!(format_size(1073741824), "1.00 GB");
+        assert_eq!(format_size(1000), "1.00 KB");
+        assert_eq!(format_size(1500), "1.50 KB");
+        assert_eq!(format_size(1_000_000), "1.00 MB");
+        assert_eq!(format_size(1_000_000_000), "1.00 GB");
     }
 
     #[test]

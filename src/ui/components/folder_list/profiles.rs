@@ -870,10 +870,20 @@ impl FolderList {
                                             std::path::PathBuf::from(&saved.output_dir)
                                         };
 
+                                        // Measure actual output size instead of using saved value
+                                        // This ensures the UI shows correct sizes even if files
+                                        // were re-encoded since the profile was saved
+                                        let actual_output_size = if output_dir.exists() {
+                                            crate::conversion::calculate_dir_size(&output_dir)
+                                                .unwrap_or(saved.output_size)
+                                        } else {
+                                            saved.output_size // Fallback if dir doesn't exist
+                                        };
+
                                         folder.conversion_status = FolderConversionStatus::Converted {
                                             output_dir,
                                             lossless_bitrate: saved.lossless_bitrate,
-                                            output_size: saved.output_size,
+                                            output_size: actual_output_size,
                                             completed_at: saved.completed_at.unwrap_or(0),
                                         };
 
@@ -938,10 +948,20 @@ impl FolderList {
                                     std::path::PathBuf::from(&saved.output_dir)
                                 };
 
+                                // Measure actual output size instead of using saved value
+                                // This ensures the UI shows correct sizes even if files
+                                // were re-encoded since the profile was saved
+                                let actual_output_size = if output_dir.exists() {
+                                    crate::conversion::calculate_dir_size(&output_dir)
+                                        .unwrap_or(saved.output_size)
+                                } else {
+                                    saved.output_size // Fallback if dir doesn't exist
+                                };
+
                                 folder.conversion_status = FolderConversionStatus::Converted {
                                     output_dir,
                                     lossless_bitrate: saved.lossless_bitrate,
-                                    output_size: saved.output_size,
+                                    output_size: actual_output_size,
                                     completed_at: saved.completed_at.unwrap_or(0),
                                 };
 

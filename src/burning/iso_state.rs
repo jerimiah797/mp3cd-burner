@@ -9,8 +9,9 @@ use std::path::PathBuf;
 
 use crate::core::{FolderId, MusicFolder, calculate_folder_hash};
 
-/// Maximum ISO size for CD burning (699 MB)
-pub const MAX_ISO_SIZE_BYTES: u64 = 699 * 1024 * 1024;
+/// Maximum ISO size for CD burning (700 MB decimal)
+/// CD-Rs are labeled 700 MB using decimal (not binary) megabytes
+pub const MAX_ISO_SIZE_BYTES: u64 = 700 * 1000 * 1000;
 
 /// Tracks the state of the current ISO image
 #[derive(Debug, Clone)]
@@ -182,18 +183,38 @@ mod tests {
 
     #[test]
     fn test_iso_state_exceeds_limit() {
+        // Well under limit
         let iso_under = IsoState {
             path: PathBuf::from("/tmp/test.iso"),
             folder_hash: "abc".to_string(),
-            size_bytes: 600 * 1024 * 1024, // 600 MB
+            size_bytes: 600 * 1000 * 1000, // 600 MB decimal
             is_valid: true,
         };
         assert!(!iso_under.exceeds_cd_limit());
 
+        // Exactly at limit (700 MB)
+        let iso_at_limit = IsoState {
+            path: PathBuf::from("/tmp/test.iso"),
+            folder_hash: "abc".to_string(),
+            size_bytes: 700 * 1000 * 1000, // 700 MB decimal
+            is_valid: true,
+        };
+        assert!(!iso_at_limit.exceeds_cd_limit());
+
+        // Just over limit (701 MB)
+        let iso_just_over = IsoState {
+            path: PathBuf::from("/tmp/test.iso"),
+            folder_hash: "abc".to_string(),
+            size_bytes: 701 * 1000 * 1000, // 701 MB decimal
+            is_valid: true,
+        };
+        assert!(iso_just_over.exceeds_cd_limit());
+
+        // Well over limit
         let iso_over = IsoState {
             path: PathBuf::from("/tmp/test.iso"),
             folder_hash: "abc".to_string(),
-            size_bytes: 750 * 1024 * 1024, // 750 MB
+            size_bytes: 750 * 1000 * 1000, // 750 MB decimal
             is_valid: true,
         };
         assert!(iso_over.exceeds_cd_limit());
