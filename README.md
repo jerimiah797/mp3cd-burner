@@ -40,11 +40,11 @@ You can also drag a parent folder containing multiple albums - the app will dete
 Create custom playlists by dragging individual audio files (not folders) into the app. This creates a "Mixtape" that you can name and customize:
 - Drag audio files from different albums into the app
 - A new mixtape is created automatically
-- Double-click to open the Track Editor to rename, reorder, or add more tracks
+- Click the edit icon to open the Track Editor to rename, reorder, or add more tracks
 
 ### Track Editor
 
-Double-click any folder to open the Track Editor window:
+Click the edit icon on any folder to open the Track Editor window:
 
 **For Albums:**
 - View all tracks with metadata (title, artist, duration)
