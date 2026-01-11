@@ -2,6 +2,8 @@
 
 A native macOS application for creating MP3 CDs from your music library. Drag folders of music, and the app automatically converts everything to MP3 format optimized to fit on a 700MB CD.
 
+![Main Window](screenshots/v1.1.0/main-window.png)
+
 ## Overview
 
 MP3 CD Burner takes the hassle out of creating MP3 CDs:
@@ -42,9 +44,13 @@ Create custom playlists by dragging individual audio files (not folders) into th
 - A new mixtape is created automatically
 - Click the edit icon to open the Track Editor to rename, reorder, or add more tracks
 
+![Mixtapes](screenshots/v1.1.0/mixtapes.png)
+
 ### Track Editor
 
 Click the edit icon on any folder to open the Track Editor window:
+
+![Track Editor](screenshots/v1.1.0/track-editor.png)
 
 **For Albums:**
 - View all tracks with metadata (title, artist, duration)
