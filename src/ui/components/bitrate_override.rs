@@ -56,6 +56,7 @@ impl BitrateOverrideDialog {
     /// - Some(bitrate) when Apply is pressed
     /// - None when "Use Automatic" is pressed
     /// Returns the window handle.
+    #[allow(dead_code)]
     pub fn open<F>(
         cx: &mut gpui::App,
         current_bitrate: u32,

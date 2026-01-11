@@ -148,6 +148,7 @@ pub struct TrackEditorWindow {
     /// Focus handle for keyboard input
     focus_handle: FocusHandle,
     /// Scroll position for track list
+    #[allow(dead_code)]
     scroll_offset: f32,
 }
 

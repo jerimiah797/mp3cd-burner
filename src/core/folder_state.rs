@@ -37,6 +37,7 @@ impl FolderId {
     }
 
     /// Check if this FolderId represents a mixtape
+    #[allow(dead_code)]
     pub fn is_mixtape(&self) -> bool {
         self.0.starts_with("mixtape:")
     }

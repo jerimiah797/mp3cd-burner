@@ -173,6 +173,7 @@ impl OutputManager {
     }
 
     /// Delete a folder's output directory (e.g., when folder is removed from list)
+    #[allow(dead_code)]
     pub fn delete_folder_output(&self, folder_id: &FolderId) -> Result<(), String> {
         let bundle_path = self.get_bundle_path();
         let folder_dir = if let Some(bundle) = bundle_path {

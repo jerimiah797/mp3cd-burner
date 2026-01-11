@@ -6,4 +6,4 @@ pub mod metadata;
 
 pub use conversion::{EncodingStrategy, determine_encoding_strategy};
 pub use detection::is_audio_file;
-pub use metadata::{get_album_art, get_album_metadata, get_audio_metadata, get_track_metadata, TrackMetadata};
+pub use metadata::{get_album_art, get_album_metadata, get_audio_metadata, get_track_metadata};

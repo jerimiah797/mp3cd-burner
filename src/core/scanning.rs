@@ -125,6 +125,7 @@ impl MusicFolder {
     }
 
     /// Returns the mixtape name if this is a mixtape, None otherwise
+    #[allow(dead_code)]
     pub fn mixtape_name(&self) -> Option<&str> {
         match &self.kind {
             FolderKind::Mixtape { name } => Some(name),
@@ -174,6 +175,7 @@ impl MusicFolder {
     }
 
     /// Exclude a track from the burn
+    #[allow(dead_code)]
     pub fn exclude_track(&mut self, path: &Path) {
         if !self.excluded_tracks.contains(&path.to_path_buf()) {
             self.excluded_tracks.push(path.to_path_buf());
@@ -181,6 +183,7 @@ impl MusicFolder {
     }
 
     /// Re-include a previously excluded track
+    #[allow(dead_code)]
     pub fn include_track(&mut self, path: &Path) {
         self.excluded_tracks.retain(|p| p != path);
     }
@@ -191,6 +194,7 @@ impl MusicFolder {
     }
 
     /// Reset to original track order
+    #[allow(dead_code)]
     pub fn reset_track_order(&mut self) {
         self.track_order = None;
     }

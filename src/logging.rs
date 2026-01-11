@@ -25,6 +25,7 @@ pub fn get_log_directory() -> Option<PathBuf> {
 }
 
 /// Get the current log file path
+#[allow(dead_code)]
 pub fn get_log_file_path() -> Option<PathBuf> {
     get_log_directory().map(|d| d.join("mp3cd-burner.log"))
 }

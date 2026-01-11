@@ -9,7 +9,6 @@ mod output_manager;
 mod simple_encoder;
 
 pub use background::{EncoderEvent, EncodingPhase};
-pub use ffmpeg::ConversionResult;
 pub use optimizer::{MultipassEstimate, calculate_multipass_bitrate};
 pub use output_manager::{OutputManager, calculate_dir_size};
 pub use simple_encoder::{SimpleEncoderHandle, start_simple_encoder};

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 /// Result of a file conversion
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ConversionResult {
     /// Path to the converted output file
     #[allow(dead_code)]

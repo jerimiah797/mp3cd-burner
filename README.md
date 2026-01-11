@@ -233,9 +233,13 @@ cargo test
 cargo build --release
 ```
 
+## Support
+
+MP3 CD Burner is free and open source. If you find it useful, consider [sponsoring the project on GitHub](https://github.com/sponsors/jerimiah797).
+
 ## License
 
-[Add your license here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
