@@ -45,11 +45,18 @@ impl Render for AboutBox {
         // Path to icon - use PNG for GPUI compatibility
         // Try development path first (works with cargo run), fallback to bundle path
         let dev_path = concat!(env!("CARGO_MANIFEST_DIR"), "/macos/icon_128.png");
-        let icon_path: PathBuf = if Path::new(dev_path).exists() {
-            PathBuf::from(dev_path)
+        let icon_path: Option<PathBuf> = if Path::new(dev_path).exists() {
+            Some(PathBuf::from(dev_path))
+        } else if let Ok(exe_path) = std::env::current_exe() {
+            // Release: icon is in the app bundle's Resources folder
+            // exe is at Contents/MacOS/MP3-CD-Burner, so go up to Contents then into Resources
+            exe_path
+                .parent() // MacOS
+                .and_then(|p| p.parent()) // Contents
+                .map(|p| p.join("Resources").join("icon_128.png"))
+                .filter(|p| p.exists())
         } else {
-            // Release: icon is in the app bundle
-            PathBuf::from("../Resources/icon_128.png")
+            None
         };
 
         div()
@@ -69,11 +76,13 @@ impl Render for AboutBox {
                     .justify_center()
                     .w(px(100.))
                     .h(px(100.))
-                    .child(
-                        img(icon_path.as_path())
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Contain),
-                    ),
+                    .when_some(icon_path, |el, path| {
+                        el.child(
+                            img(path.as_path())
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Contain),
+                        )
+                    }),
             )
             .child(
                 // Text on the right
