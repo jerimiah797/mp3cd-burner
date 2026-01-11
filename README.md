@@ -220,8 +220,16 @@ The log file captures debug-level information and can be helpful for troubleshoo
 
 ```bash
 # Clone the repository
-git clone <repo-url>
-cd mp3cd-gpui
+git clone https://github.com/jerimiah797/mp3cd-burner.git
+cd mp3cd-burner
+
+# Install ffmpeg (required for audio conversion)
+# Option 1: Use Homebrew (easiest)
+brew install ffmpeg
+mkdir -p resources/bin
+cp $(which ffmpeg) resources/bin/
+
+# Option 2: Download a static build from https://evermeet.cx/ffmpeg/
 
 # Build and run
 cargo run
@@ -232,6 +240,8 @@ cargo test
 # Build release
 cargo build --release
 ```
+
+**Note:** Pre-built releases include ffmpeg bundled. Building from source requires you to provide your own ffmpeg binary.
 
 ## Support
 

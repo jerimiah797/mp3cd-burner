@@ -1,3 +1,4 @@
 /target
 .DS_Store
 repomix-output.txt
+resources/bin/ffmpeg
