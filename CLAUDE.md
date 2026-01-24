@@ -37,31 +37,47 @@ The script:
 
 Output: `target/release/MP3 CD Burner.app`
 
-To create a DMG for distribution:
-```bash
-hdiutil create -volname "MP3 CD Burner" \
-  -srcfolder "target/release/MP3 CD Burner.app" \
-  -ov -format UDZO \
-  target/release/MP3-CD-Burner-X.X.X.dmg
-```
+## Notarization
 
-## TODO: Notarization
+After building and signing, **always notarize** before creating the DMG. Without notarization, macOS shows a Gatekeeper warning.
 
-The app is signed but **not yet notarized**. Without notarization, macOS shows a Gatekeeper warning ("Apple cannot check it for malicious software"). Users can bypass by right-clicking → Open, but for proper distribution, notarization is needed:
+Credentials are stored in the keychain under profile `mp3cd-notarize` (set up via `xcrun notarytool store-credentials "mp3cd-notarize"`).
 
 ```bash
 # 1. Zip the app
-ditto -c -k --keepParent "target/release/MP3 CD Burner.app" /tmp/app.zip
+ditto -c -k --keepParent "target/release/MP3 CD Burner.app" /tmp/mp3cd-app.zip
 
-# 2. Submit to Apple (requires app-specific password from appleid.apple.com)
-xcrun notarytool submit /tmp/app.zip \
-  --apple-id "YOUR_APPLE_ID" \
-  --team-id "3QUH73KW5Q" \
-  --password "APP_SPECIFIC_PASSWORD" \
-  --wait
+# 2. Submit to Apple and wait for approval
+xcrun notarytool submit /tmp/mp3cd-app.zip --keychain-profile "mp3cd-notarize" --wait
 
-# 3. Staple the ticket
+# 3. Staple the ticket to the app
 xcrun stapler staple "target/release/MP3 CD Burner.app"
-
-# 4. Re-create DMG after stapling
 ```
+
+## Creating the DMG
+
+Use `create-dmg` (install with `brew install create-dmg`) to build a polished DMG with background arrow and Applications shortcut. The background image is at `macos/dmg-background.png`.
+
+```bash
+create-dmg \
+  --volname "MP3 CD Burner" \
+  --background macos/dmg-background.png \
+  --window-pos 200 120 \
+  --window-size 654 422 \
+  --icon-size 128 \
+  --icon "MP3 CD Burner.app" 175 200 \
+  --app-drop-link 475 200 \
+  --no-internet-enable \
+  target/release/MP3-CD-Burner-X.X.X.dmg \
+  "target/release/MP3 CD Burner.app"
+```
+
+## Full Release Checklist
+
+1. Bump version in `Cargo.toml` and `macos/Info.plist`
+2. `cargo test` - all tests pass
+3. Commit and push
+4. `source ~/.zshrc && ./scripts/bundle-macos.sh --universal --sign`
+5. Notarize and staple (see above)
+6. Create DMG (see above)
+7. `gh release create vX.X.X target/release/MP3-CD-Burner-X.X.X.dmg --title "vX.X.X" --notes "..."`
