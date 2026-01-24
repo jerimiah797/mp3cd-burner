@@ -3177,7 +3177,7 @@ dependencies = [
 
 [[package]]
 name = "mp3cd-gpui"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",

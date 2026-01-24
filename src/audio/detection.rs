@@ -6,7 +6,7 @@ pub fn is_audio_file(path: &Path) -> bool {
         let ext = ext.to_string_lossy().to_lowercase();
         matches!(
             ext.as_str(),
-            "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "aiff" | "opus" | "alac"
+            "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "aiff" | "opus" | "alac" | "webm"
         )
     } else {
         false

@@ -174,11 +174,12 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
         "aac".to_string()
     } else if codec_str.contains("Vorbis") || codec_str.contains("OGG") {
         "ogg".to_string()
-    } else if codec_str.contains("Opus") {
+    } else if codec_str.contains("Opus") || codec_str.contains("4101") {
+        // CodecType(4101) is Opus
         "opus".to_string()
-    } else if codec_str.contains("ALAC") || codec_str.contains("Alac") || codec_str.contains("4101")
+    } else if codec_str.contains("ALAC") || codec_str.contains("Alac") || codec_str.contains("8195")
     {
-        // CodecType(4101) is ALAC
+        // CodecType(8195) is ALAC
         "alac".to_string()
     } else if codec_str.contains("PCM") || codec_str.contains("Pcm") {
         // WAV or AIFF
@@ -188,14 +189,24 @@ pub fn get_audio_metadata(path: &Path) -> Result<(f64, u32, String, bool), Strin
             .to_lowercase()
     } else {
         // Fallback to file extension
-        path.extension()
+        let ext = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("unknown")
-            .to_lowercase()
+            .to_lowercase();
+        // M4A is a container - use bitrate to distinguish AAC (lossy) from ALAC (lossless)
+        if ext == "m4a" {
+            if bitrate > 500 {
+                "alac".to_string()
+            } else {
+                "aac".to_string()
+            }
+        } else {
+            ext
+        }
     };
 
     // Determine if codec is lossy or lossless
-    let is_lossy = matches!(codec.as_str(), "mp3" | "aac" | "ogg" | "opus" | "m4a");
+    let is_lossy = matches!(codec.as_str(), "mp3" | "aac" | "ogg" | "opus" | "webm");
 
     Ok((duration, bitrate, codec, is_lossy))
 }

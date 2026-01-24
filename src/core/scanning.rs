@@ -571,7 +571,7 @@ pub fn get_audio_files(path: &Path) -> Result<Vec<AudioFileInfo>, String> {
                             .unwrap_or("mp3")
                             .to_lowercase();
                         let is_lossy_ext =
-                            matches!(ext.as_str(), "mp3" | "aac" | "ogg" | "opus" | "m4a");
+                            matches!(ext.as_str(), "mp3" | "aac" | "ogg" | "opus" | "webm");
                         (estimated_duration, 320, ext, is_lossy_ext)
                     });
 
@@ -617,7 +617,7 @@ pub fn scan_audio_file(path: &Path) -> Result<AudioFileInfo, String> {
                 .and_then(|e| e.to_str())
                 .unwrap_or("mp3")
                 .to_lowercase();
-            let is_lossy_ext = matches!(ext.as_str(), "mp3" | "aac" | "ogg" | "opus" | "m4a");
+            let is_lossy_ext = matches!(ext.as_str(), "mp3" | "aac" | "ogg" | "opus" | "webm");
             (estimated_duration, 320, ext, is_lossy_ext)
         });
 
