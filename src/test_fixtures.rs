@@ -147,6 +147,7 @@ pub fn create_test_album(name: &str, track_count: usize, format: &str) -> PathBu
 }
 
 /// Clean up test fixtures
+#[allow(dead_code)]
 pub fn cleanup_fixtures() {
     let dir = fixtures_dir();
     if dir.exists() {

@@ -917,13 +917,13 @@ impl FolderList {
                         break;
                     }
 
-                    // Refresh UI
+                    // Refresh UI to show import progress
                     let _ = cx_for_after_await.refresh();
 
                     async_cx = cx_for_after_await;
                 }
 
-                // Final drain and refresh
+                // Final drain
                 let folders = state.drain_folders();
                 if !folders.is_empty() {
                     let _ = this.update(&mut async_cx, |this, _cx| {
@@ -991,7 +991,7 @@ impl FolderList {
 
                 // Import complete - finalize profile loading
                 let failed_paths = state.get_failed_paths();
-                let _ = this.update(&mut async_cx, |this, _cx| {
+                let _ = this.update(&mut async_cx, |this, cx| {
                     if let Some(setup) = this.pending_profile_load.take() {
                         log::debug!(
                             "Profile import complete: {} folders loaded",
@@ -1267,9 +1267,10 @@ impl FolderList {
                         // Notify encoder that import is complete (resumes encoding)
                         encoder.import_complete();
                     }
-                });
 
-                let _ = async_cx.refresh();
+                    cx.notify(); // Trigger UI update after profile load complete
+                });
+                // Note: cx.notify() inside update() is sufficient - no refresh needed
             }
         })
         .detach();

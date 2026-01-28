@@ -454,21 +454,18 @@ impl FolderList {
                         break;
                     }
 
-                    // Refresh all windows to show updated progress
+                    // Refresh all windows to show updated progress (needed for smooth progress bars)
                     let _ = cx_for_after_await.refresh();
 
                     // Use this clone for next iteration
                     async_cx = cx_for_after_await;
                 }
 
-                // Final refresh to show completion state
-                let _ = async_cx.refresh();
-
                 // Save iso_state as soon as ISO is available (for "Burn Another" functionality)
                 // This happens even if burn is cancelled - ISO is still usable
                 let iso_path = state.iso_path.lock().unwrap().clone();
                 if let Some(path) = iso_path {
-                    let _ = this.update(&mut async_cx, |folder_list, _cx| {
+                    let _ = this.update(&mut async_cx, |folder_list, cx| {
                         // Only update if we don't already have this ISO saved
                         let should_update = match &folder_list.iso_state {
                             Some(existing) => existing.path != path,
@@ -478,6 +475,7 @@ impl FolderList {
                             && let Ok(iso_state) = IsoState::new(path, &folder_list.folders) {
                                 folder_list.iso_state = Some(iso_state);
                                 log::debug!("ISO state saved - ready for Burn/Burn Another");
+                                cx.notify();
                             }
                     });
                 }
@@ -486,8 +484,9 @@ impl FolderList {
                 let final_stage = state.get_stage();
                 if final_stage == BurnStage::Complete {
                     // Mark that the ISO has been burned (for "Burn Another" button text)
-                    let _ = this.update(&mut async_cx, |folder_list, _cx| {
+                    let _ = this.update(&mut async_cx, |folder_list, cx| {
                         folder_list.iso_has_been_burned = true;
+                        cx.notify();
                     });
 
                     // Show completion prompt - await the future so it displays

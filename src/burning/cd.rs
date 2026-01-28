@@ -202,7 +202,6 @@ pub fn burn_iso_with_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn test_check_cd_inserted_runs() {

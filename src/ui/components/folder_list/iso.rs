@@ -170,8 +170,7 @@ impl FolderList {
                         }
                     });
                 }
-
-                let _ = async_cx.refresh();
+                // Note: cx.notify() inside update() is sufficient - no refresh needed
             }
         })
         .detach();
