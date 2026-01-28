@@ -81,4 +81,4 @@ create-dmg \
 5. `source ~/.zshrc && ./scripts/bundle-macos.sh --universal --sign`
 6. Notarize and staple (see above)
 7. Create DMG (see above)
-8. `gh release create vX.X.X target/release/MP3-CD-Burner-X.X.X.dmg --title "vX.X.X" --notes "..."`
+8. `gh release create vX.X.X target/release/MP3-CD-Burner-X.X.X.dmg --title "MP3 CD Burner vX.X.X" --notes "..."`
