@@ -77,7 +77,8 @@ create-dmg \
 1. Bump version in `Cargo.toml` and `macos/Info.plist`
 2. `cargo test` - all tests pass
 3. Commit and push
-4. `source ~/.zshrc && ./scripts/bundle-macos.sh --universal --sign`
-5. Notarize and staple (see above)
-6. Create DMG (see above)
-7. `gh release create vX.X.X target/release/MP3-CD-Burner-X.X.X.dmg --title "vX.X.X" --notes "..."`
+4. Tag the release: `git tag vX.X.X && git push origin vX.X.X`
+5. `source ~/.zshrc && ./scripts/bundle-macos.sh --universal --sign`
+6. Notarize and staple (see above)
+7. Create DMG (see above)
+8. `gh release create vX.X.X target/release/MP3-CD-Burner-X.X.X.dmg --title "vX.X.X" --notes "..."`
