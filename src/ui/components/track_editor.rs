@@ -117,6 +117,14 @@ pub enum TrackEditorUpdate {
     },
     /// Mixtape name changed
     NameChanged { id: FolderId, name: String },
+    /// Album metadata changed (album name, artist, year)
+    MetadataChanged {
+        id: FolderId,
+        album_name: Option<String>,
+        artist: Option<String>,
+        year: Option<String>,
+        source_files: Vec<PathBuf>,
+    },
     /// Editor window closed
     Closed { id: FolderId },
 }
@@ -131,8 +139,20 @@ pub struct TrackEditorWindow {
     name: String,
     /// Original name (for detecting changes)
     original_name: String,
-    /// Whether we're editing the name (mixtapes only)
+    /// Whether we're editing the name
     editing_name: bool,
+    /// Artist name (albums only)
+    artist: Option<String>,
+    /// Original artist (for detecting changes)
+    original_artist: Option<String>,
+    /// Whether we're editing the artist
+    editing_artist: bool,
+    /// Release year (albums only)
+    year: Option<String>,
+    /// Original year (for detecting changes)
+    original_year: Option<String>,
+    /// Whether we're editing the year
+    editing_year: bool,
     /// Tracks in the editor
     tracks: Vec<TrackEntry>,
     /// Original track order (indices) - for Reset Order and detecting changes
@@ -162,6 +182,8 @@ impl TrackEditorWindow {
         tracks: Vec<TrackEntry>,
         update_tx: mpsc::Sender<TrackEditorUpdate>,
         existing_track_order: Option<Vec<usize>>,
+        artist: Option<String>,
+        year: Option<String>,
     ) -> Self {
         let track_count = tracks.len();
         // Use existing track order if provided, otherwise use default sequential order
@@ -176,6 +198,12 @@ impl TrackEditorWindow {
             name: name.clone(),
             original_name: name,
             editing_name: false,
+            artist: artist.clone(),
+            original_artist: artist,
+            editing_artist: false,
+            year: year.clone(),
+            original_year: year,
+            editing_year: false,
             tracks,
             original_order,
             original_inclusions,
@@ -196,6 +224,8 @@ impl TrackEditorWindow {
         tracks: Vec<TrackEntry>,
         update_tx: mpsc::Sender<TrackEditorUpdate>,
         existing_track_order: Option<Vec<usize>>,
+        artist: Option<String>,
+        year: Option<String>,
     ) -> gpui::WindowHandle<Self> {
         let title = match &folder_kind {
             FolderKind::Album => format!("{} - Track Editor", name),
@@ -225,6 +255,8 @@ impl TrackEditorWindow {
                         tracks,
                         update_tx,
                         existing_track_order,
+                        artist,
+                        year,
                     )
                 })
             },
@@ -274,9 +306,14 @@ impl TrackEditorWindow {
     ) -> bool {
         let keystroke = &event.keystroke;
 
+        // Check if any field is being edited
+        let is_editing = self.editing_name || self.editing_artist || self.editing_year;
+
         if keystroke.key == "escape" {
-            if self.editing_name {
+            if is_editing {
                 self.editing_name = false;
+                self.editing_artist = false;
+                self.editing_year = false;
                 cx.notify();
                 return true;
             }
@@ -284,8 +321,10 @@ impl TrackEditorWindow {
             return true;
         }
 
-        if keystroke.key == "enter" && self.editing_name {
+        if keystroke.key == "enter" && is_editing {
             self.editing_name = false;
+            self.editing_artist = false;
+            self.editing_year = false;
             cx.notify();
             return true;
         }
@@ -301,6 +340,45 @@ impl TrackEditorWindow {
                 for c in key_char.chars() {
                     if !c.is_control() {
                         self.name.push(c);
+                    }
+                }
+                cx.notify();
+                return true;
+            }
+        }
+
+        // Handle artist editing input
+        if self.editing_artist {
+            let artist = self.artist.get_or_insert_with(String::new);
+            if keystroke.key == "backspace" && !artist.is_empty() {
+                artist.pop();
+                cx.notify();
+                return true;
+            }
+            if let Some(ref key_char) = keystroke.key_char {
+                for c in key_char.chars() {
+                    if !c.is_control() {
+                        artist.push(c);
+                    }
+                }
+                cx.notify();
+                return true;
+            }
+        }
+
+        // Handle year editing input
+        if self.editing_year {
+            let year = self.year.get_or_insert_with(String::new);
+            if keystroke.key == "backspace" && !year.is_empty() {
+                year.pop();
+                cx.notify();
+                return true;
+            }
+            if let Some(ref key_char) = keystroke.key_char {
+                for c in key_char.chars() {
+                    // Only allow digits for year
+                    if c.is_ascii_digit() {
+                        year.push(c);
                     }
                 }
                 cx.notify();
@@ -464,8 +542,18 @@ impl TrackEditorWindow {
             return true;
         }
 
-        // Check name (mixtapes)
+        // Check name
         if self.name != self.original_name {
+            return true;
+        }
+
+        // Check artist (albums only)
+        if self.artist != self.original_artist {
+            return true;
+        }
+
+        // Check year (albums only)
+        if self.year != self.original_year {
             return true;
         }
 
@@ -504,11 +592,34 @@ impl TrackEditorWindow {
         }
 
         // Send name change if name changed (mixtapes)
-        if self.name != self.original_name {
+        if self.is_mixtape() && self.name != self.original_name {
             let _ = self.update_tx.send(TrackEditorUpdate::NameChanged {
                 id: self.folder_id.clone(),
                 name: self.name.clone(),
             });
+        }
+
+        // For albums, send metadata change if album name, artist, or year changed
+        if !self.is_mixtape() {
+            let metadata_changed = self.name != self.original_name
+                || self.artist != self.original_artist
+                || self.year != self.original_year;
+
+            if metadata_changed {
+                let source_files: Vec<PathBuf> = self
+                    .tracks
+                    .iter()
+                    .map(|t| t.file_info.path.clone())
+                    .collect();
+
+                let _ = self.update_tx.send(TrackEditorUpdate::MetadataChanged {
+                    id: self.folder_id.clone(),
+                    album_name: Some(self.name.clone()),
+                    artist: self.artist.clone(),
+                    year: self.year.clone(),
+                    source_files,
+                });
+            }
         }
 
         // For mixtapes, send tracks change if tracks were added/removed
@@ -735,6 +846,10 @@ impl Render for TrackEditorWindow {
         let is_mixtape = self.is_mixtape();
         let name = self.name.clone();
         let editing_name = self.editing_name;
+        let artist = self.artist.clone();
+        let editing_artist = self.editing_artist;
+        let year = self.year.clone();
+        let editing_year = self.editing_year;
         let track_count = self.tracks.len();
         let included_count = self.tracks.iter().filter(|t| t.included).count();
         let has_changes = self.has_changes();
@@ -776,21 +891,21 @@ impl Render for TrackEditorWindow {
                     .w_full()
                     .p_4()
                     .flex()
-                    .items_center()
-                    .gap_3()
+                    .flex_col()
+                    .gap_1()
                     .border_b_1()
                     .border_color(theme.border)
-                    // Name display/editor
+                    // First row: Album name and track count
                     .child(
                         div()
-                            .flex_1()
+                            .w_full()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .child(if is_mixtape && editing_name {
+                            .justify_between()
+                            // Album/Mixtape name
+                            .child(if editing_name {
                                 // Editable name input
                                 div()
-                                    .flex_1()
                                     .h_8()
                                     .px_3()
                                     .flex()
@@ -801,7 +916,7 @@ impl Render for TrackEditorWindow {
                                     .rounded_md()
                                     .child(
                                         div()
-                                            .text_base()
+                                            .text_lg()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(theme.text)
                                             .child(if name.is_empty() {
@@ -810,10 +925,10 @@ impl Render for TrackEditorWindow {
                                                 name.clone()
                                             }),
                                     )
-                                    .child(div().w(px(2.)).h(px(16.)).bg(theme.accent).ml_px())
+                                    .child(div().w(px(2.)).h(px(18.)).bg(theme.accent).ml_px())
                                     .into_any_element()
-                            } else if is_mixtape {
-                                // Clickable display name for mixtapes
+                            } else {
+                                // Clickable display name (for both albums and mixtapes)
                                 div()
                                     .id(SharedString::from("name-display"))
                                     .text_lg()
@@ -827,42 +942,133 @@ impl Render for TrackEditorWindow {
                                     }))
                                     .child(name.clone())
                                     .into_any_element()
-                            } else {
-                                // Static display name for albums
+                            })
+                            // Track count
+                            .child(
                                 div()
-                                    .text_lg()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(theme.text)
-                                    .child(name.clone())
-                                    .into_any_element()
-                            }),
+                                    .text_sm()
+                                    .text_color(theme.text_muted)
+                                    .child(if included_count == track_count {
+                                        format!("{} tracks", track_count)
+                                    } else {
+                                        format!("{} of {} tracks", included_count, track_count)
+                                    }),
+                            ),
                     )
-                    // Track count / summary
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.text_muted)
-                            .child(if is_mixtape {
-                                format!(
-                                    "{} tracks, {}",
-                                    track_count,
-                                    format_duration(total_duration)
+                    // Second row: Artist, year, and duration (albums only)
+                    .when(!is_mixtape, |el| {
+                        el.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                // Artist and year
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        // Artist field
+                                        .child(if editing_artist {
+                                            div()
+                                                .h_6()
+                                                .px_2()
+                                                .flex()
+                                                .items_center()
+                                                .bg(theme.bg_card)
+                                                .border_1()
+                                                .border_color(theme.accent)
+                                                .rounded_md()
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(theme.text)
+                                                        .child(artist.clone().unwrap_or_else(|| " ".to_string())),
+                                                )
+                                                .child(div().w(px(2.)).h(px(14.)).bg(theme.accent).ml_px())
+                                                .into_any_element()
+                                        } else {
+                                            div()
+                                                .id(SharedString::from("artist-display"))
+                                                .text_sm()
+                                                .text_color(theme.text_muted)
+                                                .cursor_pointer()
+                                                .hover(|s| s.text_color(theme.accent))
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.editing_artist = true;
+                                                    cx.notify();
+                                                }))
+                                                .child(artist.clone().unwrap_or_else(|| "Unknown Artist".to_string()))
+                                                .into_any_element()
+                                        })
+                                        // Separator
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(theme.text_muted)
+                                                .child(" · "),
+                                        )
+                                        // Year field
+                                        .child(if editing_year {
+                                            div()
+                                                .h_6()
+                                                .px_2()
+                                                .w_16()
+                                                .flex()
+                                                .items_center()
+                                                .bg(theme.bg_card)
+                                                .border_1()
+                                                .border_color(theme.accent)
+                                                .rounded_md()
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(theme.text)
+                                                        .child(year.clone().unwrap_or_else(|| " ".to_string())),
+                                                )
+                                                .child(div().w(px(2.)).h(px(14.)).bg(theme.accent).ml_px())
+                                                .into_any_element()
+                                        } else {
+                                            div()
+                                                .id(SharedString::from("year-display"))
+                                                .text_sm()
+                                                .text_color(theme.text_muted)
+                                                .cursor_pointer()
+                                                .hover(|s| s.text_color(theme.accent))
+                                                .on_click(cx.listener(|this, _, _window, cx| {
+                                                    this.editing_year = true;
+                                                    cx.notify();
+                                                }))
+                                                .child(year.clone().unwrap_or_else(|| "Year".to_string()))
+                                                .into_any_element()
+                                        }),
                                 )
-                            } else if included_count == track_count {
-                                format!(
-                                    "{} tracks, {}",
-                                    track_count,
-                                    format_duration(total_duration)
-                                )
-                            } else {
-                                format!(
-                                    "{} of {} tracks, {}",
-                                    included_count,
-                                    track_count,
-                                    format_duration(total_duration)
-                                )
-                            }),
-                    ),
+                                // Duration
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(theme.text_muted)
+                                        .child(format_duration(total_duration)),
+                                ),
+                        )
+                    })
+                    // Mixtape: just show duration on second row
+                    .when(is_mixtape, |el| {
+                        el.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(theme.text_muted)
+                                        .child(format_duration(total_duration)),
+                                ),
+                        )
+                    }),
             )
             // Toolbar
             .child(
