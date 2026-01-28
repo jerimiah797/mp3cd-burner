@@ -74,7 +74,9 @@ create-dmg \
 
 ## Full Release Checklist
 
-1. Bump version in `Cargo.toml` and `macos/Info.plist`
+1. Bump version in these files:
+   - `Cargo.toml` line 3: `version = "X.X.X"`
+   - `macos/Info.plist` lines 12 and 14: `<string>X.X.X</string>` (CFBundleVersion and CFBundleShortVersionString)
 2. `cargo test` - all tests pass
 3. Commit and push
 4. Tag the release: `git tag vX.X.X && git push origin vX.X.X`
