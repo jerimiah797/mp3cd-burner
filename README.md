@@ -57,12 +57,15 @@ Click the edit icon on any folder to open the Track Editor window:
 - Drag tracks to reorder them
 - Click the checkbox to exclude/include individual tracks
 - Excluded tracks are dimmed and won't be burned to CD
+- Click the album name, artist, or year to edit them (changes are written to all source files)
 
 **For Mixtapes:**
-- All album features plus:
+- Drag tracks to reorder them
 - Drag additional audio files from Finder to add them
 - Click the × button to remove tracks
-- Edit the mixtape name in the title bar
+- Click the mixtape name in the header to rename it
+- Click a track to select it, then edit its title or artist in the header
+- Track metadata changes are written to the source files when you click Done
 
 ### 2. Monitor Progress
 

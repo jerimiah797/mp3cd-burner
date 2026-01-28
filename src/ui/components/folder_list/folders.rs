@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::audio::is_audio_file;
+use crate::audio::{is_audio_file, WriteAlbumMetadata, WriteTrackMetadata, write_album_metadata, write_track_metadata};
 use crate::core::{
     FolderId, ImportState, MusicFolder, find_album_folders, scan_audio_file, scan_music_folder,
 };
@@ -397,6 +397,10 @@ impl FolderList {
         let existing_track_order = folder.track_order.clone();
         let tx = self.track_editor_tx.as_ref().unwrap().clone();
 
+        // Get artist and year from folder
+        let artist = folder.artist_name.clone();
+        let year = folder.year.clone();
+
         // Store the data needed to open the window
         // We'll open it in the render loop since we need App context
         self.pending_track_editor_open = Some(PendingTrackEditorOpen {
@@ -406,6 +410,8 @@ impl FolderList {
             tracks,
             update_tx: tx,
             existing_track_order,
+            artist,
+            year,
         });
     }
 
@@ -439,6 +445,18 @@ impl FolderList {
                 }
                 TrackEditorUpdate::NameChanged { id, name } => {
                     self.handle_mixtape_name_changed(&id, name);
+                }
+                TrackEditorUpdate::MetadataChanged {
+                    id,
+                    album_name,
+                    artist,
+                    year,
+                    source_files,
+                } => {
+                    self.handle_metadata_changed(&id, album_name, artist, year, source_files);
+                }
+                TrackEditorUpdate::TrackMetadataChanged { id, tracks } => {
+                    self.handle_track_metadata_changed(&id, tracks);
                 }
                 TrackEditorUpdate::Closed { id } => {
                     self.handle_track_editor_closed(&id);
@@ -532,6 +550,105 @@ impl FolderList {
         }
     }
 
+    /// Handle album metadata change from editor
+    ///
+    /// Updates the folder metadata and writes tags to both source files and converted MP3s.
+    fn handle_metadata_changed(
+        &mut self,
+        folder_id: &FolderId,
+        album_name: Option<String>,
+        artist: Option<String>,
+        year: Option<String>,
+        source_files: Vec<std::path::PathBuf>,
+    ) {
+        log::debug!(
+            "Album metadata changed - album: {:?}, artist: {:?}, year: {:?}",
+            album_name,
+            artist,
+            year
+        );
+
+        // Update the folder's metadata
+        if let Some(folder) = self.folders.iter_mut().find(|f| &f.id == folder_id) {
+            folder.album_name = album_name.clone();
+            folder.artist_name = artist.clone();
+            folder.year = year.clone();
+        }
+
+        // Get converted file paths from output manager
+        let converted_files = self
+            .output_manager
+            .as_ref()
+            .and_then(|om| om.get_folder_output_files(folder_id).ok())
+            .unwrap_or_default();
+
+        // Write metadata in background thread
+        let metadata = WriteAlbumMetadata {
+            album: album_name,
+            artist,
+            year,
+        };
+
+        std::thread::spawn(move || {
+            // Write to source files
+            for path in &source_files {
+                if let Err(e) = write_album_metadata(path, &metadata) {
+                    log::warn!("Failed to write metadata to source {}: {}", path.display(), e);
+                } else {
+                    log::debug!("Updated metadata on source: {}", path.display());
+                }
+            }
+
+            // Write to converted MP3 files
+            for path in &converted_files {
+                if let Err(e) = write_album_metadata(path, &metadata) {
+                    log::warn!("Failed to write metadata to converted {}: {}", path.display(), e);
+                } else {
+                    log::debug!("Updated metadata on converted: {}", path.display());
+                }
+            }
+
+            log::info!(
+                "Metadata update complete: {} source files, {} converted files",
+                source_files.len(),
+                converted_files.len()
+            );
+        });
+
+        // Mark unsaved changes
+        self.has_unsaved_changes = true;
+    }
+
+    /// Handle individual track metadata changes from editor (mixtapes)
+    fn handle_track_metadata_changed(
+        &mut self,
+        folder_id: &FolderId,
+        tracks: Vec<(PathBuf, WriteTrackMetadata)>,
+    ) {
+        log::debug!(
+            "Track metadata changed for folder {}: {} tracks modified",
+            folder_id,
+            tracks.len()
+        );
+
+        // Write metadata to source files in background thread
+        std::thread::spawn(move || {
+            for (path, metadata) in tracks {
+                if let Err(e) = write_track_metadata(&path, &metadata) {
+                    log::warn!(
+                        "Failed to write track metadata to {}: {}",
+                        path.display(),
+                        e
+                    );
+                } else {
+                    log::debug!("Updated track metadata: {}", path.display());
+                }
+            }
+        });
+
+        self.has_unsaved_changes = true;
+    }
+
     /// Handle track editor window closed
     fn handle_track_editor_closed(&mut self, folder_id: &FolderId) {
         log::debug!("Track editor closed for folder: {}", folder_id);
@@ -559,6 +676,8 @@ impl FolderList {
                                 pending.tracks,
                                 pending.update_tx,
                                 pending.existing_track_order,
+                                pending.artist,
+                                pending.year,
                             );
                         })
                         .ok();

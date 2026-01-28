@@ -123,6 +123,8 @@ pub(crate) struct PendingTrackEditorOpen {
     pub tracks: Vec<TrackEntry>,
     pub update_tx: std::sync::mpsc::Sender<TrackEditorUpdate>,
     pub existing_track_order: Option<Vec<usize>>,
+    pub artist: Option<String>,
+    pub year: Option<String>,
 }
 
 impl FolderList {

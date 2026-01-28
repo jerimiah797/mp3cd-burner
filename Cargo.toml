@@ -20,6 +20,7 @@ futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 simplelog = "0.12"
+lofty = "0.18"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -403,6 +403,37 @@ impl OutputManager {
         self.session_dir.join("_iso_staging")
     }
 
+    /// Get all converted MP3 files for a folder
+    ///
+    /// Returns a list of paths to all MP3 files in the folder's output directory.
+    /// Used when writing metadata to converted files.
+    pub fn get_folder_output_files(&self, folder_id: &FolderId) -> Result<Vec<PathBuf>, String> {
+        let bundle_path = self.get_bundle_path();
+        let output_dir = if let Some(bundle) = bundle_path {
+            bundle.join("converted").join(folder_id.as_str())
+        } else {
+            self.session_dir.join(folder_id.as_str())
+        };
+
+        if !output_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut files = Vec::new();
+        for entry in fs::read_dir(&output_dir)
+            .map_err(|e| format!("Failed to read output directory: {}", e))?
+        {
+            let path = entry
+                .map_err(|e| format!("Failed to read directory entry: {}", e))?
+                .path();
+            if path.is_file() && path.extension().map_or(false, |e| e == "mp3") {
+                files.push(path);
+            }
+        }
+
+        Ok(files)
+    }
+
     /// Clean up the session (delete all output)
     pub fn cleanup(&self) -> Result<(), String> {
         log::debug!("Cleanup requested for session: {} at {:?}", self.session_id, self.session_dir);
@@ -899,6 +930,61 @@ mod tests {
 
         // Now exists
         assert!(manager.folder_output_exists(&folder_id));
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_get_folder_output_files() {
+        let manager = OutputManager::new().unwrap();
+        let folder_id = FolderId("output_files_test".to_string());
+
+        // Create folder with some MP3 files
+        let folder_dir = manager.get_folder_output_dir(&folder_id).unwrap();
+        fs::write(folder_dir.join("track1.mp3"), "audio1").unwrap();
+        fs::write(folder_dir.join("track2.mp3"), "audio2").unwrap();
+        fs::write(folder_dir.join("cover.jpg"), "image").unwrap(); // Non-MP3 file
+
+        // Get output files
+        let files = manager.get_folder_output_files(&folder_id).unwrap();
+
+        // Should only include MP3 files
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|p| p.extension().map_or(false, |e| e == "mp3")));
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_get_folder_output_files_empty() {
+        let manager = OutputManager::new().unwrap();
+        let folder_id = FolderId("empty_output_test".to_string());
+
+        // Non-existent folder should return empty vec
+        let files = manager.get_folder_output_files(&folder_id).unwrap();
+        assert!(files.is_empty());
+
+        let _ = manager.cleanup();
+    }
+
+    #[test]
+    fn test_get_folder_output_files_bundle_mode() {
+        let manager = OutputManager::new().unwrap();
+        let bundle_dir = TempDir::new().unwrap();
+        let folder_id = FolderId("bundle_files_test".to_string());
+
+        // Set bundle mode
+        manager.set_bundle_path(Some(bundle_dir.path().to_path_buf()));
+
+        // Create converted folder in bundle with MP3 files
+        let converted_dir = bundle_dir.path().join("converted").join("bundle_files_test");
+        fs::create_dir_all(&converted_dir).unwrap();
+        fs::write(converted_dir.join("song.mp3"), "music").unwrap();
+
+        // Get output files
+        let files = manager.get_folder_output_files(&folder_id).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("song.mp3"));
 
         let _ = manager.cleanup();
     }
