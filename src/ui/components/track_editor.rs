@@ -9,8 +9,11 @@ use gpui::{
     Render, SharedString, Window, WindowBounds, WindowOptions, div, img, prelude::*, px, rgb,
     size,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+
+use crate::audio::WriteTrackMetadata;
 
 use crate::audio::{get_album_art, get_audio_metadata, get_track_metadata, is_audio_file};
 use crate::core::{AudioFileInfo, FolderId, FolderKind, format_duration};
@@ -125,6 +128,11 @@ pub enum TrackEditorUpdate {
         year: Option<String>,
         source_files: Vec<PathBuf>,
     },
+    /// Individual track metadata changed (mixtapes)
+    TrackMetadataChanged {
+        id: FolderId,
+        tracks: Vec<(PathBuf, WriteTrackMetadata)>,
+    },
     /// Editor window closed
     Closed { id: FolderId },
 }
@@ -141,18 +149,24 @@ pub struct TrackEditorWindow {
     original_name: String,
     /// Whether we're editing the name
     editing_name: bool,
+    /// Cursor position within name field
+    name_cursor: usize,
     /// Artist name (albums only)
     artist: Option<String>,
     /// Original artist (for detecting changes)
     original_artist: Option<String>,
     /// Whether we're editing the artist
     editing_artist: bool,
+    /// Cursor position within artist field
+    artist_cursor: usize,
     /// Release year (albums only)
     year: Option<String>,
     /// Original year (for detecting changes)
     original_year: Option<String>,
     /// Whether we're editing the year
     editing_year: bool,
+    /// Cursor position within year field
+    year_cursor: usize,
     /// Tracks in the editor
     tracks: Vec<TrackEntry>,
     /// Original track order (indices) - for Reset Order and detecting changes
@@ -170,6 +184,20 @@ pub struct TrackEditorWindow {
     /// Scroll position for track list
     #[allow(dead_code)]
     scroll_offset: f32,
+    /// Index of currently selected track (for individual track editing in mixtapes)
+    selected_track_index: Option<usize>,
+    /// Whether we're editing the selected track's title
+    editing_track_title: bool,
+    /// Cursor position within track title field
+    track_title_cursor: usize,
+    /// Whether we're editing the selected track's artist
+    editing_track_artist: bool,
+    /// Cursor position within track artist field
+    track_artist_cursor: usize,
+    /// Tracks with modified metadata (track_index -> (original_title, original_artist))
+    modified_tracks: HashMap<usize, (Option<String>, Option<String>)>,
+    /// Whether we've already sent the close event (to avoid double-send in Drop)
+    close_event_sent: bool,
 }
 
 impl TrackEditorWindow {
@@ -198,12 +226,15 @@ impl TrackEditorWindow {
             name: name.clone(),
             original_name: name,
             editing_name: false,
+            name_cursor: 0,
             artist: artist.clone(),
             original_artist: artist,
             editing_artist: false,
+            artist_cursor: 0,
             year: year.clone(),
             original_year: year,
             editing_year: false,
+            year_cursor: 0,
             tracks,
             original_order,
             original_inclusions,
@@ -212,6 +243,13 @@ impl TrackEditorWindow {
             update_tx,
             focus_handle: cx.focus_handle(),
             scroll_offset: 0.0,
+            selected_track_index: None,
+            editing_track_title: false,
+            track_title_cursor: 0,
+            editing_track_artist: false,
+            track_artist_cursor: 0,
+            modified_tracks: HashMap::new(),
+            close_event_sent: false,
         }
     }
 
@@ -297,6 +335,44 @@ impl TrackEditorWindow {
         }
     }
 
+    /// Insert a character at the cursor position in a string, returning new cursor position
+    fn insert_char_at_cursor(s: &mut String, cursor: usize, c: char) -> usize {
+        let byte_pos = s
+            .char_indices()
+            .nth(cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        s.insert(byte_pos, c);
+        cursor + 1
+    }
+
+    /// Delete the character before the cursor, returning new cursor position
+    fn delete_char_before_cursor(s: &mut String, cursor: usize) -> usize {
+        if cursor == 0 {
+            return 0;
+        }
+        let char_indices: Vec<(usize, char)> = s.char_indices().collect();
+        if cursor <= char_indices.len() {
+            let byte_pos = char_indices[cursor - 1].0;
+            s.remove(byte_pos);
+        }
+        cursor.saturating_sub(1)
+    }
+
+    /// Get the character count of a string
+    fn char_count(s: &str) -> usize {
+        s.chars().count()
+    }
+
+    /// Split text at cursor position into (before, after) parts
+    fn split_at_cursor(s: &str, cursor: usize) -> (String, String) {
+        let chars: Vec<char> = s.chars().collect();
+        let cursor = cursor.min(chars.len());
+        let before: String = chars[..cursor].iter().collect();
+        let after: String = chars[cursor..].iter().collect();
+        (before, after)
+    }
+
     /// Handle key press
     fn handle_key(
         &mut self,
@@ -307,13 +383,25 @@ impl TrackEditorWindow {
         let keystroke = &event.keystroke;
 
         // Check if any field is being edited
-        let is_editing = self.editing_name || self.editing_artist || self.editing_year;
+        let is_editing = self.editing_name
+            || self.editing_artist
+            || self.editing_year
+            || self.editing_track_title
+            || self.editing_track_artist;
 
         if keystroke.key == "escape" {
             if is_editing {
                 self.editing_name = false;
                 self.editing_artist = false;
                 self.editing_year = false;
+                self.editing_track_title = false;
+                self.editing_track_artist = false;
+                cx.notify();
+                return true;
+            }
+            // Deselect track if one is selected
+            if self.selected_track_index.is_some() {
+                self.selected_track_index = None;
                 cx.notify();
                 return true;
             }
@@ -325,21 +413,52 @@ impl TrackEditorWindow {
             self.editing_name = false;
             self.editing_artist = false;
             self.editing_year = false;
+            self.editing_track_title = false;
+            self.editing_track_artist = false;
             cx.notify();
             return true;
         }
 
         // Handle name editing input
         if self.editing_name {
-            if keystroke.key == "backspace" && !self.name.is_empty() {
-                self.name.pop();
+            let len = Self::char_count(&self.name);
+
+            // Cursor movement
+            if keystroke.key == "left" {
+                self.name_cursor = self.name_cursor.saturating_sub(1);
                 cx.notify();
                 return true;
             }
+            if keystroke.key == "right" {
+                self.name_cursor = (self.name_cursor + 1).min(len);
+                cx.notify();
+                return true;
+            }
+            if keystroke.key == "home" {
+                self.name_cursor = 0;
+                cx.notify();
+                return true;
+            }
+            if keystroke.key == "end" {
+                self.name_cursor = len;
+                cx.notify();
+                return true;
+            }
+
+            // Deletion
+            if keystroke.key == "backspace" && self.name_cursor > 0 {
+                self.name_cursor =
+                    Self::delete_char_before_cursor(&mut self.name, self.name_cursor);
+                cx.notify();
+                return true;
+            }
+
+            // Character input
             if let Some(ref key_char) = keystroke.key_char {
                 for c in key_char.chars() {
                     if !c.is_control() {
-                        self.name.push(c);
+                        self.name_cursor =
+                            Self::insert_char_at_cursor(&mut self.name, self.name_cursor, c);
                     }
                 }
                 cx.notify();
@@ -347,18 +466,47 @@ impl TrackEditorWindow {
             }
         }
 
-        // Handle artist editing input
+        // Handle artist editing input (album-level)
         if self.editing_artist {
             let artist = self.artist.get_or_insert_with(String::new);
-            if keystroke.key == "backspace" && !artist.is_empty() {
-                artist.pop();
+            let len = Self::char_count(artist);
+
+            // Cursor movement
+            if keystroke.key == "left" {
+                self.artist_cursor = self.artist_cursor.saturating_sub(1);
                 cx.notify();
                 return true;
             }
+            if keystroke.key == "right" {
+                self.artist_cursor = (self.artist_cursor + 1).min(len);
+                cx.notify();
+                return true;
+            }
+            if keystroke.key == "home" {
+                self.artist_cursor = 0;
+                cx.notify();
+                return true;
+            }
+            if keystroke.key == "end" {
+                self.artist_cursor = len;
+                cx.notify();
+                return true;
+            }
+
+            // Deletion
+            if keystroke.key == "backspace" && self.artist_cursor > 0 {
+                self.artist_cursor =
+                    Self::delete_char_before_cursor(artist, self.artist_cursor);
+                cx.notify();
+                return true;
+            }
+
+            // Character input
             if let Some(ref key_char) = keystroke.key_char {
                 for c in key_char.chars() {
                     if !c.is_control() {
-                        artist.push(c);
+                        self.artist_cursor =
+                            Self::insert_char_at_cursor(artist, self.artist_cursor, c);
                     }
                 }
                 cx.notify();
@@ -369,20 +517,164 @@ impl TrackEditorWindow {
         // Handle year editing input
         if self.editing_year {
             let year = self.year.get_or_insert_with(String::new);
-            if keystroke.key == "backspace" && !year.is_empty() {
-                year.pop();
+            let len = Self::char_count(year);
+
+            // Cursor movement
+            if keystroke.key == "left" {
+                self.year_cursor = self.year_cursor.saturating_sub(1);
                 cx.notify();
                 return true;
             }
+            if keystroke.key == "right" {
+                self.year_cursor = (self.year_cursor + 1).min(len);
+                cx.notify();
+                return true;
+            }
+            if keystroke.key == "home" {
+                self.year_cursor = 0;
+                cx.notify();
+                return true;
+            }
+            if keystroke.key == "end" {
+                self.year_cursor = len;
+                cx.notify();
+                return true;
+            }
+
+            // Deletion
+            if keystroke.key == "backspace" && self.year_cursor > 0 {
+                self.year_cursor = Self::delete_char_before_cursor(year, self.year_cursor);
+                cx.notify();
+                return true;
+            }
+
+            // Character input (only digits for year)
             if let Some(ref key_char) = keystroke.key_char {
                 for c in key_char.chars() {
-                    // Only allow digits for year
                     if c.is_ascii_digit() {
-                        year.push(c);
+                        self.year_cursor = Self::insert_char_at_cursor(year, self.year_cursor, c);
                     }
                 }
                 cx.notify();
                 return true;
+            }
+        }
+
+        // Handle track title editing input
+        if self.editing_track_title {
+            if let Some(track_idx) = self.selected_track_index {
+                if let Some(display_idx) = self.track_order.get(track_idx).copied() {
+                    if let Some(track) = self.tracks.get_mut(display_idx) {
+                        // Store original value if not already stored
+                        self.modified_tracks
+                            .entry(display_idx)
+                            .or_insert_with(|| (track.title.clone(), track.artist.clone()));
+
+                        let title = track.title.get_or_insert_with(String::new);
+                        let len = Self::char_count(title);
+
+                        // Cursor movement
+                        if keystroke.key == "left" {
+                            self.track_title_cursor = self.track_title_cursor.saturating_sub(1);
+                            cx.notify();
+                            return true;
+                        }
+                        if keystroke.key == "right" {
+                            self.track_title_cursor = (self.track_title_cursor + 1).min(len);
+                            cx.notify();
+                            return true;
+                        }
+                        if keystroke.key == "home" {
+                            self.track_title_cursor = 0;
+                            cx.notify();
+                            return true;
+                        }
+                        if keystroke.key == "end" {
+                            self.track_title_cursor = len;
+                            cx.notify();
+                            return true;
+                        }
+
+                        // Deletion
+                        if keystroke.key == "backspace" && self.track_title_cursor > 0 {
+                            self.track_title_cursor =
+                                Self::delete_char_before_cursor(title, self.track_title_cursor);
+                            cx.notify();
+                            return true;
+                        }
+
+                        // Character input
+                        if let Some(ref key_char) = keystroke.key_char {
+                            for c in key_char.chars() {
+                                if !c.is_control() {
+                                    self.track_title_cursor =
+                                        Self::insert_char_at_cursor(title, self.track_title_cursor, c);
+                                }
+                            }
+                            cx.notify();
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle track artist editing input
+        if self.editing_track_artist {
+            if let Some(track_idx) = self.selected_track_index {
+                if let Some(display_idx) = self.track_order.get(track_idx).copied() {
+                    if let Some(track) = self.tracks.get_mut(display_idx) {
+                        // Store original value if not already stored
+                        self.modified_tracks
+                            .entry(display_idx)
+                            .or_insert_with(|| (track.title.clone(), track.artist.clone()));
+
+                        let artist = track.artist.get_or_insert_with(String::new);
+                        let len = Self::char_count(artist);
+
+                        // Cursor movement
+                        if keystroke.key == "left" {
+                            self.track_artist_cursor = self.track_artist_cursor.saturating_sub(1);
+                            cx.notify();
+                            return true;
+                        }
+                        if keystroke.key == "right" {
+                            self.track_artist_cursor = (self.track_artist_cursor + 1).min(len);
+                            cx.notify();
+                            return true;
+                        }
+                        if keystroke.key == "home" {
+                            self.track_artist_cursor = 0;
+                            cx.notify();
+                            return true;
+                        }
+                        if keystroke.key == "end" {
+                            self.track_artist_cursor = len;
+                            cx.notify();
+                            return true;
+                        }
+
+                        // Deletion
+                        if keystroke.key == "backspace" && self.track_artist_cursor > 0 {
+                            self.track_artist_cursor =
+                                Self::delete_char_before_cursor(artist, self.track_artist_cursor);
+                            cx.notify();
+                            return true;
+                        }
+
+                        // Character input
+                        if let Some(ref key_char) = keystroke.key_char {
+                            for c in key_char.chars() {
+                                if !c.is_control() {
+                                    self.track_artist_cursor =
+                                        Self::insert_char_at_cursor(artist, self.track_artist_cursor, c);
+                                }
+                            }
+                            cx.notify();
+                            return true;
+                        }
+                    }
+                }
             }
         }
 
@@ -562,11 +854,23 @@ impl TrackEditorWindow {
             return true;
         }
 
+        // Check if any track metadata was modified
+        if !self.modified_tracks.is_empty() {
+            // Check if any modification is actually different from original
+            for (&idx, (orig_title, orig_artist)) in &self.modified_tracks {
+                if let Some(track) = self.tracks.get(idx) {
+                    if track.title != *orig_title || track.artist != *orig_artist {
+                        return true;
+                    }
+                }
+            }
+        }
+
         false
     }
 
     /// Apply all changes and close the editor
-    fn apply_and_close(&self, window: &mut Window, _cx: &mut Context<Self>) {
+    fn apply_and_close(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
         // Send order change if order changed
         if self.track_order != self.original_order {
             let _ = self.update_tx.send(TrackEditorUpdate::OrderChanged {
@@ -645,7 +949,38 @@ impl TrackEditorWindow {
             });
         }
 
+        // For mixtapes, send individual track metadata changes
+        if self.is_mixtape() && !self.modified_tracks.is_empty() {
+            let changed_tracks: Vec<(PathBuf, WriteTrackMetadata)> = self
+                .modified_tracks
+                .iter()
+                .filter_map(|(&idx, (orig_title, orig_artist))| {
+                    let track = self.tracks.get(idx)?;
+                    // Only include if actually changed
+                    if track.title != *orig_title || track.artist != *orig_artist {
+                        Some((
+                            track.file_info.path.clone(),
+                            WriteTrackMetadata {
+                                title: track.title.clone(),
+                                artist: track.artist.clone(),
+                            },
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !changed_tracks.is_empty() {
+                let _ = self.update_tx.send(TrackEditorUpdate::TrackMetadataChanged {
+                    id: self.folder_id.clone(),
+                    tracks: changed_tracks,
+                });
+            }
+        }
+
         // Always send closed event
+        self.close_event_sent = true;
         let _ = self.update_tx.send(TrackEditorUpdate::Closed {
             id: self.folder_id.clone(),
         });
@@ -653,8 +988,9 @@ impl TrackEditorWindow {
     }
 
     /// Cancel changes and close the editor
-    fn cancel(&self, window: &mut Window, _cx: &mut Context<Self>) {
+    fn cancel(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
         // Just send closed event without any changes
+        self.close_event_sent = true;
         let _ = self.update_tx.send(TrackEditorUpdate::Closed {
             id: self.folder_id.clone(),
         });
@@ -679,15 +1015,24 @@ impl TrackEditorWindow {
         let is_drop_target = self.drop_target == Some(display_index);
         let is_mixtape = self.is_mixtape();
         let album_art = track.album_art.clone();
+        let is_selected = is_mixtape && self.selected_track_index == Some(display_index);
 
         let drag_info = DraggedTrack::new(display_index, name.clone(), window_title.to_string());
 
         let bg_color = if is_drop_target {
             theme.accent
+        } else if is_selected {
+            theme.accent.opacity(0.3)
         } else if !included {
             theme.bg_card.opacity(0.5)
         } else {
             theme.bg_card
+        };
+
+        let border_color = if is_drop_target || is_selected {
+            theme.accent
+        } else {
+            theme.border
         };
 
         let text_color = if included {
@@ -706,14 +1051,25 @@ impl TrackEditorWindow {
             .px_3()
             .bg(bg_color)
             .border_1()
-            .border_color(if is_drop_target {
-                theme.accent
-            } else {
-                theme.border
-            })
+            .border_color(border_color)
             .rounded_md()
             .cursor_grab()
             .hover(|s| s.bg(theme.bg_card_hover))
+            // Click to select track (mixtapes only)
+            .when(is_mixtape, |el| {
+                el.on_click(cx.listener(move |this, _, _window, cx| {
+                    // Toggle selection: clicking same track deselects, clicking different track selects it
+                    if this.selected_track_index == Some(display_index) {
+                        this.selected_track_index = None;
+                    } else {
+                        this.selected_track_index = Some(display_index);
+                    }
+                    // Clear any editing state when selection changes
+                    this.editing_track_title = false;
+                    this.editing_track_artist = false;
+                    cx.notify();
+                }))
+            })
             // Make draggable for reordering
             .on_drag(drag_info, |info: &DraggedTrack, position, _, cx| {
                 cx.new(|_| info.clone().with_position(position))
@@ -904,7 +1260,8 @@ impl Render for TrackEditorWindow {
                             .justify_between()
                             // Album/Mixtape name
                             .child(if editing_name {
-                                // Editable name input
+                                // Editable name input with cursor
+                                let (before, after) = Self::split_at_cursor(&name, self.name_cursor);
                                 div()
                                     .h_8()
                                     .px_3()
@@ -916,16 +1273,19 @@ impl Render for TrackEditorWindow {
                                     .rounded_md()
                                     .child(
                                         div()
+                                            .flex()
+                                            .items_center()
                                             .text_lg()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(theme.text)
-                                            .child(if name.is_empty() {
-                                                " ".to_string()
+                                            .child(if before.is_empty() && after.is_empty() {
+                                                "".to_string()
                                             } else {
-                                                name.clone()
-                                            }),
+                                                before
+                                            })
+                                            .child(div().w(px(2.)).h(px(18.)).bg(theme.accent))
+                                            .child(after),
                                     )
-                                    .child(div().w(px(2.)).h(px(18.)).bg(theme.accent).ml_px())
                                     .into_any_element()
                             } else {
                                 // Clickable display name (for both albums and mixtapes)
@@ -937,7 +1297,14 @@ impl Render for TrackEditorWindow {
                                     .cursor_pointer()
                                     .hover(|s| s.text_color(theme.accent))
                                     .on_click(cx.listener(|this, _, _window, cx| {
+                                        // Clear all other editing states
+                                        this.editing_artist = false;
+                                        this.editing_year = false;
+                                        this.editing_track_title = false;
+                                        this.editing_track_artist = false;
+                                        // Enter name editing
                                         this.editing_name = true;
+                                        this.name_cursor = Self::char_count(&this.name);
                                         cx.notify();
                                     }))
                                     .child(name.clone())
@@ -971,6 +1338,8 @@ impl Render for TrackEditorWindow {
                                         .gap_1()
                                         // Artist field
                                         .child(if editing_artist {
+                                            let artist_str = artist.clone().unwrap_or_default();
+                                            let (before, after) = Self::split_at_cursor(&artist_str, self.artist_cursor);
                                             div()
                                                 .h_6()
                                                 .px_2()
@@ -982,11 +1351,14 @@ impl Render for TrackEditorWindow {
                                                 .rounded_md()
                                                 .child(
                                                     div()
+                                                        .flex()
+                                                        .items_center()
                                                         .text_sm()
                                                         .text_color(theme.text)
-                                                        .child(artist.clone().unwrap_or_else(|| " ".to_string())),
+                                                        .child(before)
+                                                        .child(div().w(px(2.)).h(px(14.)).bg(theme.accent))
+                                                        .child(after),
                                                 )
-                                                .child(div().w(px(2.)).h(px(14.)).bg(theme.accent).ml_px())
                                                 .into_any_element()
                                         } else {
                                             div()
@@ -996,7 +1368,14 @@ impl Render for TrackEditorWindow {
                                                 .cursor_pointer()
                                                 .hover(|s| s.text_color(theme.accent))
                                                 .on_click(cx.listener(|this, _, _window, cx| {
+                                                    // Clear all other editing states
+                                                    this.editing_name = false;
+                                                    this.editing_year = false;
+                                                    this.editing_track_title = false;
+                                                    this.editing_track_artist = false;
+                                                    // Enter artist editing
                                                     this.editing_artist = true;
+                                                    this.artist_cursor = Self::char_count(this.artist.as_deref().unwrap_or(""));
                                                     cx.notify();
                                                 }))
                                                 .child(artist.clone().unwrap_or_else(|| "Unknown Artist".to_string()))
@@ -1011,6 +1390,8 @@ impl Render for TrackEditorWindow {
                                         )
                                         // Year field
                                         .child(if editing_year {
+                                            let year_str = year.clone().unwrap_or_default();
+                                            let (before, after) = Self::split_at_cursor(&year_str, self.year_cursor);
                                             div()
                                                 .h_6()
                                                 .px_2()
@@ -1023,11 +1404,14 @@ impl Render for TrackEditorWindow {
                                                 .rounded_md()
                                                 .child(
                                                     div()
+                                                        .flex()
+                                                        .items_center()
                                                         .text_sm()
                                                         .text_color(theme.text)
-                                                        .child(year.clone().unwrap_or_else(|| " ".to_string())),
+                                                        .child(before)
+                                                        .child(div().w(px(2.)).h(px(14.)).bg(theme.accent))
+                                                        .child(after),
                                                 )
-                                                .child(div().w(px(2.)).h(px(14.)).bg(theme.accent).ml_px())
                                                 .into_any_element()
                                         } else {
                                             div()
@@ -1037,7 +1421,14 @@ impl Render for TrackEditorWindow {
                                                 .cursor_pointer()
                                                 .hover(|s| s.text_color(theme.accent))
                                                 .on_click(cx.listener(|this, _, _window, cx| {
+                                                    // Clear all other editing states
+                                                    this.editing_name = false;
+                                                    this.editing_artist = false;
+                                                    this.editing_track_title = false;
+                                                    this.editing_track_artist = false;
+                                                    // Enter year editing
                                                     this.editing_year = true;
+                                                    this.year_cursor = Self::char_count(this.year.as_deref().unwrap_or(""));
                                                     cx.notify();
                                                 }))
                                                 .child(year.clone().unwrap_or_else(|| "Year".to_string()))
@@ -1053,14 +1444,150 @@ impl Render for TrackEditorWindow {
                                 ),
                         )
                     })
-                    // Mixtape: just show duration on second row
+                    // Mixtape second row: selected track info or just duration
                     .when(is_mixtape, |el| {
+                        // Get selected track info
+                        let selected_track_info = self.selected_track_index.and_then(|idx| {
+                            self.track_order.get(idx).and_then(|&track_idx| {
+                                self.tracks.get(track_idx).map(|t| {
+                                    (t.title.clone(), t.artist.clone())
+                                })
+                            })
+                        });
+                        let editing_track_title = self.editing_track_title;
+                        let editing_track_artist = self.editing_track_artist;
+
                         el.child(
                             div()
                                 .w_full()
                                 .flex()
                                 .items_center()
-                                .justify_end()
+                                .justify_between()
+                                // Track title and artist (when a track is selected)
+                                .child(
+                                    if let Some((track_title, track_artist)) = selected_track_info {
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            // Track title field
+                                            .child(if editing_track_title {
+                                                let title_str = track_title.clone().unwrap_or_default();
+                                                let (before, after) = Self::split_at_cursor(&title_str, self.track_title_cursor);
+                                                div()
+                                                    .h_6()
+                                                    .px_2()
+                                                    .flex()
+                                                    .items_center()
+                                                    .bg(theme.bg_card)
+                                                    .border_1()
+                                                    .border_color(theme.accent)
+                                                    .rounded_md()
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .text_sm()
+                                                            .text_color(theme.text)
+                                                            .child(before)
+                                                            .child(div().w(px(2.)).h(px(14.)).bg(theme.accent))
+                                                            .child(after),
+                                                    )
+                                                    .into_any_element()
+                                            } else {
+                                                div()
+                                                    .id(SharedString::from("track-title-display"))
+                                                    .text_sm()
+                                                    .text_color(theme.text_muted)
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.text_color(theme.accent))
+                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                        // Clear all other editing states
+                                                        this.editing_name = false;
+                                                        this.editing_artist = false;
+                                                        this.editing_year = false;
+                                                        this.editing_track_artist = false;
+                                                        // Enter track title editing
+                                                        this.editing_track_title = true;
+                                                        // Set cursor to end of title
+                                                        if let Some(idx) = this.selected_track_index {
+                                                            if let Some(&track_idx) = this.track_order.get(idx) {
+                                                                if let Some(track) = this.tracks.get(track_idx) {
+                                                                    this.track_title_cursor = Self::char_count(track.title.as_deref().unwrap_or(""));
+                                                                }
+                                                            }
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .child(track_title.clone().unwrap_or_else(|| "Untitled".to_string()))
+                                                    .into_any_element()
+                                            })
+                                            // Separator
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(theme.text_muted)
+                                                    .child(" · "),
+                                            )
+                                            // Track artist field
+                                            .child(if editing_track_artist {
+                                                let artist_str = track_artist.clone().unwrap_or_default();
+                                                let (before, after) = Self::split_at_cursor(&artist_str, self.track_artist_cursor);
+                                                div()
+                                                    .h_6()
+                                                    .px_2()
+                                                    .flex()
+                                                    .items_center()
+                                                    .bg(theme.bg_card)
+                                                    .border_1()
+                                                    .border_color(theme.accent)
+                                                    .rounded_md()
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .text_sm()
+                                                            .text_color(theme.text)
+                                                            .child(before)
+                                                            .child(div().w(px(2.)).h(px(14.)).bg(theme.accent))
+                                                            .child(after),
+                                                    )
+                                                    .into_any_element()
+                                            } else {
+                                                div()
+                                                    .id(SharedString::from("track-artist-display"))
+                                                    .text_sm()
+                                                    .text_color(theme.text_muted)
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.text_color(theme.accent))
+                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                        // Clear all other editing states
+                                                        this.editing_name = false;
+                                                        this.editing_artist = false;
+                                                        this.editing_year = false;
+                                                        this.editing_track_title = false;
+                                                        // Enter track artist editing
+                                                        this.editing_track_artist = true;
+                                                        // Set cursor to end of artist
+                                                        if let Some(idx) = this.selected_track_index {
+                                                            if let Some(&track_idx) = this.track_order.get(idx) {
+                                                                if let Some(track) = this.tracks.get(track_idx) {
+                                                                    this.track_artist_cursor = Self::char_count(track.artist.as_deref().unwrap_or(""));
+                                                                }
+                                                            }
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .child(track_artist.clone().unwrap_or_else(|| "Unknown Artist".to_string()))
+                                                    .into_any_element()
+                                            })
+                                            .into_any_element()
+                                    } else {
+                                        // No track selected - empty space
+                                        div().into_any_element()
+                                    }
+                                )
+                                // Duration (always shown)
                                 .child(
                                     div()
                                         .text_sm()
@@ -1246,6 +1773,17 @@ impl Render for TrackEditorWindow {
                             ),
                     ),
             )
+    }
+}
+
+impl Drop for TrackEditorWindow {
+    fn drop(&mut self) {
+        // Send close event if not already sent (handles macOS window close button)
+        if !self.close_event_sent {
+            let _ = self.update_tx.send(TrackEditorUpdate::Closed {
+                id: self.folder_id.clone(),
+            });
+        }
     }
 }
 

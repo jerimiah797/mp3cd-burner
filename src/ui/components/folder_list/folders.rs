@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Context, Timer, WeakEntity};
 
-use crate::audio::{is_audio_file, WriteAlbumMetadata, write_album_metadata};
+use crate::audio::{is_audio_file, WriteAlbumMetadata, WriteTrackMetadata, write_album_metadata, write_track_metadata};
 use crate::core::{
     FolderId, ImportState, MusicFolder, find_album_folders, scan_audio_file, scan_music_folder,
 };
@@ -455,6 +455,9 @@ impl FolderList {
                 } => {
                     self.handle_metadata_changed(&id, album_name, artist, year, source_files);
                 }
+                TrackEditorUpdate::TrackMetadataChanged { id, tracks } => {
+                    self.handle_track_metadata_changed(&id, tracks);
+                }
                 TrackEditorUpdate::Closed { id } => {
                     self.handle_track_editor_closed(&id);
                 }
@@ -613,6 +616,36 @@ impl FolderList {
         });
 
         // Mark unsaved changes
+        self.has_unsaved_changes = true;
+    }
+
+    /// Handle individual track metadata changes from editor (mixtapes)
+    fn handle_track_metadata_changed(
+        &mut self,
+        folder_id: &FolderId,
+        tracks: Vec<(PathBuf, WriteTrackMetadata)>,
+    ) {
+        log::debug!(
+            "Track metadata changed for folder {}: {} tracks modified",
+            folder_id,
+            tracks.len()
+        );
+
+        // Write metadata to source files in background thread
+        std::thread::spawn(move || {
+            for (path, metadata) in tracks {
+                if let Err(e) = write_track_metadata(&path, &metadata) {
+                    log::warn!(
+                        "Failed to write track metadata to {}: {}",
+                        path.display(),
+                        e
+                    );
+                } else {
+                    log::debug!("Updated track metadata: {}", path.display());
+                }
+            }
+        });
+
         self.has_unsaved_changes = true;
     }
 
