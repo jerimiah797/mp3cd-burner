@@ -313,41 +313,56 @@ impl FolderList {
                     Timer::after(Duration::from_millis(100)).await;
 
                     // Poll encoder events and check if ISO should be generated
-                    let should_continue = this
+                    // Returns (should_continue, had_changes)
+                    let result = this
                         .update(&mut async_cx, |this, cx| {
+                            let mut had_changes = false;
+
                             // Poll any encoder events
-                            let _had_events = this.poll_encoder_events();
+                            if this.poll_encoder_events() {
+                                had_changes = true;
+                            }
 
                             // Poll for volume label updates from the dialog
-                            let _label_updated = this.poll_volume_label();
+                            if this.poll_volume_label() {
+                                had_changes = true;
+                            }
 
                             // Poll for bitrate override dialog result
-                            let _bitrate_updated = this.poll_bitrate_override();
+                            if this.poll_bitrate_override() {
+                                had_changes = true;
+                            }
 
                             // Check for debounced bitrate recalculation
-                            this.check_debounced_bitrate_recalculation();
+                            if this.check_debounced_bitrate_recalculation() {
+                                had_changes = true;
+                            }
 
                             // Check if we should auto-generate ISO
                             if this.maybe_generate_iso(cx) {
-                                // ISO generation was triggered
                                 log::debug!("Auto-ISO generation triggered");
+                                had_changes = true;
                             }
 
-                            // Always notify UI to ensure refresh (even without events,
-                            // conversion_state progress may have changed from burn workflow)
-                            cx.notify();
+                            // Only notify UI if there were actual changes
+                            if had_changes {
+                                cx.notify();
+                            }
 
                             // Continue polling as long as we have a background encoder
-                            this.simple_encoder.is_some()
+                            (this.simple_encoder.is_some(), had_changes)
                         })
-                        .unwrap_or(false);
+                        .unwrap_or((false, false));
+
+                    let (should_continue, _had_changes) = result;
 
                     if !should_continue {
                         break;
                     }
 
-                    // Refresh UI
-                    let _ = cx_for_after_await.refresh();
+                    // Note: cx.notify() inside update() is sufficient to trigger re-render
+                    // Calling refresh() here would refresh ALL windows, causing unnecessary
+                    // re-renders of the track editor and other windows
                     async_cx = cx_for_after_await;
                 }
             }

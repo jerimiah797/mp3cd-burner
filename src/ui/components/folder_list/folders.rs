@@ -701,7 +701,7 @@ impl FolderList {
                     // Drain any scanned folders and add to the list
                     let folders = state.drain_folders();
                     if !folders.is_empty() {
-                        let _ = this.update(&mut async_cx, |this, _cx| {
+                        let _ = this.update(&mut async_cx, |this, cx| {
                             for folder in folders {
                                 // Queue for background encoding if available
                                 this.queue_folder_for_encoding(&folder);
@@ -715,6 +715,7 @@ impl FolderList {
                             this.has_unsaved_changes = true;
                             // NOTE: Don't set last_folder_change during import - we'll calculate
                             // bitrate once after all folders are imported to avoid mid-import recalcs
+                            cx.notify();
                         });
                     }
 
@@ -723,16 +724,14 @@ impl FolderList {
                         break;
                     }
 
-                    // Refresh UI
-                    let _ = cx_for_after_await.refresh();
-
+                    // Note: cx.notify() inside update() is sufficient - no need for refresh()
                     async_cx = cx_for_after_await;
                 }
 
-                // Final drain and refresh
+                // Final drain and notify
                 let folders = state.drain_folders();
                 if !folders.is_empty() {
-                    let _ = this.update(&mut async_cx, |this, _cx| {
+                    let _ = this.update(&mut async_cx, |this, cx| {
                         for folder in folders {
                             // Queue for background encoding if available
                             this.queue_folder_for_encoding(&folder);
@@ -744,12 +743,13 @@ impl FolderList {
                         this.iso_has_been_burned = false;
                         // Mark as having unsaved changes
                         this.has_unsaved_changes = true;
+                        cx.notify();
                     });
                 }
 
                 // Calculate and set bitrate BEFORE resuming encoding
                 // This ensures all folders are accounted for in the bitrate calculation
-                let _ = this.update(&mut async_cx, |this, _cx| {
+                let _ = this.update(&mut async_cx, |this, cx| {
                     // Clear cached bitrate to force fresh calculation with all folders
                     this.last_calculated_bitrate = None;
                     let new_bitrate = this.calculated_bitrate();
@@ -760,6 +760,7 @@ impl FolderList {
                         this.last_calculated_bitrate = Some(new_bitrate);
                         log::info!("Import complete - bitrate set to {} kbps", new_bitrate);
                     }
+                    cx.notify();
                 });
 
                 // Notify encoder that import is complete (resumes encoding)
@@ -768,8 +769,6 @@ impl FolderList {
                         encoder.import_complete();
                     }
                 });
-
-                let _ = async_cx.refresh();
             }
         })
         .detach();

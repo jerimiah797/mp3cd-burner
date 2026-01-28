@@ -198,6 +198,8 @@ pub struct TrackEditorWindow {
     modified_tracks: HashMap<usize, (Option<String>, Option<String>)>,
     /// Whether we've already sent the close event (to avoid double-send in Drop)
     close_event_sent: bool,
+    /// Whether we need to grab initial focus (only true on first render)
+    needs_initial_focus: bool,
 }
 
 impl TrackEditorWindow {
@@ -250,6 +252,7 @@ impl TrackEditorWindow {
             track_artist_cursor: 0,
             modified_tracks: HashMap::new(),
             close_event_sent: false,
+            needs_initial_focus: true,
         }
     }
 
@@ -1219,8 +1222,9 @@ impl Render for TrackEditorWindow {
             .map(|t| t.file_info.duration)
             .sum();
 
-        // Focus on render
-        if !self.focus_handle.is_focused(window) {
+        // Grab initial focus (only once when window first opens)
+        if self.needs_initial_focus {
+            self.needs_initial_focus = false;
             self.focus_handle.focus(window);
         }
 

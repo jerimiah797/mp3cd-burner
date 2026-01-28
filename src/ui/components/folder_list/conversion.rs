@@ -238,7 +238,10 @@ impl FolderList {
     /// 1. Wait 500ms (debounce) to let rapid additions settle
     /// 2. Calculate new target bitrate
     /// 3. If bitrate changed, send recalculate command to encoder
-    pub(super) fn check_debounced_bitrate_recalculation(&mut self) {
+    /// Check for debounced bitrate recalculation and trigger if needed
+    ///
+    /// Returns true if a recalculation was triggered
+    pub(super) fn check_debounced_bitrate_recalculation(&mut self) -> bool {
         const DEBOUNCE_MS: u64 = 500;
 
         // Check if we have a pending change that's old enough
@@ -248,7 +251,7 @@ impl FolderList {
         };
 
         if !should_recalculate {
-            return;
+            return false;
         }
 
         // Clear the pending change
@@ -257,7 +260,7 @@ impl FolderList {
         // Skip if no folders
         if self.folders.is_empty() {
             self.last_calculated_bitrate = None;
-            return;
+            return false;
         }
 
         // Calculate new bitrate
@@ -273,7 +276,7 @@ impl FolderList {
         self.last_calculated_bitrate = Some(new_bitrate);
 
         if !bitrate_changed {
-            return;
+            return false;
         }
 
         log::debug!(
@@ -289,6 +292,8 @@ impl FolderList {
         if let Some(ref encoder) = self.simple_encoder {
             encoder.recalculate_bitrate(new_bitrate);
         }
+
+        true
     }
 
     /// Cancel any ongoing conversion
